@@ -1,0 +1,28 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Secrets and local config
+.env
+.env.*
+*.key
+
+# Models, vector stores, and simulation output
+*.pt
+*.pth
+*.ckpt
+vector_store/
+sumo_output/
+
+# Editors and system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
