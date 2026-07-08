@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import json
 import math
 import uuid
 from pathlib import Path
 
 from app.config import DEFAULT_FRAME_STEP_SECONDS, DEFAULT_VISIBLE_VEHICLE_LIMIT, ENGINE_MODE, SERVICE_VERSION
+from app.engine import RealCityFlowEngine
 from app.errors import ApiError
 from app.models import JsonDict, SimulationSession
 from app.roadnet_parser import PHASE_CODES, RoadnetParser
@@ -22,6 +25,7 @@ class CityFlowAdapter:
         self.data_dir = data_dir
         self.engine_mode = self._resolve_engine_mode(ENGINE_MODE)
         self.scene_registry = SceneRegistry(data_dir)
+        self.real_engine = RealCityFlowEngine(self.scene_registry) if self.engine_mode == "cityflow" else None
         self.sessions: dict[str, SimulationSession] = {}
         self.parsers: dict[str, RoadnetParser] = {}
         self.flows: dict[str, list[JsonDict]] = {}
@@ -36,7 +40,7 @@ class CityFlowAdapter:
             "version": SERVICE_VERSION,
             "engineMode": self.engine_mode,
             "sceneIds": self.scene_registry.list_scene_ids(),
-            "activeSessions": len(self.sessions),
+            "activeSessions": self._active_session_count(),
         }
 
     def get_roadnet(self, scene_id: str) -> JsonDict:
@@ -44,8 +48,11 @@ class CityFlowAdapter:
 
     def create_simulation(self, scene_id: str, speed: float | None = None) -> JsonDict:
         self._load_scene(scene_id)
-        sid = f"run_{uuid.uuid4().hex[:8]}"
         normalized_speed = self._normalize_speed(speed)
+        if self.real_engine is not None:
+            return self.real_engine.create_session(scene_id, normalized_speed)
+
+        sid = f"run_{uuid.uuid4().hex[:8]}"
         session = SimulationSession(
             sid=sid,
             scene_id=scene_id,
@@ -61,6 +68,9 @@ class CityFlowAdapter:
         }
 
     def next_frame(self, sid: str) -> JsonDict:
+        if self.real_engine is not None:
+            return self.real_engine.next_frame(sid)
+
         if sid not in self.sessions:
             raise ApiError(
                 status=404,
@@ -118,12 +128,7 @@ class CityFlowAdapter:
         if mode == "mock":
             return "mock"
         if mode == "cityflow":
-            raise ApiError(
-                status=501,
-                code="CITYFLOW_ENGINE_NOT_CONFIGURED",
-                message="real CityFlow engine mode is reserved but not configured yet",
-                retryable=False,
-            )
+            return "cityflow"
         raise ApiError(
             status=500,
             code="ENGINE_MODE_INVALID",
@@ -149,6 +154,11 @@ class CityFlowAdapter:
                 retryable=False,
             )
         return value
+
+    def _active_session_count(self) -> int:
+        if self.real_engine is not None:
+            return self.real_engine.active_session_count()
+        return len(self.sessions)
 
     def _active_flows(self, flows: list[JsonDict], sim_time: float) -> list[tuple[int, JsonDict]]:
         active = []

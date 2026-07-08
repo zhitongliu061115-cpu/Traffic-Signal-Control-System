@@ -4,7 +4,8 @@
       "sceneId": "jinan_3x4",
       "name": "Jinan 3x4 demo roadnet",
       "roadnetFile": "roadnet_3_4.json",
-      "flowFile": "flow_3_4_jinan_real.json"
+      "flowFile": "flow_3_4_jinan_real.json",
+      "cityflowConfigMode": "generated"
     }
   ]
 }
