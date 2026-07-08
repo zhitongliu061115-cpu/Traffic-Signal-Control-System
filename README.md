@@ -1,37 +1,64 @@
 # Traffic-Signal-Control-System
 
-AI 自适应信号控制与应急绿波数字孪生系统。
+交通信号控制与 CityFlow 数字孪生仿真系统。
 
-本项目采用前后端同仓结构：前端负责交通数据分析大屏与数字孪生可视化，后端负责实时仿真数据、AI 信号控制、应急绿波、智能体问答与 WebSocket 推送。
+本项目面向小学期实训开发，目标是在 10 天内完成一个可运行、可演示、可扩展的交通信号仿真系统。当前阶段优先完成 **Spring Boot 主后端 + Python CityFlow 仿真服务 + Vue 前端实时渲染** 的主链路，先保证路网和车辆动态可视化真实打通，再逐步接入控制策略、数据库历史记录、应急绿波和智能体辅助功能。
 
-## 目录
+## 当前开发目标
+
+今日主线只做可视化仿真，不接控制策略：
+
+```text
+Vue 前端
+  -> Spring Boot REST / WebSocket
+  -> Python CityFlow 仿真服务
+  -> CityFlow Engine
+```
+
+前端只允许访问 Spring Boot 主后端，不直接连接 Python 仿真服务。Spring Boot 负责统一协议、会话管理、数据库落地、WebSocket 推送和后续权限审计；Python 服务只负责 CityFlow / RL / Max-Pressure 等仿真和算法计算。
+
+## 目录结构
 
 ```text
 Traffic-Signal-Control-System/
-├─ sys-frontend/          # Vue + TypeScript 前端大屏
-├─ backend/               # Python + FastAPI 后端服务
-├─ docs/                  # 项目规范、架构说明、协作资料
-└─ README.md
+|-- backend/        Spring Boot 主后端
+|-- sim-python/     Python CityFlow 仿真服务
+|-- sys-frontend/   Vue + TypeScript 前端大屏
+|-- docs/           项目文档、接口规范、架构说明
+|-- rules.md        团队 AI 辅助开发与协作规则
+`-- README.md       项目总览
 ```
 
 ## 核心模块
 
-- `dashboard`: 交通数据分析大屏、车辆流动、拥堵热力、应急路径高亮。
-- `sim`: 路网、车辆、交通状态仿真数据源，可后续对接 SUMO。
-- `signal`: AI 自适应信号控制，决定下一相位和绿灯时长。
-- `emergency`: 应急绿波控制，沿应急车辆路径依次放行。
-- `agent`: 自然语言调度智能体与交通知识库 RAG 问答。
-- `core`: 公共配置、消息协议、模型与工具能力。
+- `可视化仿真`：加载 CityFlow 路网，实时渲染道路、路口、车辆、信号相位和拥堵状态。
+- `仿真会话`：创建、启动、暂停和停止一次 CityFlow 仿真运行。
+- `数据库记录`：保存场景、路网、相位、仿真会话、指标快照和后续操作日志。
+- `控制策略`：预留 FixedTime、RL、Max-Pressure 等策略扩展点，当前阶段不进入可视化主链路。
+- `应急绿波`：预留应急车辆优先通行模块，后续接入路径规划和优先控制。
+- `智能体`：预留自然语言查询、拥堵解释、调度建议和报告生成模块。
 
 ## 文档入口
 
-- [项目结构](docs/PROJECT_STRUCTURE.md)
-- [接口规范](docs/API_GUIDELINES.md)
-- [Git 规范](docs/GIT_GUIDELINES.md)
-- [Vibe Coding 规范](docs/VIBE_CODING_GUIDELINES.md)
-- [团队 Prompt 库](docs/PROMPTS.md)
+- [项目结构说明](docs/PROJECT_STRUCTURE.md)
+- [后端文档入口](backend/docs/README.md)
+- [阶段 2 调用链说明](backend/docs/CALL_CHAIN.md)
+- [后端架构说明](backend/docs/BACKEND_ARCHITECTURE.md)
+- [技术设计说明](backend/docs/TECHNICAL_DESIGN.md)
+- [接口协作规范](backend/docs/API_GUIDELINES.md)
+- [CFRP 前后端通信协议](docs/CFRP-1.0-前后端通信协议.md)
+- [Git 协作规范](docs/GIT_GUIDELINES.md)
+- [团队 Prompt 规范](docs/PROMPTS.md)
 
-## 启动建议
+## 启动方式
+
+后端：
+
+```sh
+cd backend
+mvn compile
+mvn spring-boot:run
+```
 
 前端：
 
@@ -41,12 +68,11 @@ npm install
 npm run dev
 ```
 
-后端：
+Python CityFlow 仿真服务后续应单独放置，不再混入 `backend` 主后端目录。
+
+Python 仿真服务：
 
 ```sh
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+cd sim-python
+python app/server.py --host 127.0.0.1 --port 9000
 ```

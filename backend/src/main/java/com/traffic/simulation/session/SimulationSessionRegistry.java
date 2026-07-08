@@ -1,0 +1,28 @@
+package com.traffic.simulation.session;
+
+import org.springframework.stereotype.Component;
+
+import java.util.Collection;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Component
+public class SimulationSessionRegistry {
+
+    private final Map<String, SimulationRuntimeSession> sessions = new ConcurrentHashMap<>();
+
+    public SimulationRuntimeSession register(String sid, String sceneId) {
+        SimulationRuntimeSession session = new SimulationRuntimeSession(sid, sceneId, SimulationSessionState.CREATED);
+        sessions.put(sid, session);
+        return session;
+    }
+
+    public Optional<SimulationRuntimeSession> find(String sid) {
+        return Optional.ofNullable(sessions.get(sid));
+    }
+
+    public Collection<SimulationRuntimeSession> findAll() {
+        return sessions.values();
+    }
+}

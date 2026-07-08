@@ -1,55 +1,107 @@
-# 项目目录架构
+# 项目结构说明
 
-## 总览
+## 总体结构
 
 ```text
 Traffic-Signal-Control-System/
-├─ sys-frontend/
-│  ├─ src/
-│  │  ├─ api/                 # REST / WebSocket 客户端封装
-│  │  ├─ components/traffic/  # 路网、车辆、信号灯、指标组件
-│  │  ├─ composables/         # 前端复用逻辑，如实时订阅
-│  │  ├─ router/              # 页面路由
-│  │  ├─ stores/              # Pinia 状态管理
-│  │  ├─ styles/              # 全局样式与大屏主题
-│  │  ├─ types/               # 前端共享类型
-│  │  └─ views/               # 大屏页面与调度页面
-│  └─ package.json
-├─ backend/
-│  ├─ app/
-│  │  ├─ api/v1/              # REST 与 WebSocket 路由
-│  │  ├─ agent/               # 调度智能体与 RAG 问答
-│  │  ├─ core/                # 配置、日志、协议、通用工具
-│  │  ├─ emergency/           # 应急绿波策略
-│  │  ├─ schemas/             # Pydantic 数据模型
-│  │  ├─ services/            # 跨模块业务编排
-│  │  ├─ signal/              # AI 自适应信号控制
-│  │  ├─ sim/                 # 交通仿真与数据生成
-│  │  └─ main.py              # FastAPI 应用入口
-│  ├─ tests/                  # 后端测试
-│  └─ requirements.txt
-├─ docs/
-│  ├─ API_GUIDELINES.md
-│  ├─ GIT_GUIDELINES.md
-│  ├─ VIBE_CODING_GUIDELINES.md
-│  ├─ PROJECT_STRUCTURE.md
-│  └─ PROMPTS.md
-├─ .gitignore
-└─ README.md
+|-- backend/
+|   |-- pom.xml
+|   |-- README.md
+|   `-- src/main/
+|       |-- java/com/traffic/
+|       |   |-- common/
+|       |   |-- config/
+|       |   |-- cityflow/
+|       |   |-- roadnet/
+|       |   |-- scene/
+|       |   |-- simulation/
+|       |   |-- strategy/
+|       |   |-- metrics/
+|       |   |-- emergency/
+|       |   |-- agent/
+|       |   `-- audit/
+|       `-- resources/
+|           |-- application.yml
+|           `-- db/migration/
+|-- sim-python/
+|   |-- app/
+|   |-- data/
+|   |-- tests/
+|   `-- README.md
+|-- sys-frontend/
+|   |-- package.json
+|   `-- src/
+|       |-- api/
+|       |-- components/traffic/
+|       |-- composables/
+|       |-- router/
+|       |-- stores/
+|       |-- styles/
+|       |-- types/
+|       `-- views/
+|-- docs/
+|-- rules.md
+`-- README.md
 ```
 
-## 模块边界
+## 后端目录职责
 
-- 前端只通过 `docs/API_GUIDELINES.md` 约定的 REST 和 WebSocket 与后端通信。
-- 后端 `api/v1` 只负责协议入口，具体业务逻辑放到 `services` 和各领域模块。
-- `signal` 负责普通交通流下的自适应控制；`emergency` 负责更高优先级的应急绿波。
-- `agent` 可读取交通状态和知识库，输出自然语言解释与建议动作，但核心调度动作仍应经过后端服务校验。
-- `sim` 先提供演示/仿真数据，后续可替换或对接 SUMO，不影响前端接口。
+`backend` 是 Spring Boot 主后端。它只负责主业务、协议、数据库和服务编排，不直接包含 CityFlow 引擎代码。
 
-## 阶段建议
+| 包名 | 职责 |
+|---|---|
+| `common` | 通用响应结构、异常处理、公共工具 |
+| `config` | Spring 配置、跨域、WebSocket 注册 |
+| `cityflow` | Python CityFlow 服务客户端边界 |
+| `roadnet` | 静态路网 DTO 和路网业务处理 |
+| `scene` | 场景接口、场景元数据和后续路网入库 |
+| `simulation` | 仿真会话、仿真帧轮询、WebSocket 推送 |
+| `strategy` | FixedTime、RL、Max-Pressure 等控制策略扩展点 |
+| `metrics` | 指标统计、指标快照和历史查询 |
+| `emergency` | 应急车辆、路径规划、绿波控制预留边界 |
+| `agent` | 自然语言查询、拥堵解释、调度建议预留边界 |
+| `audit` | 操作审计、控制日志、人工接管记录 |
 
-1. `v0.1`: 路网、车辆、信号灯与指标大屏跑通。
-2. `v0.2`: 接入自适应信号控制策略。
-3. `v0.3`: 接入应急车辆检测和绿波控制。
-4. `v0.4`: 接入调度智能体与 RAG 问答。
-5. `v1.0`: 集成演示、测试、文档与答辩材料。
+## 前端目录职责
+
+`sys-frontend` 负责实时可视化和交互页面。
+
+| 目录 | 职责 |
+|---|---|
+| `api` | REST 和 WebSocket 客户端封装 |
+| `components/traffic` | 路网、车辆、信号灯、指标等交通组件 |
+| `composables` | 复用逻辑，例如 WebSocket 订阅、动画插值 |
+| `stores` | Pinia 状态管理 |
+| `types` | 前端共享 TypeScript 类型 |
+| `views` | 大屏页面、仿真页面、后续调度页面 |
+
+## Python CityFlow 服务位置
+
+Python CityFlow 仿真服务作为独立服务维护，不放在 `backend` 目录下。
+
+```text
+sim-python/
+|-- app/
+|-- data/
+|-- tests/
+`-- README.md
+```
+
+Spring Boot 通过 HTTP 调用 Python 服务，前端不得直接访问 Python 服务。
+
+## 当前阶段开发边界
+
+当前只实现“路网与车辆实时可视化”：
+
+```text
+前端请求路网
+  -> Spring Boot scene / roadnet
+  -> Python CityFlow roadnet
+
+前端连接 WebSocket
+  -> Spring Boot simulation
+  -> Spring Boot 定时拉取 Python frame
+  -> 前端实时渲染车辆
+```
+
+控制策略、应急绿波和智能体模块暂时只保留包结构和接口边界。
