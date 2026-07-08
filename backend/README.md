@@ -1,36 +1,111 @@
-# backend
+# 后端服务说明
 
-后端服务负责实时交通状态、AI 自适应信号控制、应急绿波、智能体问答和 WebSocket 推送。
+`backend` 是本项目的 **Spring Boot 主后端**。它负责对前端提供统一 REST / WebSocket 接口，并作为 Python CityFlow 仿真服务、数据库、控制策略和后续智能体能力之间的业务编排层。
 
-## 技术基线
-
-- Python
-- FastAPI
-- WebSocket
-- Pydantic
-
-## 本地启动
-
-```sh
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-健康检查：
+当前阶段目标是先打通可视化仿真链路：
 
 ```text
-GET /api/v1/health
+前端 Vue
+  -> Spring Boot 主后端
+  -> Python CityFlow 仿真服务
+  -> CityFlow Engine
 ```
 
-## 模块说明
+前端不得直接连接 Python 服务。这样可以保证协议、数据库、权限、日志、策略切换和异常处理都集中在 Spring Boot 主后端内。
 
-- `app/api/v1`: REST 和 WebSocket 路由入口。
-- `app/core`: 配置、日志、协议、公共工具。
-- `app/schemas`: 接口数据模型。
-- `app/services`: 跨模块业务编排。
-- `app/sim`: 路网和车流仿真。
-- `app/signal`: AI 自适应信号控制。
-- `app/emergency`: 应急绿波控制。
-- `app/agent`: 自然语言调度智能体与 RAG。
+阶段 2 的完整调用链见 `docs/CALL_CHAIN.md`。后端代码必须保持这个方向：前端入口在 Controller，Python 调用只经过 `CityFlowClient`，实时帧只通过 `SimulationWebSocketHandler` 推送。
+
+## 技术栈
+
+- Java 17
+- Spring Boot 3
+- Spring Web
+- Spring WebSocket
+- Spring Data JPA
+- Flyway
+- H2：本地编译和轻量验证
+- PostgreSQL：正式数据库部署建议
+
+## 包结构
+
+```text
+src/main/java/com/traffic
+|-- common        通用响应、异常处理、时间工具等公共能力
+|-- config        Spring 配置、跨域配置、WebSocket 配置
+|-- cityflow      Python CityFlow 服务访问边界
+|-- roadnet       路网 DTO 与静态路网业务编排
+|-- scene         场景接口、场景元数据和路网导入边界
+|-- simulation    仿真会话、帧轮询、WebSocket 推送
+|-- strategy      信号控制策略扩展点
+|-- metrics       指标聚合和历史快照边界
+|-- emergency     应急车辆与绿波控制预留模块
+|-- agent         智能体问答和调度建议预留模块
+`-- audit         操作审计和控制日志预留模块
+```
+
+## 今日已实现的主链路骨架
+
+1. `SceneController` 暴露 `GET /api/v1/scenes/{sceneId}/roadnet`。
+2. `RoadnetService` 负责路网业务编排。
+3. `CityFlowClient` 负责调用 Python CityFlow 服务。
+4. `SimulationController` 负责创建和控制仿真会话。
+5. `SimulationSessionRegistry` 暂存运行中的仿真会话。
+6. `SimulationFrameScheduler` 定时向 Python 服务拉取仿真帧。
+7. `SimulationWebSocketHandler` 向前端推送 CFRP `sim.frame` 消息。
+
+## 当前不实现的内容
+
+以下模块只保留边界，不应混入当前可视化主链路：
+
+- RL / LightGPT 控制策略
+- Max-Pressure 控制策略
+- 应急绿波控制
+- 智能体自动调度
+- 权限系统和人工接管
+
+这些能力后续应通过既有包和接口扩展，不能直接改动 `simulation` 的可视化链路。
+
+## Python CityFlow 服务约定
+
+Spring Boot 预期 Python 服务提供以下接口：
+
+```http
+GET  /cityflow/scenes/{sceneId}/roadnet
+POST /cityflow/simulations
+GET  /cityflow/simulations/{sid}/frame
+```
+
+Spring Boot 的配置入口位于：
+
+```text
+src/main/resources/application.yml
+```
+
+其中 `cityflow.base-url` 表示 Python 服务地址，默认是 `http://localhost:9000`。
+
+## 数据库初始化
+
+数据库迁移脚本位于：
+
+```text
+src/main/resources/db/migration/V1__init_core_tables.sql
+```
+
+当前已包含：
+
+- `cityflow_scene`
+- `cityflow_intersection`
+- `cityflow_road`
+- `cityflow_road_link`
+- `cityflow_phase`
+- `simulation_session`
+- `simulation_metric_snapshot`
+
+原则：高频车辆位置通过 WebSocket 实时推送，不逐帧全量入库；数据库只保存静态路网、会话记录和指标快照。
+
+## 编译验证
+
+```sh
+cd backend
+mvn compile
+```

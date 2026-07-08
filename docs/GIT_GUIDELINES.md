@@ -14,7 +14,7 @@
 - `main` 只放稳定、可演示、可交付版本。
 - 尽量通过 PR 合并，不直接 push `main` / `dev`。
 - 一个分支只做一件事，一个提交只表达一类变更。
-- 改接口要同步 `docs/API_GUIDELINES.md`。
+- 改接口要同步 `backend/docs/API_GUIDELINES.md`。
 - `.env`、密钥、令牌、模型权重、大文件不要提交。
 
 ---
@@ -317,7 +317,7 @@ Visual Studio：
 - 是否只包含本次任务相关文件。
 - 是否误提交 `.env`、密钥、日志、构建产物、大文件。
 - 行为变化是否补测试或说明验证方式。
-- 接口变更是否同步 `docs/API_GUIDELINES.md`。
+- 接口变更是否同步 `backend/docs/API_GUIDELINES.md`。
 
 ### 6.2 提交本次改动
 
