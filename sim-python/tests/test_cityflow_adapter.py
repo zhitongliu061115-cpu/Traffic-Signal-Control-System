@@ -1,7 +1,9 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from app.cityflow_adapter import CityFlowAdapter
 from app.config import DATA_DIR
+from app.errors import ApiError
 
 
 class CityFlowAdapterTest(unittest.TestCase):
@@ -22,11 +24,61 @@ class CityFlowAdapterTest(unittest.TestCase):
         frame = adapter.next_frame(session["sid"])
 
         self.assertEqual("created", session["status"])
+        self.assertEqual("mock", session["engineMode"])
+        self.assertEqual(1, frame["seq"])
+        self.assertEqual(1.0, frame["simTime"])
+        self.assertEqual("mock", frame["engineMode"])
         self.assertIn("vehicles", frame)
         self.assertIn("roads", frame)
         self.assertIn("intersections", frame)
         self.assertIn("signals", frame)
         self.assertIn("metrics", frame)
+
+    def test_health_exposes_engine_mode_and_scenes(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        health = adapter.health()
+
+        self.assertEqual("UP", health["status"])
+        self.assertEqual("sim-python", health["service"])
+        self.assertEqual("mock", health["engineMode"])
+        self.assertIn("jinan_3x4", health["sceneIds"])
+
+    def test_unknown_scene_returns_standard_error(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+
+        with self.assertRaises(ApiError) as context:
+            adapter.get_roadnet("missing_scene")
+
+        self.assertEqual(404, context.exception.status)
+        self.assertEqual("SCENE_NOT_FOUND", context.exception.code)
+
+    def test_unknown_session_returns_standard_error(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+
+        with self.assertRaises(ApiError) as context:
+            adapter.next_frame("missing_sid")
+
+        self.assertEqual(404, context.exception.status)
+        self.assertEqual("SESSION_NOT_FOUND", context.exception.code)
+
+    def test_invalid_speed_is_rejected(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+
+        with self.assertRaises(ApiError) as context:
+            adapter.create_simulation("jinan_3x4", 0)
+
+        self.assertEqual(400, context.exception.status)
+        self.assertEqual("INVALID_REQUEST", context.exception.code)
+
+    def test_same_session_frame_sequence_is_thread_safe(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        session = adapter.create_simulation("jinan_3x4", 1.0)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            frames = list(executor.map(lambda _: adapter.next_frame(session["sid"]), range(8)))
+
+        self.assertEqual(list(range(1, 9)), sorted(frame["seq"] for frame in frames))
+        self.assertEqual(8.0, max(frame["simTime"] for frame in frames))
 
 
 if __name__ == "__main__":

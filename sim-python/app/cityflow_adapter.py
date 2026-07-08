@@ -3,9 +3,11 @@ import math
 import uuid
 from pathlib import Path
 
-from app.config import DEFAULT_FRAME_STEP_SECONDS, DEFAULT_SCENE_ID, DEFAULT_VISIBLE_VEHICLE_LIMIT
+from app.config import DEFAULT_FRAME_STEP_SECONDS, DEFAULT_VISIBLE_VEHICLE_LIMIT, ENGINE_MODE, SERVICE_VERSION
+from app.errors import ApiError
 from app.models import JsonDict, SimulationSession
 from app.roadnet_parser import PHASE_CODES, RoadnetParser
+from app.scene_registry import SceneRegistry
 
 
 class CityFlowAdapter:
@@ -18,11 +20,24 @@ class CityFlowAdapter:
 
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
+        self.engine_mode = self._resolve_engine_mode(ENGINE_MODE)
+        self.scene_registry = SceneRegistry(data_dir)
         self.sessions: dict[str, SimulationSession] = {}
         self.parsers: dict[str, RoadnetParser] = {}
         self.flows: dict[str, list[JsonDict]] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
-        self._load_scene(DEFAULT_SCENE_ID)
+        for scene_id in self.scene_registry.list_scene_ids():
+            self._load_scene(scene_id)
+
+    def health(self) -> JsonDict:
+        return {
+            "status": "UP",
+            "service": "sim-python",
+            "version": SERVICE_VERSION,
+            "engineMode": self.engine_mode,
+            "sceneIds": self.scene_registry.list_scene_ids(),
+            "activeSessions": len(self.sessions),
+        }
 
     def get_roadnet(self, scene_id: str) -> JsonDict:
         return self._parser(scene_id).to_response(scene_id)
@@ -30,58 +45,110 @@ class CityFlowAdapter:
     def create_simulation(self, scene_id: str, speed: float | None = None) -> JsonDict:
         self._load_scene(scene_id)
         sid = f"run_{uuid.uuid4().hex[:8]}"
-        session = SimulationSession(sid=sid, scene_id=scene_id, speed=float(speed or 1.0))
+        normalized_speed = self._normalize_speed(speed)
+        session = SimulationSession(
+            sid=sid,
+            scene_id=scene_id,
+            speed=normalized_speed,
+            engine_mode=self.engine_mode,
+        )
         self.sessions[sid] = session
-        return {"sid": sid, "sceneId": scene_id, "status": "created"}
+        return {
+            "sid": sid,
+            "sceneId": scene_id,
+            "status": "created",
+            "engineMode": self.engine_mode,
+        }
 
     def next_frame(self, sid: str) -> JsonDict:
         if sid not in self.sessions:
-            raise KeyError(f"simulation session not found: {sid}")
+            raise ApiError(
+                status=404,
+                code="SESSION_NOT_FOUND",
+                message=f"simulation session not found: {sid}",
+                retryable=False,
+            )
 
         session = self.sessions[sid]
-        session.seq += 1
-        session.sim_time += DEFAULT_FRAME_STEP_SECONDS * session.speed
+        with session.lock:
+            session.seq += 1
+            session.sim_time += DEFAULT_FRAME_STEP_SECONDS * session.speed
 
-        flows = self.flows[session.scene_id]
-        road_by_id = self.road_index[session.scene_id]
-        active_flows = self._active_flows(flows, session.sim_time)
-        vehicles = [
-            self._vehicle_state(index, flow, session.sim_time, road_by_id)
-            for index, flow in active_flows[:DEFAULT_VISIBLE_VEHICLE_LIMIT]
-        ]
-        roads = self._road_states(vehicles, road_by_id)
-        intersections = self._intersection_states(session.scene_id, roads)
-        signals = self._signal_states(session.scene_id, session.sim_time)
-        metrics = self._metrics(vehicles, roads, flows, session.sim_time)
+            flows = self.flows[session.scene_id]
+            road_by_id = self.road_index[session.scene_id]
+            active_flows = self._active_flows(flows, session.sim_time)
+            vehicles = [
+                self._vehicle_state(index, flow, session.sim_time, road_by_id)
+                for index, flow in active_flows[:DEFAULT_VISIBLE_VEHICLE_LIMIT]
+            ]
+            roads = self._road_states(vehicles, road_by_id)
+            intersections = self._intersection_states(session.scene_id, roads)
+            signals = self._signal_states(session.scene_id, session.sim_time)
+            metrics = self._metrics(vehicles, roads, flows, session.sim_time)
 
-        return {
-            "vehicles": vehicles,
-            "roads": roads,
-            "intersections": intersections,
-            "signals": signals,
-            "metrics": metrics,
-        }
+            return {
+                "sid": session.sid,
+                "sceneId": session.scene_id,
+                "seq": session.seq,
+                "simTime": round(session.sim_time, 3),
+                "engineMode": session.engine_mode,
+                "vehicles": vehicles,
+                "roads": roads,
+                "intersections": intersections,
+                "signals": signals,
+                "metrics": metrics,
+            }
 
     def _load_scene(self, scene_id: str) -> None:
-        scene_dir = self.data_dir / scene_id
-        roadnet_path = scene_dir / "roadnet_3_4.json"
-        flow_path = scene_dir / "flow_3_4_jinan_real.json"
-        if not roadnet_path.exists():
-            raise FileNotFoundError(f"roadnet file not found for scene {scene_id}: {roadnet_path}")
-        if not flow_path.exists():
-            raise FileNotFoundError(f"flow file not found for scene {scene_id}: {flow_path}")
+        scene = self.scene_registry.get(scene_id)
 
         if scene_id not in self.parsers:
-            parser = RoadnetParser(roadnet_path)
+            parser = RoadnetParser(scene.roadnet_file)
             self.parsers[scene_id] = parser
             self.road_index[scene_id] = parser.road_by_id()
         if scene_id not in self.flows:
-            with flow_path.open("r", encoding="utf-8") as file:
+            with scene.flow_file.open("r", encoding="utf-8") as file:
                 self.flows[scene_id] = json.load(file)
 
     def _parser(self, scene_id: str) -> RoadnetParser:
         self._load_scene(scene_id)
         return self.parsers[scene_id]
+
+    def _resolve_engine_mode(self, mode: str) -> str:
+        if mode == "mock":
+            return "mock"
+        if mode == "cityflow":
+            raise ApiError(
+                status=501,
+                code="CITYFLOW_ENGINE_NOT_CONFIGURED",
+                message="real CityFlow engine mode is reserved but not configured yet",
+                retryable=False,
+            )
+        raise ApiError(
+            status=500,
+            code="ENGINE_MODE_INVALID",
+            message=f"unsupported SIM_ENGINE_MODE: {mode}",
+            retryable=False,
+        )
+
+    def _normalize_speed(self, speed: float | None) -> float:
+        try:
+            value = float(speed if speed is not None else 1.0)
+        except (TypeError, ValueError) as ex:
+            raise ApiError(
+                status=400,
+                code="INVALID_REQUEST",
+                message="speed must be a number",
+                retryable=False,
+            ) from ex
+        if value <= 0:
+            raise ApiError(
+                status=400,
+                code="INVALID_REQUEST",
+                message="speed must be greater than 0",
+                retryable=False,
+            )
+        return value
 
     def _active_flows(self, flows: list[JsonDict], sim_time: float) -> list[tuple[int, JsonDict]]:
         active = []
