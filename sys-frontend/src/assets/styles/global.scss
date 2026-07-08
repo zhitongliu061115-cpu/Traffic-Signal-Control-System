@@ -1,0 +1,1579 @@
+// ================================================================
+// AI 自适应信号控制与应急绿波数字孪生系统 — 全局样式
+// 基于 buildingEnergy 老项目 dashboard 样式体系迁移
+// ================================================================
+
+// ================================================================
+// 1. 设计令牌 (Design Tokens)
+// ================================================================
+$color-bg-deep: #020817;
+$color-bg-mid: #061829;
+$color-bg-panel: #0a2540;
+$color-bg-panel-soft: rgba(10, 37, 64, 0.55);
+
+$color-primary: #00d4ff;
+$color-primary-dim: #0088b3;
+$color-primary-soft: rgba(0, 212, 255, 0.15);
+$color-primary-glow: rgba(0, 212, 255, 0.5);
+
+$color-amber: #ffb800;
+$color-emerald: #22d3a0;
+$color-rose: #ff4d6d;
+$color-violet: #7c5cff;
+$color-cyan-bright: #7af7ff;
+$color-blue: #3a8fff;
+$color-pink: #ff4d8d;
+
+$color-text-primary: #e8f4ff;
+$color-text-secondary: #8da8c5;
+$color-text-muted: #5a7595;
+
+$color-border-strong: #1e3a5f;
+$color-border-soft: rgba(0, 212, 255, 0.2);
+$color-border-dim: rgba(0, 212, 255, 0.08);
+
+$chart-series: ($color-primary, $color-amber, $color-emerald, $color-violet, #ff6b9b);
+
+// 字体族
+$font-cn: 'AlimamaShuHeiTi', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+$font-title: 'DOUYUFont', 'AlimamaShuHeiTi', 'PingFang SC', sans-serif;
+$font-num: 'Rajdhani', 'DINPro', 'AlimamaShuHeiTi', sans-serif;
+$font-num-heavy: 'DINPro', 'Rajdhani', 'AlimamaShuHeiTi', sans-serif;
+
+// 资源路径
+$asset-bg-video: '../images/bg/bg-video.mp4';
+$asset-bg-fallback: '../images/bg/bg-fallback.webp';
+$asset-bg-pattern: '../images/bg/bg-pattern.gif';
+$asset-bg-texture: '../images/bg/bg-texture.webp';
+
+$asset-frame-large: '../images/frames/frame-large.webp';
+$asset-frame-medium: '../images/frames/frame-medium.webp';
+$asset-frame-small: '../images/frames/frame-small.webp';
+$asset-frame-kpi: '../images/frames/frame-kpi.webp';
+
+$asset-corner: '../images/corners/corner-decor.webp';
+$asset-title: '../images/title.png';
+
+// ================================================================
+// 2. 字体定义
+// ================================================================
+@font-face {
+  font-family: 'AlimamaShuHeiTi';
+  src: url('../fonts/AlimamaShuHeiTi.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DOUYUFont';
+  src: url('../fonts/DOUYUFont.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rajdhani';
+  src: url('../fonts/Rajdhani.ttf') format('truetype');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DINPro';
+  src: url('../fonts/DINPro-Bold.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+// ================================================================
+// 3. CSS Reset & 全局基础
+// ================================================================
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: $color-bg-deep;
+  color: $color-text-primary;
+  font-family: $font-cn;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+// 滚动条样式（暗色科技风）
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.35);
+  border-radius: 2px;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.6);
+  }
+}
+
+// ================================================================
+// 4. 大屏整体布局
+// ================================================================
+
+// 全屏视频背景
+.video-bg {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background-color: $color-bg-deep;
+
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.8;
+  }
+}
+
+.video-bg-overlay {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(0, 212, 255, 0.18) 0%, transparent 55%),
+    radial-gradient(100% 70% at 50% 100%, rgba(10, 37, 64, 0.48) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(0, 8, 18, 0.34) 0%, rgba(0, 8, 18, 0.48) 100%);
+}
+
+// 氛围光效果
+.cockpit-atmosphere {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, rgba(0, 245, 255, 0.05) 0%, transparent 62%),
+    radial-gradient(ellipse at 20% 20%, rgba(0, 245, 255, 0.06), transparent 46%),
+    radial-gradient(ellipse at 80% 80%, rgba(255, 179, 0, 0.03), transparent 46%),
+    radial-gradient(ellipse at 120% 0%, rgba(3, 7, 18, 0.54), transparent 50%),
+    radial-gradient(ellipse at -20% 100%, rgba(3, 7, 18, 0.54), transparent 50%);
+  mix-blend-mode: screen;
+}
+
+// 主仪表盘布局
+.dashboard-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+// 顶部标题栏
+.dashboard-topbar {
+  position: relative;
+  z-index: 10;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 24px 8px;
+  // 标题栏背景渐变
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, rgba(10, 37, 64, 0.9) 0%, rgba(4, 21, 39, 0.7) 70%, transparent 100%);
+    border-bottom: 1px solid rgba(0, 212, 255, 0.28);
+    box-shadow: 0 4px 24px rgba(0, 212, 255, 0.1);
+  }
+
+  .topbar-content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .topbar-title {
+    font-family: $font-title;
+    font-size: clamp(28px, 2.5vw, 38px);
+    font-weight: 700;
+    color: $color-text-primary;
+    text-shadow: 0 0 20px rgba(0, 212, 255, 0.6), 0 0 40px rgba(0, 212, 255, 0.3);
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+
+  .topbar-time {
+    font-family: $font-num-heavy;
+    font-size: 14px;
+    color: $color-text-secondary;
+    letter-spacing: 0.08em;
+  }
+}
+
+// 主内容区 (左-中-右 三栏布局)
+.dashboard-main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 24fr) minmax(0, 52fr) minmax(0, 24fr);
+  grid-template-rows: 1fr auto;
+  gap: 12px;
+  padding: 8px 16px 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+// 左侧列
+.dashboard-col-left {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+// 中央列
+.dashboard-col-center {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+// 右侧列
+.dashboard-col-right {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+// 底部图表区
+.dashboard-bottom {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+// ================================================================
+// 5. HUD 卡片系统 (BevelCard)
+// ================================================================
+
+.hud-card {
+  --hud-cut: 12px;
+  --hud-border: rgba(0, 212, 255, 0.58);
+  --hud-border-soft: rgba(122, 247, 255, 0.2);
+  --hud-fill: rgba(5, 19, 35, 0.68);
+
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  clip-path: polygon(
+    var(--hud-cut) 0,
+    calc(100% - var(--hud-cut)) 0,
+    100% var(--hud-cut),
+    100% calc(100% - var(--hud-cut)),
+    calc(100% - var(--hud-cut)) 100%,
+    var(--hud-cut) 100%,
+    0 calc(100% - var(--hud-cut)),
+    0 var(--hud-cut)
+  );
+  background:
+    linear-gradient(135deg, rgba(122, 247, 255, 0.1) 0 1px, transparent 1px 42%),
+    radial-gradient(circle at 18% 0%, rgba(0, 212, 255, 0.16), transparent 34%),
+    radial-gradient(circle at 100% 100%, rgba(58, 143, 255, 0.12), transparent 38%),
+    linear-gradient(180deg, rgba(10, 37, 64, 0.54), rgba(2, 8, 23, 0.7));
+  box-shadow:
+    inset 0 0 22px rgba(0, 212, 255, 0.08),
+    inset 0 1px 0 rgba(221, 251, 255, 0.1),
+    0 0 22px rgba(0, 212, 255, 0.16);
+
+  // 边框装饰
+  &::before {
+    content: '';
+    position: absolute;
+    z-index: -2;
+    inset: 0;
+    pointer-events: none;
+    clip-path: inherit;
+    background:
+      linear-gradient(90deg, transparent 0 10px, var(--hud-border) 10px calc(100% - 10px), transparent calc(100% - 10px)),
+      linear-gradient(90deg, transparent 0 10px, var(--hud-border) 10px calc(100% - 10px), transparent calc(100% - 10px)),
+      linear-gradient(180deg, transparent 0 10px, var(--hud-border) 10px calc(100% - 10px), transparent calc(100% - 10px)),
+      linear-gradient(180deg, transparent 0 10px, var(--hud-border) 10px calc(100% - 10px), transparent calc(100% - 10px));
+    background-position:
+      0 0,
+      0 100%,
+      0 0,
+      100% 0;
+    background-repeat: no-repeat;
+    background-size:
+      100% 1.8px,
+      100% 1.8px,
+      1.8px 100%,
+      1.8px 100%;
+    filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.5));
+  }
+
+  // 内边框
+  &::after {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: 3px;
+    pointer-events: none;
+    border: 1px solid var(--hud-border-soft);
+    background:
+      linear-gradient(90deg, rgba(0, 212, 255, 0.16), transparent 22%, transparent 78%, rgba(0, 212, 255, 0.13)),
+      repeating-linear-gradient(135deg, rgba(122, 247, 255, 0.045) 0 1px, transparent 1px 14px);
+    opacity: 0.86;
+  }
+
+  // KPI 变体
+  &.hud-card--kpi {
+    --hud-cut: 10px;
+    background:
+      radial-gradient(circle at 16% 50%, rgba(0, 212, 255, 0.18), transparent 26%),
+      linear-gradient(90deg, rgba(4, 21, 39, 0.82), rgba(7, 32, 57, 0.54) 52%, rgba(3, 14, 26, 0.82));
+  }
+
+  // 内容区域
+  .hud-card__content {
+    position: relative;
+    z-index: 1;
+    padding: 14px 16px;
+  }
+}
+
+// 数据面板专用卡片
+.data-panel-card {
+  position: relative;
+  contain: layout paint style;
+  filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.2));
+}
+
+// ================================================================
+// 6. 四角装饰 (CornerPiece)
+// ================================================================
+
+.hud-corner {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  color: $color-cyan-bright;
+  filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.7));
+  z-index: 2;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    background: currentColor;
+  }
+
+  &::before {
+    width: 22px;
+    height: 2px;
+  }
+
+  &::after {
+    width: 2px;
+    height: 22px;
+  }
+
+  &--tl {
+    top: 6px;
+    left: 6px;
+    transform: rotate(0deg);
+  }
+
+  &--tr {
+    top: 6px;
+    right: 6px;
+    transform: rotate(90deg);
+  }
+
+  &--br {
+    bottom: 6px;
+    right: 6px;
+    transform: rotate(180deg);
+  }
+
+  &--bl {
+    bottom: 6px;
+    left: 6px;
+    transform: rotate(270deg);
+  }
+}
+
+// ================================================================
+// 7. 面板标题栏 (PanelHeader)
+// ================================================================
+
+.hud-panel-titlebar {
+  position: relative;
+  overflow: hidden;
+  min-height: 56px;
+  margin-bottom: 12px;
+
+  // 背景光条
+  &::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 6px;
+    height: 38px;
+    background:
+      linear-gradient(90deg, rgba(0, 212, 255, 0.28), rgba(58, 143, 255, 0.1) 48%, rgba(0, 212, 255, 0.06) 78%, transparent),
+      linear-gradient(180deg, rgba(8, 45, 78, 0.7), rgba(4, 20, 37, 0.12));
+    clip-path: polygon(10px 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(221, 251, 255, 0.16),
+      inset 0 -1px 0 rgba(0, 212, 255, 0.48),
+      0 0 16px rgba(0, 212, 255, 0.14);
+  }
+
+  // 底部发光线
+  &::after {
+    content: '';
+    position: absolute;
+    left: 14px;
+    right: 12px;
+    top: 43px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(122, 247, 255, 0.7), rgba(0, 212, 255, 0.08), transparent);
+  }
+
+  .titlebar-inner {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px 0;
+    z-index: 1;
+  }
+
+  .titlebar-mark {
+    position: relative;
+    display: inline-block;
+    width: 8px;
+    height: 34px;
+    flex: 0 0 auto;
+    transform: skewX(-18deg);
+    background: linear-gradient(180deg, $color-cyan-bright 0%, $color-primary 48%, #034d7a 100%);
+    box-shadow: 0 0 16px rgba(0, 212, 255, 0.9);
+  }
+
+  .titlebar-text {
+    font-family: $font-cn;
+    font-size: clamp(18px, 1.3vw, 24px);
+    font-weight: 900;
+    font-style: normal;
+    color: $color-cyan-bright;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    text-shadow: 0 0 14px rgba(0, 212, 255, 0.52);
+  }
+
+  .titlebar-deco {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    padding-right: 4px;
+
+    i {
+      display: block;
+      width: 6px;
+      height: 12px;
+      transform: skewX(-22deg);
+
+      &:nth-child(1) { background: rgba($color-cyan-bright, 0.7); }
+      &:nth-child(2) { background: rgba($color-primary, 0.45); }
+      &:nth-child(3) { background: rgba($color-primary-dim, 0.25); }
+    }
+  }
+}
+
+// ================================================================
+// 8. 分区标题栏 (SectionHeader)
+// ================================================================
+
+.hud-section-header {
+  position: relative;
+
+  .section-eyebrow {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: $color-text-muted;
+    font-family: $font-num;
+  }
+
+  .section-title {
+    margin-top: 8px;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: $color-text-primary;
+    font-family: $font-cn;
+
+    .section-title-accent {
+      display: inline-block;
+      width: 4px;
+      height: 16px;
+      margin-right: 8px;
+      vertical-align: middle;
+      background-color: $color-primary;
+    }
+  }
+
+  .section-desc {
+    margin-top: 8px;
+    max-width: 560px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: $color-text-secondary;
+    font-family: $font-cn;
+  }
+}
+
+// 标题栏底部分割线装饰
+.hud-title-rail {
+  position: relative;
+  overflow: hidden;
+  max-width: 280px;
+  background:
+    linear-gradient(90deg, rgba(0, 212, 255, 0.82), rgba(122, 247, 255, 0.35) 34%, transparent 80%),
+    linear-gradient(180deg, transparent 0 42%, rgba(0, 212, 255, 0.32) 42% 58%, transparent 58%);
+
+  &::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 54px;
+    height: 100%;
+    background: repeating-linear-gradient(110deg, rgba(122, 247, 255, 0.72) 0 3px, transparent 3px 9px);
+  }
+}
+
+// ================================================================
+// 9. KPI 指标卡片
+// ================================================================
+
+.kpi-tile {
+  min-height: 112px;
+  padding: 14px 16px;
+
+  .kpi-label {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: $color-text-muted;
+    font-family: $font-num;
+  }
+
+  .kpi-value-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .kpi-value {
+    font-size: 34px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-family: $font-num-heavy;
+
+    &--primary { color: $color-primary; }
+    &--amber { color: $color-amber; }
+    &--emerald { color: $color-emerald; }
+    &--rose { color: $color-rose; }
+  }
+
+  .kpi-unit {
+    font-size: 14px;
+    font-weight: 600;
+    color: $color-text-secondary;
+    font-family: $font-cn;
+  }
+
+  .kpi-detail {
+    margin-top: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: $color-text-secondary;
+    font-family: $font-cn;
+  }
+
+  .kpi-icon {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+  }
+}
+
+// KPI 交互效果
+.kpi-tile-interactive {
+  transition: transform 200ms ease, filter 200ms ease, box-shadow 200ms ease;
+
+  &:hover {
+    --hud-border: rgba(0, 212, 255, 0.92);
+    transform: translateY(-2px);
+    filter: drop-shadow(0 0 18px rgba(0, 212, 255, 0.38));
+  }
+}
+
+// ================================================================
+// 10. 标签徽章 (Pill)
+// ================================================================
+
+.hud-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: $font-cn;
+  background-color: rgba(10, 37, 64, 0.5);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+
+  &--primary {
+    color: $color-primary;
+    border: 1px solid rgba(0, 212, 255, 0.35);
+  }
+
+  &--amber {
+    color: $color-amber;
+    border: 1px solid rgba(255, 184, 0, 0.35);
+  }
+
+  &--emerald {
+    color: $color-emerald;
+    border: 1px solid rgba(34, 211, 160, 0.35);
+  }
+
+  &--rose {
+    color: $color-rose;
+    border: 1px solid rgba(255, 77, 109, 0.35);
+  }
+
+  &--neutral {
+    color: $color-text-secondary;
+    border: 1px solid $color-border-strong;
+  }
+}
+
+// ================================================================
+// 11. 图表容器
+// ================================================================
+
+.tech-chart-frame {
+  position: relative;
+  overflow: hidden;
+  clip-path: polygon(
+    5px 0, calc(100% - 5px) 0,
+    100% 5px, 100% calc(100% - 5px),
+    calc(100% - 5px) 100%, 5px 100%,
+    0 calc(100% - 5px), 0 5px
+  );
+  background: rgba(6, 15, 38, 0.2);
+  border: 1.5px solid rgba(0, 212, 255, 0.42);
+  box-shadow:
+    inset 0 0 0 1px rgba(122, 247, 255, 0.12),
+    0 0 18px rgba(0, 212, 255, 0.12);
+  padding: 12px;
+}
+
+// ================================================================
+// 12. 状态指示灯 & 实时同步
+// ================================================================
+
+.status-dot {
+  display: inline-block;
+  border-radius: 50%;
+
+  &--live {
+    width: 8px;
+    height: 8px;
+    background: $color-emerald;
+    box-shadow: 0 0 10px rgba(34, 211, 160, 0.9);
+    animation: status-dot-breathe 1s ease-in-out infinite;
+  }
+
+  &--warning {
+    width: 8px;
+    height: 8px;
+    background: $color-amber;
+    box-shadow: 0 0 10px rgba(255, 184, 0, 0.9);
+    animation: status-dot-breathe 1s ease-in-out infinite;
+  }
+
+  &--danger {
+    width: 8px;
+    height: 8px;
+    background: $color-rose;
+    box-shadow: 0 0 10px rgba(255, 77, 141, 0.9);
+    animation: status-dot-breathe 1s ease-in-out infinite;
+  }
+}
+
+// 同步雷达组件
+.sync-radar {
+  position: relative;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(122, 247, 255, 0.62);
+  border-radius: 50%;
+  box-shadow: 0 0 12px rgba(0, 212, 255, 0.28);
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: inherit;
+    background: conic-gradient(from 0deg, rgba(122, 247, 255, 0.88), transparent 42%);
+    animation: sync-radar-spin 1.2s linear infinite;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: $color-cyan-bright;
+    box-shadow: 0 0 9px rgba(122, 247, 255, 0.95);
+    transform: translate(-50%, -50%);
+  }
+}
+
+// 实时同步状态条
+.sync-widget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(0, 212, 255, 0.36);
+  background: rgba(4, 21, 39, 0.86);
+  padding: 6px 12px;
+  color: $color-cyan-bright;
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.18);
+  backdrop-filter: blur(10px);
+  clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+
+  .sync-label {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  .sync-time {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: rgba(122, 247, 255, 0.74);
+    margin-top: 2px;
+  }
+}
+
+// ================================================================
+// 13. 实时数字动画效果
+// ================================================================
+
+.live-number {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.08em;
+  white-space: nowrap;
+  transition: color 200ms ease, filter 200ms ease, text-shadow 200ms ease;
+
+  .live-number-unit {
+    margin-left: 0.12em;
+  }
+
+  &[data-flash='up'] {
+    animation: number-flash-cyan 560ms ease;
+  }
+
+  &[data-flash='down'] {
+    animation: number-flash-amber 560ms ease;
+  }
+
+  &[data-tone='cyan'] { color: $color-cyan-bright; }
+  &[data-tone='amber'] { color: $color-amber; }
+  &[data-tone='emerald'] { color: $color-emerald; }
+  &[data-tone='rose'] { color: $color-rose; }
+}
+
+.live-number-delta {
+  font-size: 0.42em;
+  font-weight: 800;
+  white-space: nowrap;
+  text-shadow: 0 0 10px rgba(0, 212, 255, 0.82);
+  animation: live-delta-pop 1s ease-out forwards;
+
+  &[data-tone='up'] {
+    color: $color-cyan-bright;
+    text-shadow: 0 0 10px rgba(0, 212, 255, 0.82);
+  }
+
+  &[data-tone='down'] {
+    color: $color-amber;
+    text-shadow: 0 0 10px rgba(255, 184, 0, 0.78);
+  }
+}
+
+// KPI 呼吸光效
+.kpi-glow {
+  animation: kpi-breathe 3s ease-in-out infinite;
+}
+
+// 数字解码动画
+.kpi-decode {
+  animation: char-decode 200ms steps(6) forwards;
+  font-family: 'Courier New', monospace;
+}
+
+// ================================================================
+// 14. 图表交互状态
+// ================================================================
+
+// 图表交互通用过渡
+.chart-interactive {
+  transition:
+    opacity 200ms ease,
+    filter 200ms ease,
+    transform 200ms ease,
+    border-color 200ms ease,
+    background-color 200ms ease,
+    box-shadow 200ms ease;
+
+  &:hover {
+    border-color: rgba(0, 212, 255, 0.72);
+    background-color: rgba(0, 212, 255, 0.09);
+    box-shadow: 0 0 16px rgba(0, 212, 255, 0.18);
+  }
+}
+
+// 数据日期卡片
+.data-date-card {
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  background: rgba(0, 212, 255, 0.06);
+  transition:
+    border-color 200ms ease,
+    background-color 200ms ease,
+    box-shadow 200ms ease;
+
+  &:hover,
+  &[data-linked='true'] {
+    border-color: rgba(0, 212, 255, 0.7);
+    background-color: rgba(0, 212, 255, 0.1);
+    box-shadow: inset 0 0 18px rgba(0, 212, 255, 0.12);
+  }
+
+  &[data-current='true'] {
+    animation: current-period-card-pulse 2s ease-in-out infinite;
+  }
+}
+
+// ================================================================
+// 15. 健康评分仪表盘 (Health Gauge)
+// ================================================================
+
+.health-gauge {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 136px;
+  height: 136px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  box-shadow: 0 0 32px rgba(0, 212, 255, 0.2);
+  transition: filter 200ms ease, transform 200ms ease, box-shadow 200ms ease;
+
+  &:hover {
+    filter: brightness(1.18);
+    transform: translateY(-1px);
+    box-shadow: 0 0 36px rgba(0, 212, 255, 0.36), inset 0 0 18px rgba(0, 212, 255, 0.12);
+  }
+
+  .gauge-inner {
+    position: absolute;
+    inset: 12px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 212, 255, 0.1);
+    background: rgba(6, 24, 41, 0.85);
+  }
+
+  .gauge-value {
+    position: relative;
+    font-size: 48px;
+    font-weight: 700;
+    color: $color-cyan-bright;
+    font-family: $font-num-heavy;
+    z-index: 2;
+  }
+
+  .gauge-orbit {
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0 82%, rgba(122, 247, 255, 0.95) 88%, transparent 94%);
+    filter: drop-shadow(0 0 9px rgba(0, 212, 255, 0.8));
+    mask: radial-gradient(circle, transparent 0 67%, #000 69% 72%, transparent 74%);
+    animation: health-orbit-spin 3s linear infinite;
+  }
+}
+
+.health-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(0, 212, 255, 0.07);
+
+  .health-bar-fill {
+    height: 100%;
+    border-radius: inherit;
+    transition: width 700ms ease, filter 200ms ease;
+    position: relative;
+    overflow: hidden;
+
+    &::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.42), transparent);
+      transform: translateX(-110%);
+      animation: bar-flow-light 2s linear infinite;
+    }
+  }
+}
+
+// ================================================================
+// 16. Toast 通知
+// ================================================================
+
+.hud-toast {
+  position: relative;
+  overflow: hidden;
+  padding: 11px 13px 12px 14px;
+  color: $color-text-primary;
+  background: rgba(8, 20, 40, 0.92);
+  border: 1px solid rgba(0, 212, 255, 0.56);
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
+  backdrop-filter: blur(10px);
+  animation: toast-life 3.2s ease forwards;
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: $color-primary;
+    box-shadow: 0 0 12px rgba(0, 212, 255, 0.7);
+  }
+
+  &[data-tone='rose'] {
+    border-color: rgba(255, 77, 141, 0.68);
+    box-shadow: 0 0 22px rgba(255, 77, 141, 0.22);
+
+    &::before {
+      background: $color-rose;
+      box-shadow: 0 0 12px rgba(255, 77, 141, 0.78);
+    }
+  }
+
+  &[data-tone='emerald'] {
+    &::before {
+      background: $color-emerald;
+      box-shadow: 0 0 12px rgba(34, 211, 160, 0.76);
+    }
+  }
+
+  .toast-title {
+    font-size: 14px;
+    font-weight: 900;
+    color: $color-cyan-bright;
+  }
+
+  .toast-body {
+    margin-top: 4px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: rgba(224, 240, 255, 0.82);
+  }
+}
+
+// ================================================================
+// 17. 赛博朋克按钮 (Cyber Button)
+// ================================================================
+
+.cyber-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 20px;
+  background: transparent;
+  border: 1px solid $color-primary;
+  color: $color-primary;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  clip-path: polygon(
+    4px 0, calc(100% - 4px) 0,
+    100% 2px, 100% calc(100% - 2px),
+    calc(100% - 4px) 100%, 4px 100%,
+    0 calc(100% - 2px), 0 2px
+  );
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+
+  &:hover {
+    background: rgba(0, 245, 255, 0.1);
+    box-shadow: 0 0 20px rgba(0, 245, 255, 0.3), inset 0 0 12px rgba(0, 245, 255, 0.08);
+  }
+
+  &:hover::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 245, 255, 0.3);
+    animation: glitch-flash 50ms ease-out;
+    pointer-events: none;
+  }
+
+  &:active::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 2px;
+    background: $color-primary;
+    border-radius: 50%;
+    box-shadow: 0 0 8px 2px $color-primary, 0 0 20px 6px rgba(0, 245, 255, 0.4);
+    animation: photon-burst 0.4s ease-out forwards;
+  }
+}
+
+// 赛博输入框
+.cyber-input {
+  background: rgba(6, 15, 38, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.8);
+  clip-path: polygon(
+    5px 0, calc(100% - 5px) 0,
+    100% 3px, 100% calc(100% - 3px),
+    calc(100% - 5px) 100%, 5px 100%,
+    0 calc(100% - 3px), 0 3px
+  );
+  padding: 7px 12px;
+  font-size: 12px;
+  outline: none;
+  transition: all 0.2s ease;
+
+  &:focus {
+    border-color: rgba(0, 245, 255, 0.4);
+    box-shadow: 0 0 12px rgba(0, 245, 255, 0.08), inset 0 0 8px rgba(0, 245, 255, 0.03);
+  }
+
+  &::placeholder {
+    color: rgba(255, 255, 255, 0.2);
+  }
+}
+
+// ================================================================
+// 18. 数据表格&列表 (暗色科技风)
+// ================================================================
+
+.tech-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    font-family: $font-cn;
+    font-weight: 600;
+    color: $color-text-muted;
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid $color-border-soft;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+
+  td {
+    padding: 8px;
+    border-bottom: 1px solid $color-border-dim;
+    color: $color-text-secondary;
+    transition: background-color 200ms ease;
+  }
+
+  tbody tr {
+    &:hover {
+      background: rgba(0, 212, 255, 0.05);
+    }
+
+    &[data-highlight='true'] {
+      background: rgba(0, 212, 255, 0.08);
+      animation: detail-row-slide-in 300ms ease;
+    }
+  }
+}
+
+// 状态徽章
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: $font-cn;
+
+  &--normal { color: $color-emerald; border: 1px solid rgba(34, 211, 160, 0.4); background: rgba(34, 211, 160, 0.08); }
+  &--warning { color: $color-rose; border: 1px solid rgba(255, 77, 109, 0.4); background: rgba(255, 77, 109, 0.08); }
+  &--maintenance { color: $color-amber; border: 1px solid rgba(255, 184, 0, 0.4); background: rgba(255, 184, 0, 0.08); }
+  &--offline { color: $color-text-muted; border: 1px solid rgba(141, 168, 197, 0.4); background: rgba(141, 168, 197, 0.08); }
+}
+
+// ================================================================
+// 19. 地图/路网视图区
+// ================================================================
+
+.map-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 300px;
+  border: 1.5px solid rgba(0, 212, 255, 0.42);
+  background:
+    radial-gradient(ellipse at center, rgba(0, 212, 255, 0.06), transparent 70%),
+    rgba(6, 15, 38, 0.4);
+  box-shadow:
+    inset 0 0 40px rgba(0, 212, 255, 0.06),
+    0 0 24px rgba(0, 212, 255, 0.12);
+  overflow: hidden;
+}
+
+// ================================================================
+// 20. 信息面板/告警面板
+// ================================================================
+
+.alert-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-left: 3px solid transparent;
+  background: rgba(4, 21, 39, 0.5);
+  transition: background 200ms ease, border-color 200ms ease;
+  cursor: pointer;
+
+  &:hover {
+    background: rgba(0, 212, 255, 0.08);
+  }
+
+  &--high {
+    border-left-color: $color-rose;
+    background: rgba(255, 77, 109, 0.08);
+  }
+
+  &--medium {
+    border-left-color: $color-amber;
+    background: rgba(255, 184, 0, 0.06);
+  }
+
+  .alert-icon {
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .alert-content {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .alert-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: $color-text-primary;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .alert-location {
+    font-size: 11px;
+    color: $color-text-muted;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .alert-time {
+    font-size: 11px;
+    color: $color-text-muted;
+    margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+// ================================================================
+// 21. 实用工具类
+// ================================================================
+
+.text-primary { color: $color-text-primary; }
+.text-secondary { color: $color-text-secondary; }
+.text-muted { color: $color-text-muted; }
+.text-cyan { color: $color-cyan-bright; }
+.text-amber { color: $color-amber; }
+.text-emerald { color: $color-emerald; }
+.text-rose { color: $color-rose; }
+
+.font-cn { font-family: $font-cn; }
+.font-title { font-family: $font-title; }
+.font-num { font-family: $font-num; }
+.font-num-heavy { font-family: $font-num-heavy; }
+
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.flex-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// ================================================================
+// 22. 关键帧动画
+// ================================================================
+
+@keyframes status-dot-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes sync-radar-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes health-orbit-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes bar-flow-light {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(110%); }
+}
+
+@keyframes toast-life {
+  0% { opacity: 0; transform: translateX(18px); }
+  10%, 82% { opacity: 1; transform: translateX(0); }
+  100% { opacity: 0; transform: translateX(10px); }
+}
+
+@keyframes number-flash-cyan {
+  0% { text-shadow: 0 0 0 rgba(0, 212, 255, 0); }
+  35% { color: $color-cyan-bright; text-shadow: 0 0 16px rgba(0, 212, 255, 0.95); }
+  100% { text-shadow: 0 0 0 rgba(0, 212, 255, 0); }
+}
+
+@keyframes number-flash-amber {
+  0% { text-shadow: 0 0 0 rgba(255, 184, 0, 0); }
+  35% { color: $color-amber; text-shadow: 0 0 16px rgba(255, 184, 0, 0.9); }
+  100% { text-shadow: 0 0 0 rgba(255, 184, 0, 0); }
+}
+
+@keyframes live-delta-pop {
+  0% { opacity: 0; transform: translateY(4px) scale(0.82); }
+  18% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-10px) scale(0.94); }
+}
+
+@keyframes kpi-breathe {
+  0%, 100% { text-shadow: 0 0 4px rgba(0, 245, 255, 0.2), 0 0 12px rgba(0, 245, 255, 0.05); }
+  50% { text-shadow: 0 0 8px rgba(0, 245, 255, 0.45), 0 0 20px rgba(0, 245, 255, 0.12); }
+}
+
+@keyframes char-decode {
+  0% { opacity: 0; filter: blur(3px); transform: translateY(4px); }
+  40% { opacity: 0.6; filter: blur(1px); }
+  100% { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+@keyframes current-period-pulse {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 1; }
+}
+
+@keyframes current-period-card-pulse {
+  0%, 100% {
+    box-shadow: inset 0 0 18px rgba(0, 212, 255, 0.12), 0 0 0 rgba(0, 212, 255, 0);
+  }
+  50% {
+    box-shadow: inset 0 0 22px rgba(0, 212, 255, 0.18), 0 0 16px rgba(0, 212, 255, 0.28);
+  }
+}
+
+@keyframes glitch-flash {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes photon-burst {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(30); opacity: 0; }
+}
+
+@keyframes detail-row-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes chart-top-glow-breathe {
+  0%, 100% { opacity: 0.5; transform: scale(0.88); }
+  50% { opacity: 1; transform: scale(1.22); }
+}
+
+@keyframes scatter-warning-pulse {
+  0%, 100% { filter: drop-shadow(0 0 7px rgba(255, 77, 141, 0.5)); }
+  50% { filter: drop-shadow(0 0 16px rgba(255, 77, 141, 0.95)); }
+}
+
+@keyframes composition-core-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.2));
+    opacity: 0.82;
+    transform: scale(1);
+  }
+  50% {
+    filter: drop-shadow(0 0 18px rgba(122, 247, 255, 0.55));
+    opacity: 1;
+    transform: scale(1.045);
+  }
+}
+
+// ================================================================
+// 23. 无障碍 & 性能
+// ================================================================
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+// ================================================================
+// 24. Element Plus 覆盖（暗色大屏适配）
+// ================================================================
+
+// 覆盖 Element Plus 默认样式适配暗色大屏
+.dashboard-shell {
+  .el-select,
+  .el-input {
+    --el-fill-color-blank: rgba(6, 15, 38, 0.5);
+    --el-border-color: rgba(255, 255, 255, 0.08);
+    --el-text-color-regular: rgba(255, 255, 255, 0.8);
+    --el-border-color-hover: rgba(0, 245, 255, 0.4);
+  }
+
+  .el-button--primary {
+    --el-button-bg-color: rgba(0, 212, 255, 0.2);
+    --el-button-border-color: rgba(0, 212, 255, 0.5);
+    --el-button-hover-bg-color: rgba(0, 212, 255, 0.35);
+    --el-button-hover-border-color: rgba(0, 212, 255, 0.7);
+  }
+}
+
+// ================================================================
+// 25. 扫描线效果 (Scan Line)
+// ================================================================
+
+// 水平扫描线 — 用于路网视口 / 数字孪生区域
+.scan-line-h {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  pointer-events: none;
+  z-index: 1;
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.5), transparent);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.4);
+  animation: scan-line-h-move 3s linear infinite;
+}
+
+@keyframes scan-line-h-move {
+  0%   { top: 0%; opacity: 0; }
+  10%  { top: 0%; opacity: 0.8; }
+  90%  { top: 100%; opacity: 0.8; }
+  100% { top: 100%; opacity: 0; }
+}
+
+// ================================================================
+// 26. 数据流动粒子 & 光点装饰
+// ================================================================
+
+// 微光粒子 — 可附在卡片背景上
+.data-particle {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: $color-cyan-bright;
+  pointer-events: none;
+  box-shadow: 0 0 6px rgba(122, 247, 255, 0.8);
+  animation: particle-drift 6s ease-in-out infinite;
+}
+
+@keyframes particle-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.3; }
+  25%  { transform: translate(12px, -14px) scale(1.4); opacity: 0.8; }
+  50%  { transform: translate(-8px, -28px) scale(0.8); opacity: 0.4; }
+  75%  { transform: translate(16px, -8px) scale(1.2); opacity: 0.6; }
+}
+
+// ================================================================
+// 27. 科技感六边形网格背景（纯 CSS）
+// ================================================================
+
+.hex-bg-pattern {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(0, 212, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(60deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(-60deg, rgba(0, 212, 255, 0.03) 1px, transparent 1px);
+  background-size: 30px 17.32px, 30px 17.32px, 30px 17.32px, 30px 17.32px;
+  background-position: 0 0, 15px 8.66px, 0 0, 15px 8.66px;
+  mask: radial-gradient(ellipse at center, #000 20%, transparent 72%);
+}
+
+// ================================================================
+// 28. 数据高亮闪烁（重要指标变化）
+// ================================================================
+
+.data-flash {
+  animation: data-flash-burst 0.6s ease-out;
+}
+
+@keyframes data-flash-burst {
+  0%   { filter: brightness(2); text-shadow: 0 0 20px rgba(0, 229, 255, 0.9); }
+  100% { filter: brightness(1); text-shadow: 0 0 0 rgba(0, 229, 255, 0); }
+}
+
+// 数值跳动 — 用于 KPI 数字变化
+.value-pop {
+  animation: value-pop-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes value-pop-in {
+  0%   { transform: scale(0.85); opacity: 0.5; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+// ================================================================
+// 29. 科技感角标水印
+// ================================================================
+
+.tech-watermark {
+  position: absolute;
+  pointer-events: none;
+  font-family: $font-num;
+  font-size: 11px;
+  color: rgba(0, 212, 255, 0.1);
+  letter-spacing: 0.4em;
+  white-space: nowrap;
+  user-select: none;
+}
