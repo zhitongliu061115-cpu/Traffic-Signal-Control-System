@@ -61,7 +61,7 @@ public class SimulationService {
         // Spring Boot owns WebSocket delivery; Python only advances CityFlow and returns frame data.
         SimFrameData frameData = cityFlowClient.nextFrame(session.getSid());
         long seq = session.nextSequence();
-        session.setSimTime(seq);
+        session.setSimTime(frameData.simTime());
         WsMessage<SimFrameData> message = new WsMessage<>(
                 "1.0",
                 "sim.frame",

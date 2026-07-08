@@ -20,4 +20,4 @@ spring:
 cityflow:
   base-url: http://localhost:9000
   default-scene-id: jinan_3x4
-  frame-poll-interval-ms: 1000
+  frame-poll-interval-ms: 200

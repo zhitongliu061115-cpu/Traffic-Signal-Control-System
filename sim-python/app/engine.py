@@ -48,6 +48,7 @@ class RealCityFlowEngine(SimulationEngine):
         self.sessions: dict[str, CityFlowEngineSession] = {}
         self.parsers: dict[str, RoadnetParser] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
+        self.phase_indexes: dict[str, dict[str, list[int]]] = {}
 
     def active_session_count(self) -> int:
         return len(self.sessions)
@@ -101,6 +102,7 @@ class RealCityFlowEngine(SimulationEngine):
             sim_time = float(session.engine.get_current_time())
             parser = self.parsers[session.scene_id]
             road_by_id = self.road_index[session.scene_id]
+            self._advance_signal_phases(session, sim_time)
             vehicles = self._vehicle_states(session, road_by_id)
             roads = self._road_states(session, vehicles, road_by_id)
             intersections = self._intersection_states(session.scene_id, roads)
@@ -126,13 +128,17 @@ class RealCityFlowEngine(SimulationEngine):
         parser = RoadnetParser(scene.roadnet_file)
         self.parsers[scene.scene_id] = parser
         self.road_index[scene.scene_id] = parser.road_by_id()
+        phase_indexes: dict[str, list[int]] = {}
+        for phase in parser.to_response(scene.scene_id).get("phases", []):
+            phase_indexes.setdefault(phase["intersectionId"], []).append(int(phase["phaseIndex"]))
+        self.phase_indexes[scene.scene_id] = phase_indexes
 
     def _write_cityflow_config(self, scene: SceneDefinition) -> Path:
         scene_dir = scene.roadnet_file.parent.resolve()
         config_dir = Path(tempfile.mkdtemp(prefix=f"cityflow_{scene.scene_id}_"))
         config_path = config_dir / "config.json"
         payload = {
-            "interval": 1.0,
+            "interval": 0.2,
             "seed": 0,
             "dir": f"{scene_dir.as_posix()}/",
             "roadnetFile": scene.roadnet_file.name,
@@ -295,6 +301,20 @@ class RealCityFlowEngine(SimulationEngine):
                 "phaseCode": PHASE_CODES.get(phase_index),
             })
         return signals
+
+    def _advance_signal_phases(self, session: "CityFlowEngineSession", sim_time: float) -> None:
+        phase_indexes_by_intersection = self.phase_indexes.get(session.scene_id, {})
+        for intersection_id, phase_indexes in phase_indexes_by_intersection.items():
+            if not phase_indexes:
+                continue
+            phase_index = phase_indexes[int(sim_time // 10) % len(phase_indexes)]
+            session.current_phases[intersection_id] = phase_index
+            try:
+                session.engine.set_tl_phase(intersection_id, phase_index - 1)
+            except Exception:
+                # CityFlow 0.1 does not expose get_tl_phase; keep returning the
+                # session-recorded phase so visualization remains debuggable.
+                continue
 
     def _metrics(
             self,

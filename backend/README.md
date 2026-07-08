@@ -109,3 +109,12 @@ src/main/resources/db/migration/V1__init_core_tables.sql
 cd backend
 mvn compile
 ```
+
+## 本地启动
+
+```sh
+cd backend
+mvn spring-boot:run
+```
+
+注意：Windows 用户名包含中文时，也必须从 `backend` 目录启动 Maven。当前模块已通过 `.mvn/maven.config` 将 Maven 本地仓库和 Java 临时目录固定到模块内的 ASCII 路径，避免 Spring Boot Maven 插件生成的 classpath 出现用户目录转码问题。
