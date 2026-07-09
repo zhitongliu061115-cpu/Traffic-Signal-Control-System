@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -92,6 +93,7 @@ public class BailianAgentService {
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public BailianAgentService(
             @Value("${bailian.base-url}") String baseUrl,
             @Value("${bailian.app-id}") String appId,
