@@ -20,4 +20,6 @@ public interface CityFlowClient {
     ApplyControlActionsResponse applyControlActions(String sid, ApplyControlActionsRequest request);
 
     SimFrameData nextFrame(String sid);
+
+    java.util.Map<String, Object> dispatchEV(String sid, java.util.Map<String, Object> request);
 }
