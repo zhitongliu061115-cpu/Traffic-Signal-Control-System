@@ -20,7 +20,7 @@ const navItems = [
     key: 'analytics',
     label: '数据分析',
     to: '/data-analysis',
-    description: '能耗、人流、设备状态、风险分层与监测明细分析',
+    description: '通行量、排队、延误、控制策略与路口监测明细分析',
   },
 ] as const
 
@@ -301,9 +301,13 @@ onUnmounted(() => {
   color: #f0fbff;
   font-family: 'DOUYUFont', 'AlimamaShuHeiTi', 'Microsoft YaHei', sans-serif;
   font-size: 25px;
-  font-weight: 800;
+  font-weight: 400;
+  font-synthesis: none;
+  letter-spacing: 0.16em;
+  line-height: 1;
   text-align: center;
-  text-shadow: 0 0 8px rgba(122, 247, 255, 0.68), 0 0 22px rgba(0, 212, 255, 0.34);
+  text-shadow: 0 0 4px rgba(122, 247, 255, 0.46), 0 0 10px rgba(0, 212, 255, 0.22);
+  -webkit-font-smoothing: antialiased;
 }
 
 .data-header-status {
