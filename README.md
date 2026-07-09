@@ -62,6 +62,8 @@ mvn compile
 mvn spring-boot:run
 ```
 
+如果 Windows 用户名包含中文，必须从 `backend` 目录启动 Maven。`backend/.mvn/maven.config` 已将 Maven 本地仓库和临时目录固定到模块内的 ASCII 路径，避免 `spring-boot:run` 因中文用户目录转码导致依赖 classpath 失效。
+
 前端：
 
 ```sh

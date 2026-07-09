@@ -12,7 +12,11 @@ export const DEFAULT_ZOOM = 13
 export const DARK_STYLE_URL =
   'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 
-/** 备选样式（同样免 token，供降级） */
+/** ★ 当前使用：CartoDB dark-matter 暗色矢量样式（免 token） */
+export const ACTIVE_STYLE_URL =
+  'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
+
+/** 备选样式（无标签版 CartoDB，供降级） */
 export const FALLBACK_STYLE_URL =
   'https://basemaps.cartocdn.com/gl/dark-matter-nolabels-gl-style/style.json'
 

@@ -1,5 +1,7 @@
 package com.traffic.cityflow.client;
 
+import com.traffic.cityflow.dto.ApplyControlActionsRequest;
+import com.traffic.cityflow.dto.ApplyControlActionsResponse;
 import com.traffic.roadnet.dto.RoadnetResponse;
 import com.traffic.simulation.dto.CityFlowCreateSimulationRequest;
 import com.traffic.simulation.dto.CityFlowCreateSimulationResponse;
@@ -34,6 +36,15 @@ public class HttpCityFlowClient implements CityFlowClient {
                 .body(request)
                 .retrieve()
                 .body(CityFlowCreateSimulationResponse.class);
+    }
+
+    @Override
+    public ApplyControlActionsResponse applyControlActions(String sid, ApplyControlActionsRequest request) {
+        return restClient.post()
+                .uri("/cityflow/simulations/{sid}/actions", sid)
+                .body(request)
+                .retrieve()
+                .body(ApplyControlActionsResponse.class);
     }
 
     @Override

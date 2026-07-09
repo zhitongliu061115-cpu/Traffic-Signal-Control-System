@@ -43,6 +43,8 @@ CityFlow roadnet_3_4.json
 CityFlow Engine step
   -> Python 计算车辆位置、道路状态、路口状态、信号相位和指标
   -> Spring Boot 定时轮询 frame
+  -> Spring Boot StrategyDispatchService 生成统一 ControlDecision
+  -> Spring Boot CityFlowClient 下发 actions 到 Python CityFlow
   -> Spring Boot 组装 CFRP sim.frame
   -> WebSocket 推送前端
   -> 前端根据车辆 id 做动画插值
@@ -68,6 +70,7 @@ CityFlow Engine step
 | `/cityflow/scenes/{sceneId}/roadnet` | GET | 获取 Python 解析后的路网 |
 | `/cityflow/simulations` | POST | 创建 CityFlow 仿真会话 |
 | `/cityflow/simulations/{sid}/frame` | GET | 推进一步并返回当前帧 |
+| `/cityflow/simulations/{sid}/actions` | POST | 下发统一 `ControlDecision` 并设置 CityFlow 信号相位 |
 
 ## 6. 数据库设计原则
 
@@ -102,7 +105,36 @@ TrafficSignalController
 `-- RlController
 ```
 
-当前阶段策略包只保留结构，不接入仿真主链路。后续如果 RL 效果不稳定，可以将 Max-Pressure 作为工程 fallback，同时保留 RL 作为实验策略。
+当前统一入口：
+
+```text
+SimulationService
+  -> StrategyDispatchService
+  -> TrafficSignalControllerRegistry
+  -> TrafficSignalController.decide(ControlRequest)
+  -> ControlDecision
+  -> CityFlowClient.applyControlActions
+  -> Python set_tl_phase
+```
+
+创建仿真会话时可传入 `controllerType`，默认 `fixed-time`。当前允许 `fixed-time`、`max-pressure`、`traffic-r`，其中 `rl` 会作为兼容别名归一化为 `traffic-r`。
+
+`ControlDecision` 是所有策略的统一输出结构，必须至少包含：
+
+| 字段 | 含义 |
+|---|---|
+| `intersectionId` | 决策作用的路口 |
+| `controllerType` | 产生决策的策略类型 |
+| `phaseIndex` | 本项目协议中的相位编号，从 1 开始 |
+| `phaseCode` | 业务相位编码，如 `ETWT`、`NTST` |
+| `durationSec` | 建议保持时长 |
+| `confidence` | 模型或策略置信度，无置信度时可为 0 |
+| `reason` | 决策说明 |
+| `metadata` | fallback 状态、模型来源、调试信息 |
+
+当前 Spring Boot 已能通过统一入口生成策略决策，并通过 Python `/cityflow/simulations/{sid}/actions` 下发 `ControlDecision`。由于调度链路是先拉取当前 frame 再下发控制动作，前端通常会在下一帧看到新的信号相位效果。
+
+后续如果 RL 效果不稳定，可以将 Max-Pressure 作为工程 fallback，同时保留 RL / Traffic-R 作为主实验策略。
 
 ## 8. 风险和约束
 

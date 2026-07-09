@@ -3,7 +3,7 @@
 // ================================================================
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { MAP_CENTER, DEFAULT_ZOOM, DARK_STYLE_URL, FALLBACK_STYLE_URL } from './mapConfig'
+import { MAP_CENTER, DEFAULT_ZOOM, ACTIVE_STYLE_URL, FALLBACK_STYLE_URL } from './mapConfig'
 
 export interface MapInstance {
   map: maplibregl.Map
@@ -23,7 +23,7 @@ export function initMap(
 ): MapInstance {
   const map = new maplibregl.Map({
     container,
-    style: DARK_STYLE_URL,
+    style: ACTIVE_STYLE_URL,
     center: MAP_CENTER,
     zoom: DEFAULT_ZOOM,
     pitch: 45,

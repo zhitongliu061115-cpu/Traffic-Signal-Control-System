@@ -3,6 +3,7 @@ package com.traffic.simulation.dto;
 import java.util.List;
 
 public record SimFrameData(
+        double simTime,
         List<VehicleStateDto> vehicles,
         List<RoadStateDto> roads,
         List<IntersectionStateDto> intersections,
