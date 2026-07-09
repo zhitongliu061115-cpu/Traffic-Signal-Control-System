@@ -16,8 +16,8 @@ describe('DataAnalysis', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('路网大屏页面')
-    expect(wrapper.text()).toContain('数据分析页面')
+    expect(wrapper.text()).toContain('路网大屏')
+    expect(wrapper.text()).toContain('数据分析')
     expect(wrapper.text()).toContain('信号灯配时控制与应急通行信控系统')
     expect(wrapper.text()).toContain('运行健康评分')
     expect(wrapper.text()).toContain('每日能耗与人流走势')

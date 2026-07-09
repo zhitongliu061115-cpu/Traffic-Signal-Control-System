@@ -134,11 +134,12 @@ onUnmounted(() => {
       </div>
     </main>
 
-    <!-- ============ 底部：控制效果对比 + 智能体辅助决策 (27%) ============ -->
+    <!-- ============ 底部：控制效果对比 (27%) ============ -->
     <footer class="ts-footer">
       <CompareCharts />
-      <AiAssistant />
     </footer>
+
+    <AiAssistant />
   </div>
 </template>
 
@@ -168,12 +169,10 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-/* 底部区：约 30%，对比图表 60% / 智能体 40% */
+/* 底部区：约 30%，对比图表横向占满 */
 .ts-footer {
   flex: 30 1 0;
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  gap: 12px;
+  display: block;
   min-height: 0;
 }
 
@@ -198,6 +197,7 @@ onUnmounted(() => {
 /* 网格/弹性子项防溢出 */
 .ts-body > .ts-col,
 .ts-footer > :deep(*) {
+  height: 100%;
   min-width: 0;
 }
 </style>

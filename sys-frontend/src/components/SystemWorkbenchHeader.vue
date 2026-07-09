@@ -12,13 +12,13 @@ const SYSTEM_TITLE = '信号灯配时控制与应急通行信控系统'
 const navItems = [
   {
     key: 'network',
-    label: '路网大屏页面',
+    label: '路网大屏',
     to: '/',
     description: '城市路网、信号配时、拥堵态势与应急通行监控',
   },
   {
     key: 'analytics',
-    label: '数据分析页面',
+    label: '数据分析',
     to: '/data-analysis',
     description: '能耗、人流、设备状态、风险分层与监测明细分析',
   },
