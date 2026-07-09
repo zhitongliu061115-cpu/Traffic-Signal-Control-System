@@ -17,6 +17,7 @@ __pycache__/
 # Secrets and local config
 .env
 .env.*
+!.env.example
 *.key
 
 # Models, vector stores, and simulation output

@@ -5,7 +5,7 @@
 // ================================================================
 import { computed, nextTick, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ChatDotRound, Close, Promotion } from '@element-plus/icons-vue'
+import { ChatDotRound, Close, Promotion, Refresh } from '@element-plus/icons-vue'
 import { useTrafficStore } from '@/stores/traffic'
 
 const store = useTrafficStore()
@@ -52,15 +52,19 @@ const sessionId = ref<string | null>(null)
 const assistantStatusText = ref('百炼待连接')
 
 const messages = ref<ChatMessage[]>([
-  {
+  createWelcomeMessage(),
+])
+
+const quickAsks = ['当前路网状态', '哪个路口最拥堵？', '生成调度建议', '应急车辆怎么走？', '解释 Traffic-R1']
+
+function createWelcomeMessage(): ChatMessage {
+  return {
     id: msgId++,
     role: 'ai',
     text: '您好，我是城市交通信号调度辅助决策智能体。请询问路网状态、拥堵成因、信号调度建议或应急绿波方案；涉及控制动作时，我只给出建议与待确认方案。',
     time: nowTime(),
-  },
-])
-
-const quickAsks = ['当前路网状态', '哪个路口最拥堵？', '生成调度建议', '应急车辆怎么走？', '解释 Traffic-R1']
+  }
+}
 
 function openAssistant(): void {
   isOpen.value = true
@@ -77,6 +81,15 @@ function toggleAssistant(): void {
   } else {
     openAssistant()
   }
+}
+
+function startNewConversation(): void {
+  if (isThinking.value) return
+  sessionId.value = null
+  assistantStatusText.value = '百炼待连接'
+  input.value = ''
+  messages.value = [createWelcomeMessage()]
+  void nextTick(() => inputRef.value?.focus())
 }
 
 function buildTrafficContext(): Record<string, unknown> {
@@ -114,18 +127,30 @@ async function requestBailianAssistant(userInput: string): Promise<string> {
     }),
   })
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+  let payload: ApiResponse<AgentChatResponse> | null = null
+  try {
+    payload = (await response.json()) as ApiResponse<AgentChatResponse>
+  } catch {
+    payload = null
   }
 
-  const payload = (await response.json()) as ApiResponse<AgentChatResponse>
-  if (!payload.success || !payload.data?.reply) {
-    throw new Error(payload.message || '百炼响应为空')
+  if (!response.ok) {
+    throw new Error(payload?.message || `HTTP ${response.status}`)
+  }
+
+  if (!payload?.success || !payload.data?.reply) {
+    throw new Error(payload?.message || '百炼响应为空')
   }
 
   sessionId.value = payload.data.sessionId ?? sessionId.value
   assistantStatusText.value = payload.data.fallback ? '配置待完成' : '百炼在线'
   return payload.data.reply
+}
+
+function formatAssistantError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || '')
+  const fallback = message.trim() || '未知错误'
+  return fallback.length > 140 ? `${fallback.slice(0, 140)}...` : fallback
 }
 
 function localMatch(input_: string): string | null {
@@ -166,23 +191,26 @@ function localMatch(input_: string): string | null {
 }
 
 async function queryAssistant(userInput: string): Promise<string> {
+  let bailianError = ''
   try {
     return await requestBailianAssistant(userInput)
-  } catch {
+  } catch (error) {
+    bailianError = formatAssistantError(error)
     assistantStatusText.value = '本地兜底'
   }
 
+  const note = `注：百炼服务暂不可用（${bailianError}），已使用本地兜底分析。`
   const local = localMatch(userInput)
   if (local) {
-    return `${local}\n\n注：百炼服务暂不可用，已使用本地兜底分析。`
+    return `${local}\n\n${note}`
   }
 
   const storeReply = store.askAssistant(userInput)
   if (storeReply) {
-    return `${storeReply}\n\n注：百炼服务暂不可用，已使用本地兜底分析。`
+    return `${storeReply}\n\n${note}`
   }
 
-  return '暂时无法连接百炼智能体，且本地兜底规则未覆盖该问题。请检查后端服务、BAILIAN_API_KEY 配置和百炼应用 ID 后重试。'
+  return `暂时无法连接百炼智能体，且本地兜底规则未覆盖该问题。原因：${bailianError}。请检查后端服务、BAILIAN_API_KEY 配置和百炼应用 ID 后重试。`
 }
 
 async function handleSend(): Promise<void> {
@@ -268,9 +296,21 @@ function renderText(text: string): string {
             <div class="ai-panel-title__sub">{{ assistantStatusText }}</div>
           </div>
         </div>
-        <button class="ai-icon-btn" type="button" title="关闭" @click="closeAssistant">
-          <Close />
-        </button>
+        <div class="ai-panel-actions">
+          <button
+            class="ai-icon-btn ai-new-chat"
+            type="button"
+            title="开启新对话"
+            :disabled="isThinking"
+            @click="startNewConversation"
+          >
+            <Refresh />
+            <span>新对话</span>
+          </button>
+          <button class="ai-icon-btn" type="button" title="关闭" @click="closeAssistant">
+            <Close />
+          </button>
+        </div>
       </header>
 
       <div class="ai-panel-body">
@@ -298,16 +338,19 @@ function renderText(text: string): string {
         </div>
 
         <div class="ai-quick" aria-label="快捷提问">
-          <button
-            v-for="q in quickAsks"
-            :key="q"
-            class="hud-pill hud-pill--neutral ai-quick__pill"
-            type="button"
-            :disabled="isThinking"
-            @click="handleQuickAsk(q)"
-          >
-            {{ q }}
-          </button>
+          <div class="ai-quick__head">推荐问题</div>
+          <div class="ai-quick__list">
+            <button
+              v-for="q in quickAsks"
+              :key="q"
+              class="hud-pill hud-pill--neutral ai-quick__pill"
+              type="button"
+              :disabled="isThinking"
+              @click="handleQuickAsk(q)"
+            >
+              {{ q }}
+            </button>
+          </div>
         </div>
 
         <div class="ai-input-row">
@@ -433,6 +476,12 @@ function renderText(text: string): string {
   height: min(690px, calc(100vh - 128px));
   display: flex;
   flex-direction: column;
+  border-color: rgba(122, 247, 255, 0.32);
+  background:
+    linear-gradient(180deg, rgba(6, 26, 47, 0.62), rgba(2, 8, 23, 0.5)),
+    rgba(3, 16, 31, 0.48);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42), 0 0 30px rgba(0, 212, 255, 0.16);
+  backdrop-filter: blur(18px);
   overflow: hidden;
   box-sizing: border-box;
   animation: ai-panel-enter 180ms ease-out;
@@ -469,7 +518,7 @@ function renderText(text: string): string {
 .ai-panel-title__main {
   color: #e8f4ff;
   font-family: 'AlimamaShuHeiTi', 'Microsoft YaHei', sans-serif;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 800;
   line-height: 1.2;
 }
@@ -496,6 +545,34 @@ function renderText(text: string): string {
     color 180ms ease,
     border-color 180ms ease,
     background-color 180ms ease;
+}
+
+.ai-panel-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-icon-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.ai-new-chat {
+  width: auto;
+  min-width: 82px;
+  padding: 0 10px;
+  gap: 5px;
+  color: #dff9ff;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.ai-new-chat svg {
+  width: 15px;
+  height: 15px;
 }
 
 .ai-icon-btn:hover {
@@ -642,17 +719,33 @@ function renderText(text: string): string {
 .ai-quick {
   display: flex;
   flex: 0 0 auto;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ai-quick__head {
+  color: #b8e6ff;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.ai-quick__list {
+  display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 7px;
 }
 
 .ai-quick__pill {
   max-width: 100%;
   border: 1px solid rgba(0, 212, 255, 0.2);
+  color: rgba(232, 244, 255, 0.88);
+  background: rgba(2, 18, 33, 0.24);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: 700;
   overflow: hidden;
-  padding: 4px 8px;
+  padding: 6px 10px;
   text-overflow: ellipsis;
   transition:
     color 180ms ease,
