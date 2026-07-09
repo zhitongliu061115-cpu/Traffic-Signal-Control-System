@@ -223,7 +223,6 @@ git switch -c dev origin/dev
 ```bash
 git branch
 git status
-dihcaiu 
 ```
 
 Visual Studio：
@@ -611,3 +610,6 @@ sumo_output/
 4. 不在未说明风险的情况下改接口、改数据结构、改部署方式。
 5. 不用 `git reset --hard`、强推、批量删除等高风险操作处理共享分支。
 6. 发现误提交敏感信息，立即停止扩散，通知负责人并轮换密钥。
+
+
+test
