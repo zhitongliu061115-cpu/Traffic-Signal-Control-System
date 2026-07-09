@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import DataAnalysis from '@/views/DataAnalysis.vue'
 import Dashboard from '@/views/Dashboard.vue'
 
 const router = createRouter({
@@ -8,6 +9,11 @@ const router = createRouter({
       path: '/',
       name: 'Dashboard',
       component: Dashboard,
+    },
+    {
+      path: '/data-analysis',
+      name: 'DataAnalysis',
+      component: DataAnalysis,
     },
   ],
 })
