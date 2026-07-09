@@ -2,7 +2,7 @@
 import json
 import random
 import os
-import config as cfg
+from app import ev_config as cfg
 
 random.seed(42)
 
@@ -347,7 +347,7 @@ def generate_flow(roadnet, output_path="flow.json"):
             })
 
     # EV as single vehicle (startTime == endTime)
-    from ev_priority import DijkstraPathPlanner
+    from app.ev_priority import DijkstraPathPlanner
     planner = DijkstraPathPlanner()
     ev_intersections = planner.find_path("intersection_2_0", "intersection_0_2")
     if not ev_intersections:
