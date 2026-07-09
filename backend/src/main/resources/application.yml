@@ -1,9 +1,14 @@
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
 
 spring:
   application:
     name: traffic-signal-backend
+  profiles:
+    group:
+      lan:
+        - postgres
+        - lan-server
   datasource:
     url: jdbc:h2:mem:traffic_signal;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
     username: sa
@@ -18,7 +23,7 @@ spring:
     locations: classpath:db/migration
 
 cityflow:
-  base-url: http://localhost:9000
+  base-url: ${CITYFLOW_BASE_URL:http://localhost:9000}
   default-scene-id: jinan_3x4
   frame-poll-interval-ms: 1000
 
@@ -27,9 +32,19 @@ cityflow:
 spring:
   config:
     activate:
+      on-profile: lan-server
+
+server:
+  address: ${SERVER_ADDRESS:0.0.0.0}
+
+---
+
+spring:
+  config:
+    activate:
       on-profile: postgres
   datasource:
-    url: ${TRAFFIC_DB_URL:jdbc:postgresql://localhost:5432/traffic_signal}
+    url: ${TRAFFIC_DB_URL:jdbc:postgresql://${TRAFFIC_DB_HOST:localhost}:${TRAFFIC_DB_PORT:5432}/${TRAFFIC_DB_NAME:traffic_signal}}
     username: ${TRAFFIC_DB_USERNAME:postgres}
     password: ${TRAFFIC_DB_PASSWORD:}
     driver-class-name: org.postgresql.Driver
