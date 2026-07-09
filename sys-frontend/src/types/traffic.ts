@@ -67,6 +67,8 @@ export interface Intersection {
   congestionIndex: number
   /** 信号机设备状态 */
   deviceStatus: DeviceStatus
+  /** 关联的道路 ID 列表（用于点击红绿灯时高亮对应道路） */
+  roadIds: string[]
 }
 
 /** 道路 / 路段 */

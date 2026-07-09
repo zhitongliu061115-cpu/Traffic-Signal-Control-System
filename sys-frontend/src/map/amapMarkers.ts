@@ -38,7 +38,7 @@ export function createTLMarkers(
     const marker = new AMap.Marker({
       position: [it.lng, it.lat],
       content,
-      offset: new AMap.Pixel(0, 0),
+      offset: new AMap.Pixel(-20, -20),  // 图标 ~40px 圆心对齐
       zIndex: 100,
     })
     marker.setMap(map)

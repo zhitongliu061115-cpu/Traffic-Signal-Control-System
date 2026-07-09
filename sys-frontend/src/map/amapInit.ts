@@ -4,8 +4,8 @@
 import AMapLoader from '@amap/amap-jsapi-loader'
 
 const AMAP_KEY = import.meta.env.VITE_AMAP_KEY as string
+const LOAD_TIMEOUT_MS = 12000 // 12 秒超时
 
-/** 上海中心（12 个路口几何中心） */
 const CENTER: [number, number] = [121.4644, 31.2240]
 
 export interface AMapInstance {
@@ -13,20 +13,25 @@ export interface AMapInstance {
   destroy: () => void
 }
 
-declare global { var _AMapSecurityConfig: { securityJsCode?: string } | undefined }
-
-/**
- * 加载并初始化高德地图。失败时回调 onError（触发降级到 RoadNetwork.vue）。
- */
 export async function initAMap(
   container: HTMLElement,
   onError: () => void,
 ): Promise<AMapInstance> {
-  try {
-    // 安全密钥（高德 2.0 需要）
-    window._AMapSecurityConfig = { securityJsCode: AMAP_KEY }
-    const AMap = await AMapLoader.load({ key: AMAP_KEY, version: '2.0' })
+  if (!AMAP_KEY || AMAP_KEY.startsWith('your_')) {
+    console.warn('[AMap] 缺少有效 Key，请检查 .env 中的 VITE_AMAP_KEY')
+    onError()
+    throw new Error('Missing AMap key')
+  }
 
+  try {
+    const AMap = await Promise.race([
+      AMapLoader.load({ key: AMAP_KEY, version: '2.0' }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('AMap CDN timeout')), LOAD_TIMEOUT_MS),
+      ),
+    ])
+
+    console.log('[AMap] container size:', container.clientWidth, 'x', container.clientHeight)
     const map = new AMap.Map(container, {
       center: CENTER,
       zoom: 14,
@@ -36,12 +41,11 @@ export async function initAMap(
       resizeEnable: true,
     })
 
-    return {
-      map: map as AMap.Map,
-      destroy: () => map.destroy(),
-    }
-  } catch {
+    console.log('[AMap] 地图初始化成功')
+    return { map: map as AMap.Map, destroy: () => map.destroy() }
+  } catch (err) {
+    console.error('[AMap] 初始化失败:', err)
     onError()
-    throw new Error('AMap init failed')
+    throw err
   }
 }

@@ -30,7 +30,11 @@ export function addAMapRoadLayer(
   intersections: Intersection[],
   roads: Road[],
   onRoadClick?: RoadClickCallback,
-): { update: (its: Intersection[], rds: Road[]) => void; dispose: () => void } {
+): {
+  update: (its: Intersection[], rds: Road[]) => void
+  setPaths: (pathMap: Map<string, [number, number][]>) => void
+  dispose: () => void
+} {
   const entries: RoadEntry[] = []
   const lookup = new Map<string, RoadEntry>()
 
@@ -80,6 +84,15 @@ export function addAMapRoadLayer(
         e.polyline.setPath(path)
         e.polyline.setOptions({ strokeColor: ciColor(r.congestionIndex) })
       }
+    },
+    /** 用真实道路 path 替换手写 mock path */
+    setPaths(pathMap: Map<string, [number, number][]>): void {
+      entries.forEach((e) => {
+        const real = pathMap.get(e.id)
+        if (real && real.length >= 2) {
+          e.polyline.setPath(real)
+        }
+      })
     },
     dispose(): void {
       entries.forEach((e) => e.polyline.setMap(null))

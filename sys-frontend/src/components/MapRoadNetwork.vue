@@ -1,19 +1,17 @@
 <script setup lang="ts">
 // ================================================================
 // MapRoadNetwork — 高德地图 城市级数字孪生路网
-// 道路热力线（Polyline，拥堵配色）+ 红绿灯 Marker（DOM）+ 路口选中
+// 加载流程：地图 → POI修正路口 → 路径规划 → 一次性渲染
 // 离线降级 → RoadNetwork.vue（Three.js 抽象路网）
-// 6 个侧面板组件（SystemStatusBar / TrafficStats / AlertPanel /
-//   SignalControlPanel / EmergencyPanel / CompareCharts）不改
 // ================================================================
 import { ref, watch, onBeforeUnmount, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useTrafficStore } from '@/stores/traffic'
-import type { Intersection, Road } from '@/types/traffic'
 import { initAMap, type AMapInstance } from '@/map/amapInit'
 import { addAMapRoadLayer } from '@/map/amapRoads'
 import { createTLMarkers, type TLMarker } from '@/map/amapMarkers'
-import { congestionColorHex } from '@/three/config'
+import { fetchDrivingPath } from '@/map/amapPathGen'
+import { searchIntersection } from '@/map/amapGeocode'
 import RoadNetwork from '@/components/RoadNetwork.vue'
 import MapLegend from '@/components/MapLegend.vue'
 import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
@@ -21,10 +19,10 @@ import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
 const store = useTrafficStore()
 const { intersections, roads, vehicles, systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId } = storeToRefs(store)
 
-// ---- 状态 ----
 const mapBox = ref<HTMLDivElement | null>(null)
 const mapReady = ref(false)
 const mapFailed = ref(false)
+const dataLoading = ref(false)
 const viewerOpen = ref(false)
 const selectedRoadId = ref<string | null>(null)
 
@@ -33,34 +31,52 @@ let roadLayer: ReturnType<typeof addAMapRoadLayer> | null = null
 let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
 let emergencyLine: AMap.Polyline | null = null
 
-// ---- 初始化 ----
 async function bootstrapMap(): Promise<void> {
   if (!mapBox.value) return
   try {
     amapInstance = await initAMap(mapBox.value, () => { mapFailed.value = true })
     const map = amapInstance!.map
 
-    // 道路彩色线
-    roadLayer = addAMapRoadLayer(map, intersections.value, roads.value, (id) => {
-      selectedRoadId.value = id
-    })
-
-    // 红绿灯 Marker
-    tlMarkers = createTLMarkers(map, intersections.value, (id) => store.selectIntersection(id))
-
-    // 应急路线（初始隐藏）
     emergencyLine = new AMap.Polyline({
       path: [], strokeColor: '#00E5FF', strokeWeight: 8, strokeOpacity: 0.9, zIndex: 50,
     })
     emergencyLine.setMap(map)
 
     mapReady.value = true
+    dataLoading.value = true
+
+    // 后台加载真实数据，完成后一次性渲染
+    await loadRealData()
+    dataLoading.value = false
   } catch {
     mapFailed.value = true
   }
 }
 
-// ---- 应急同步 ----
+async function loadRealData(): Promise<void> {
+  const map = amapInstance!.map
+
+  // ---- 第 1 步：POI 修正路口坐标 ----
+  for (const it of intersections.value) {
+    const kw = it.name.replace(/-/g, '')
+    const geo = await searchIntersection(kw)
+    if (geo) { it.lng = geo.lng; it.lat = geo.lat }
+  }
+
+  // ---- 第 2 步：路径规划 ----
+  for (const r of roads.value) {
+    const from = intersections.value.find((i) => i.id === r.from)
+    const to = intersections.value.find((i) => i.id === r.to)
+    if (!from || !to) continue
+    const realPath = await fetchDrivingPath([from.lng, from.lat], [to.lng, to.lat])
+    if (realPath) r.path = realPath
+  }
+
+  // ---- 第 3 步：一次性创建 ----
+  roadLayer = addAMapRoadLayer(map, intersections.value, roads.value, (id) => { selectedRoadId.value = id })
+  tlMarkers = createTLMarkers(map, intersections.value, (id) => store.selectIntersection(id))
+}
+
 function syncEmergency(): void {
   if (!emergencyLine) return
   if (systemMode.value === 'emergency') {
@@ -76,21 +92,17 @@ function syncEmergency(): void {
   }
 }
 
-// ---- store → 图层同步 ----
 watch([roads, intersections], () => {
   roadLayer?.update(intersections.value, roads.value)
   tlMarkers?.updateAll(intersections.value)
   syncEmergency()
 })
-
 watch(systemMode, syncEmergency)
 
-// ---- 双击 → 全景 ----
 function onMapDblClick(): void {
   if (selectedIntersectionId.value) viewerOpen.value = true
 }
 
-// ---- 生命周期 ----
 setTimeout(bootstrapMap, 100)
 
 onBeforeUnmount(() => {
@@ -100,7 +112,6 @@ onBeforeUnmount(() => {
   amapInstance?.destroy()
 })
 
-// ---- 概览指标 ----
 const overview = computed(() => [
   { label: '路口总数', value: String(intersections.value.length), unit: '个' },
   { label: '设备在线率', value: store.statistics.deviceOnlineRate.toFixed(1), unit: '%' },
@@ -121,7 +132,10 @@ const selectedRoadName = computed(
       <div class="titlebar-inner">
         <span class="titlebar-mark" />
         <span class="titlebar-text">城市路网数字孪生</span>
-        <span v-if="mapReady" class="mrn-badge mrn-badge--live">
+        <span v-if="dataLoading" class="mrn-badge mrn-badge--loading">
+          <span class="status-dot status-dot--live" /> 加载中…
+        </span>
+        <span v-else-if="mapReady" class="mrn-badge mrn-badge--live">
           <span class="status-dot status-dot--live" /> 高德地图
         </span>
         <span v-else-if="mapFailed" class="mrn-badge mrn-badge--fallback">
@@ -144,9 +158,16 @@ const selectedRoadName = computed(
         <RoadNetwork v-if="mapFailed" class="mrn-fallback" />
         <div v-show="!mapFailed" ref="mapBox" class="mrn-map" @dblclick="onMapDblClick" />
 
-        <MapLegend :visible="!mapFailed" />
+        <div v-if="dataLoading" class="mrn-loading-overlay">
+          <div class="mrn-loading-box">
+            <span class="mrn-loading-icon">⏳</span>
+            <div class="mrn-loading-text">正在加载路口数据与道路规划…</div>
+          </div>
+        </div>
 
-        <div v-if="selectedName || selectedRoadName" class="mrn-selected-info">
+        <MapLegend :visible="!mapFailed && !dataLoading" />
+
+        <div v-if="!dataLoading && (selectedName || selectedRoadName)" class="mrn-selected-info">
           <template v-if="selectedName">
             <div class="mrn-selected-info__name">{{ selectedName }}</div>
             <button class="mrn-enter-btn" @click="viewerOpen = true">进入三维实景 ⛶</button>
@@ -157,7 +178,7 @@ const selectedRoadName = computed(
           </template>
         </div>
 
-        <div class="mrn-hint" v-if="!mapFailed">
+        <div class="mrn-hint" v-if="!mapFailed && !dataLoading">
           <span>🖱 拖拽/滚轮 · 单击路口 · 双击进全景 | 高德地图</span>
         </div>
       </div>
@@ -176,6 +197,7 @@ const selectedRoadName = computed(
 .comp-card__body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .mrn-badge { margin-left: 10px; font-size: 10px; padding: 3px 8px; display: inline-flex; align-items: center; gap: 4px; }
 .mrn-badge--live { border: 1px solid rgba(34,211,160,0.5); color: #22d3a0; background: rgba(34,211,160,0.08); }
+.mrn-badge--loading { border: 1px solid rgba(0,212,255,0.5); color: #00d4ff; background: rgba(0,212,255,0.08); }
 .mrn-badge--fallback { border: 1px solid rgba(255,184,0,0.5); color: #ffb800; background: rgba(255,184,0,0.08); }
 .mrn-overview { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; flex: 0 0 auto; }
 .mrn-metric { padding: 6px 12px; text-align: center; background: rgba(0,212,255,0.05); border: 1px solid rgba(0,212,255,0.18); }
@@ -185,6 +207,10 @@ const selectedRoadName = computed(
 .mrn-viewport { flex: 1; min-height: 0; position: relative; border: 1.5px solid rgba(0,212,255,0.42); overflow: hidden; }
 .mrn-map { width: 100%; height: 100%; }
 .mrn-fallback { width: 100%; height: 100%; }
+.mrn-loading-overlay { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(2,8,23,0.6); }
+.mrn-loading-box { text-align: center; }
+.mrn-loading-icon { font-size: 36px; display: block; margin-bottom: 10px; }
+.mrn-loading-text { font-size: 14px; color: #8da8c5; letter-spacing: 0.06em; }
 .mrn-selected-info { position: absolute; top: 10px; left: 10px; z-index: 5; min-width: 140px; padding: 8px 10px; background: rgba(4,21,39,0.9); border: 1px solid rgba(0,212,255,0.4); backdrop-filter: blur(6px); }
 .mrn-selected-info__name { font-size: 13px; font-weight: 700; color: #7af7ff; text-shadow: 0 0 8px rgba(0,212,255,0.4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; }
 .mrn-enter-btn { width: 100%; padding: 4px 8px; font-size: 11px; color: #00d4ff; background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.4); cursor: pointer; transition: all 0.2s; white-space: nowrap; }
