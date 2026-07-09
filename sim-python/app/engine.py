@@ -122,6 +122,46 @@ class RealCityFlowEngine(SimulationEngine):
                 "metrics": metrics,
             }
 
+    def apply_control_actions(self, sid: str, decisions: list[JsonDict]) -> JsonDict:
+        if sid not in self.sessions:
+            raise ApiError(
+                status=404,
+                code="SESSION_NOT_FOUND",
+                message=f"simulation session not found: {sid}",
+                retryable=False,
+            )
+
+        session = self.sessions[sid]
+        applied = []
+        with session.lock:
+            for decision in decisions:
+                intersection_id = decision["intersectionId"]
+                phase_index = int(decision["phaseIndex"])
+                cityflow_phase_id = phase_index - 1
+                try:
+                    session.engine.set_tl_phase(intersection_id, cityflow_phase_id)
+                except Exception as ex:
+                    raise ApiError(
+                        status=500,
+                        code="CITYFLOW_SET_PHASE_FAILED",
+                        message=f"failed to set phase for {intersection_id}: {ex}",
+                        retryable=True,
+                    ) from ex
+                session.current_phases[intersection_id] = phase_index
+                applied.append({
+                    "intersectionId": intersection_id,
+                    "phaseIndex": phase_index,
+                    "cityflowPhaseId": cityflow_phase_id,
+                    "phaseCode": decision.get("phaseCode"),
+                    "status": "applied",
+                })
+            if applied:
+                session.external_control_enabled = True
+        return {
+            "sid": sid,
+            "applied": applied,
+        }
+
     def _load_scene(self, scene: SceneDefinition) -> None:
         if scene.scene_id in self.parsers:
             return
@@ -303,6 +343,8 @@ class RealCityFlowEngine(SimulationEngine):
         return signals
 
     def _advance_signal_phases(self, session: "CityFlowEngineSession", sim_time: float) -> None:
+        if session.external_control_enabled:
+            return
         phase_indexes_by_intersection = self.phase_indexes.get(session.scene_id, {})
         for intersection_id, phase_indexes in phase_indexes_by_intersection.items():
             if not phase_indexes:
@@ -343,4 +385,5 @@ class CityFlowEngineSession:
     config_path: Path
     seq: int = 0
     current_phases: dict[str, int] = field(default_factory=dict)
+    external_control_enabled: bool = False
     lock: Lock = field(default_factory=Lock, repr=False)

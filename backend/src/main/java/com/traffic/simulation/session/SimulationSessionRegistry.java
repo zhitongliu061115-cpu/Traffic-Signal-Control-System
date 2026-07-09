@@ -12,8 +12,8 @@ public class SimulationSessionRegistry {
 
     private final Map<String, SimulationRuntimeSession> sessions = new ConcurrentHashMap<>();
 
-    public SimulationRuntimeSession register(String sid, String sceneId) {
-        SimulationRuntimeSession session = new SimulationRuntimeSession(sid, sceneId, SimulationSessionState.CREATED);
+    public SimulationRuntimeSession register(String sid, String sceneId, String controllerType) {
+        SimulationRuntimeSession session = new SimulationRuntimeSession(sid, sceneId, controllerType, SimulationSessionState.CREATED);
         sessions.put(sid, session);
         return session;
     }

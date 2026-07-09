@@ -62,9 +62,19 @@ Content-Type: application/json
 ```json
 {
   "sceneId": "jinan_3x4",
-  "speed": 1.0
+  "speed": 1.0,
+  "controllerType": "fixed-time"
 }
 ```
+
+`controllerType` 为可选字段，默认值为 `fixed-time`。当前允许：
+
+| 值 | 含义 |
+|---|---|
+| `fixed-time` | 固定配时 baseline |
+| `max-pressure` | Max Pressure baseline |
+| `traffic-r` | 云端 Traffic-R / RL 控制器入口 |
+| `rl` | 兼容别名，后端会归一化为 `traffic-r` |
 
 响应：
 
@@ -75,7 +85,8 @@ Content-Type: application/json
   "data": {
     "sid": "run_001",
     "sceneId": "jinan_3x4",
-    "status": "created"
+    "status": "created",
+    "controllerType": "fixed-time"
   }
 }
 ```
@@ -193,6 +204,109 @@ GET /cityflow/simulations/{sid}/frame
 - 返回当前车辆、道路、路口、信号和全局指标。
 
 Python 当前返回裸 `SimFrameData` 兼容字段，同时可附带 `sid`、`sceneId`、`seq`、`simTime`、`engineMode` 等额外字段。Spring Boot 对前端推送时仍以 `WsMessage` 外层字段为准。
+
+### 下发控制决策
+
+```http
+POST /cityflow/simulations/{sid}/actions
+Content-Type: application/json
+```
+
+用途：
+
+- Spring Boot 将统一 `ControlDecision` 下发给 Python CityFlow。
+- Python 将项目协议中的 `phaseIndex` 转为 CityFlow 的 `phaseIndex - 1`。
+- Python 调用 `set_tl_phase` 并更新 session 中记录的当前相位。
+
+请求：
+
+```json
+{
+  "source": "traffic-r",
+  "simTime": 120.0,
+  "decisions": [
+    {
+      "intersectionId": "intersection_1_1",
+      "controllerType": "traffic-r",
+      "phaseIndex": 2,
+      "phaseCode": "NTST",
+      "durationSec": 10,
+      "confidence": 0.82,
+      "reason": "north-south queue is larger than east-west queue",
+      "metadata": {
+        "source": "traffic-r"
+      }
+    }
+  ]
+}
+```
+
+响应：
+
+```json
+{
+  "sid": "run_001",
+  "applied": [
+    {
+      "intersectionId": "intersection_1_1",
+      "phaseIndex": 2,
+      "cityflowPhaseId": 1,
+      "phaseCode": "NTST",
+      "status": "applied"
+    }
+  ]
+}
+```
+
+## Spring Boot 策略接口
+
+信号控制策略统一通过 `TrafficSignalController` 进入，Fixed-Time、Max-Pressure、Traffic-R / RL 必须返回同一种 `ControlDecision`。策略实现不得直接调用 Python CityFlow 服务，也不得直接推送 WebSocket。
+
+### ControlRequest
+
+```json
+{
+  "sid": "run_001",
+  "sceneId": "jinan_3x4",
+  "controllerType": "traffic-r",
+  "intersectionId": "intersection_1_1",
+  "simTime": 120.0,
+  "currentPhaseIndex": 1,
+  "currentPhaseCode": "ETWT",
+  "phaseCandidates": [
+    {
+      "phaseIndex": 1,
+      "phaseCode": "ETWT",
+      "roadLinkIndexes": []
+    }
+  ],
+  "frame": {}
+}
+```
+
+### ControlDecision
+
+```json
+{
+  "intersectionId": "intersection_1_1",
+  "controllerType": "traffic-r",
+  "phaseIndex": 2,
+  "phaseCode": "NTST",
+  "durationSec": 10,
+  "confidence": 0.82,
+  "reason": "north-south queue is larger than east-west queue",
+  "metadata": {
+    "source": "traffic-r"
+  }
+}
+```
+
+说明：
+
+- `phaseIndex` 使用本项目协议编号，从 `1` 开始。
+- 下发到 CityFlow 时，由 Python 转为 `phaseIndex - 1`。
+- `metadata` 只能放调试、模型来源、fallback 状态等补充信息，前端不能依赖其中字段完成核心渲染。
+- 当前 Spring Boot 在获取一帧后计算策略决策，并通过 `/cityflow/simulations/{sid}/actions` 下发给 Python CityFlow；控制效果从后续帧体现。
 
 ### Python 错误响应
 

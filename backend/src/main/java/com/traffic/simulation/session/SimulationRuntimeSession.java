@@ -4,13 +4,15 @@ public class SimulationRuntimeSession {
 
     private final String sid;
     private final String sceneId;
+    private final String controllerType;
     private long sequence;
     private double simTime;
     private SimulationSessionState state;
 
-    public SimulationRuntimeSession(String sid, String sceneId, SimulationSessionState state) {
+    public SimulationRuntimeSession(String sid, String sceneId, String controllerType, SimulationSessionState state) {
         this.sid = sid;
         this.sceneId = sceneId;
+        this.controllerType = controllerType;
         this.state = state;
     }
 
@@ -20,6 +22,10 @@ public class SimulationRuntimeSession {
 
     public String getSceneId() {
         return sceneId;
+    }
+
+    public String getControllerType() {
+        return controllerType;
     }
 
     public long nextSequence() {

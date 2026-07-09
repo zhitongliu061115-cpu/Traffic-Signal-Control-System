@@ -34,6 +34,52 @@ class CityFlowAdapterTest(unittest.TestCase):
         self.assertIn("signals", frame)
         self.assertIn("metrics", frame)
 
+    def test_apply_control_actions_accepts_unified_decision_shape(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        session = adapter.create_simulation("jinan_3x4", 1.0)
+
+        result = adapter.apply_control_actions(session["sid"], {
+            "source": "fixed-time",
+            "simTime": 10.0,
+            "decisions": [
+                {
+                    "intersectionId": "intersection_1_1",
+                    "controllerType": "fixed-time",
+                    "phaseIndex": 2,
+                    "phaseCode": "NTST",
+                    "durationSec": 10,
+                    "confidence": 1.0,
+                    "reason": "test decision",
+                    "metadata": {"cycleIndex": 1},
+                }
+            ],
+        })
+
+        self.assertEqual(session["sid"], result["sid"])
+        self.assertEqual(1, len(result["applied"]))
+        self.assertEqual("intersection_1_1", result["applied"][0]["intersectionId"])
+        self.assertEqual(2, result["applied"][0]["phaseIndex"])
+        self.assertEqual(1, result["applied"][0]["cityflowPhaseId"])
+        self.assertEqual("applied", result["applied"][0]["status"])
+
+    def test_apply_control_actions_rejects_invalid_phase(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        session = adapter.create_simulation("jinan_3x4", 1.0)
+
+        with self.assertRaises(ApiError) as context:
+            adapter.apply_control_actions(session["sid"], {
+                "source": "fixed-time",
+                "decisions": [
+                    {
+                        "intersectionId": "intersection_1_1",
+                        "phaseIndex": 0,
+                    }
+                ],
+            })
+
+        self.assertEqual(400, context.exception.status)
+        self.assertEqual("INVALID_REQUEST", context.exception.code)
+
     def test_health_exposes_engine_mode_and_scenes(self):
         adapter = CityFlowAdapter(DATA_DIR)
         health = adapter.health()

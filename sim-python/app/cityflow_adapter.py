@@ -109,6 +109,24 @@ class CityFlowAdapter:
                 "metrics": metrics,
             }
 
+    def apply_control_actions(self, sid: str, payload: JsonDict) -> JsonDict:
+        decisions = self._validate_decisions_payload(sid, payload)
+        if self.real_engine is not None:
+            return self.real_engine.apply_control_actions(sid, decisions)
+
+        if sid not in self.sessions:
+            raise ApiError(
+                status=404,
+                code="SESSION_NOT_FOUND",
+                message=f"simulation session not found: {sid}",
+                retryable=False,
+            )
+
+        return {
+            "sid": sid,
+            "applied": [self._applied_action(decision) for decision in decisions],
+        }
+
     def _load_scene(self, scene_id: str) -> None:
         scene = self.scene_registry.get(scene_id)
 
@@ -159,6 +177,64 @@ class CityFlowAdapter:
         if self.real_engine is not None:
             return self.real_engine.active_session_count()
         return len(self.sessions)
+
+    def _validate_decisions_payload(self, sid: str, payload: JsonDict) -> list[JsonDict]:
+        decisions = payload.get("decisions", [])
+        if not isinstance(decisions, list):
+            raise ApiError(
+                status=400,
+                code="INVALID_REQUEST",
+                message="decisions must be a list",
+                retryable=False,
+            )
+        valid_decisions = []
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                raise ApiError(
+                    status=400,
+                    code="INVALID_REQUEST",
+                    message="each control decision must be an object",
+                    retryable=False,
+                )
+            intersection_id = decision.get("intersectionId")
+            phase_index = decision.get("phaseIndex")
+            if not intersection_id:
+                raise ApiError(
+                    status=400,
+                    code="INVALID_REQUEST",
+                    message="control decision intersectionId is required",
+                    retryable=False,
+                )
+            try:
+                phase_index = int(phase_index)
+            except (TypeError, ValueError) as ex:
+                raise ApiError(
+                    status=400,
+                    code="INVALID_REQUEST",
+                    message="control decision phaseIndex must be an integer",
+                    retryable=False,
+                ) from ex
+            if phase_index < 1:
+                raise ApiError(
+                    status=400,
+                    code="INVALID_REQUEST",
+                    message="control decision phaseIndex must be greater than or equal to 1",
+                    retryable=False,
+                )
+            valid_decision = dict(decision)
+            valid_decision["phaseIndex"] = phase_index
+            valid_decisions.append(valid_decision)
+        return valid_decisions
+
+    def _applied_action(self, decision: JsonDict) -> JsonDict:
+        phase_index = int(decision["phaseIndex"])
+        return {
+            "intersectionId": decision["intersectionId"],
+            "phaseIndex": phase_index,
+            "cityflowPhaseId": phase_index - 1,
+            "phaseCode": decision.get("phaseCode"),
+            "status": "applied",
+        }
 
     def _active_flows(self, flows: list[JsonDict], sim_time: float) -> list[tuple[int, JsonDict]]:
         active = []

@@ -50,6 +50,11 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
                 speed = body.get("speed", 1.0)
                 self._send_json(200, self.adapter.create_simulation(scene_id, speed))
                 return
+            if self._matches(path_parts, ["cityflow", "simulations", None, "actions"]):
+                sid = path_parts[2]
+                body = self._read_json_body()
+                self._send_json(200, self.adapter.apply_control_actions(sid, body))
+                return
             self._send_error(ApiError(404, "NOT_FOUND", "endpoint not found", False))
         except ApiError as ex:
             self._send_error(ex)
