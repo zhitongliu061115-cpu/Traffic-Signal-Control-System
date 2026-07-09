@@ -3,7 +3,7 @@
 // CompareCharts — AI 控制效果对比
 // 左：AI 控制前后指标对比柱状图 | 右：拥堵指数实时变化折线图
 // ================================================================
-import { onMounted, onBeforeUnmount, watch, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, watch, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
@@ -25,6 +25,34 @@ import {
 const store = useTrafficStore()
 const { compareMetrics, congestionTrend } = storeToRefs(store)
 
+const summaryItems = computed(() => {
+  const metrics = compareMetrics.value
+  return [
+    {
+      label: '等待时间优化',
+      value: formatDrop(metrics.averageWaitTime.traditional, metrics.averageWaitTime.ai),
+    },
+    {
+      label: '平均速度提升',
+      value: formatRise(metrics.averageSpeed.traditional, metrics.averageSpeed.ai),
+    },
+    {
+      label: '应急通行缩短',
+      value: formatDrop(metrics.emergencyPassTime.traditional, metrics.emergencyPassTime.ai),
+    },
+  ]
+})
+
+function formatDrop(before: number, after: number): string {
+  if (before <= 0) return '--'
+  return `${Math.max(0, Math.round(((before - after) / before) * 100))}%`
+}
+
+function formatRise(before: number, after: number): string {
+  if (before <= 0) return '--'
+  return `${Math.max(0, Math.round(((after - before) / before) * 100))}%`
+}
+
 // ---- DOM 引用 ----
 const barContainer = ref<HTMLDivElement | null>(null)
 const lineContainer = ref<HTMLDivElement | null>(null)
@@ -43,7 +71,7 @@ function buildBarOption(m: CompareMetrics): EChartsOption {
 
   return {
     backgroundColor: 'transparent',
-    textStyle: chartTextStyle(),
+    textStyle: { ...chartTextStyle(), fontSize: 13 },
     tooltip: {
       ...chartTooltip(),
       trigger: 'axis',
@@ -57,16 +85,25 @@ function buildBarOption(m: CompareMetrics): EChartsOption {
         return html
       },
     },
-    legend: chartLegend(['传统控制', 'AI 自适应']),
-    grid: chartGrid(),
-    xAxis: chartXAxis(names),
-    yAxis: chartYAxis(),
+    legend: chartLegend(['传统控制', 'AI 自适应'], {
+      textStyle: { color: CHART_COLORS.text, fontSize: 13, fontWeight: 700 },
+      itemWidth: 18,
+      itemHeight: 6,
+      itemGap: 20,
+    }),
+    grid: chartGrid({ top: 42, bottom: 34, left: 16, right: 24 }),
+    xAxis: chartXAxis(names, {
+      axisLabel: { color: CHART_COLORS.text, fontSize: 13, fontWeight: 700, interval: 0 },
+    }),
+    yAxis: chartYAxis({
+      axisLabel: { color: CHART_COLORS.muted, fontSize: 12 },
+    }),
     series: [
       {
         name: '传统控制',
         type: 'bar',
         data: traditional,
-        barWidth: 14,
+        barWidth: 18,
         barGap: '30%',
         itemStyle: {
           color: traditionalBarGradient(),
@@ -78,7 +115,7 @@ function buildBarOption(m: CompareMetrics): EChartsOption {
         name: 'AI 自适应',
         type: 'bar',
         data: ai,
-        barWidth: 14,
+        barWidth: 18,
         itemStyle: {
           color: aiBarGradient(),
           borderRadius: [2, 2, 0, 0],
@@ -101,7 +138,7 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
 
   return {
     backgroundColor: 'transparent',
-    textStyle: chartTextStyle(),
+    textStyle: { ...chartTextStyle(), fontSize: 13 },
     tooltip: {
       ...chartTooltip(),
       trigger: 'axis',
@@ -111,18 +148,20 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
         return `<div style="font-weight:700;margin-bottom:4px">${arr[0].name}</div><div style="color:${CHART_COLORS.cyan}">拥堵指数: ${arr[0].value}</div>`
       },
     },
-    grid: chartGrid(),
+    grid: chartGrid({ top: 30, bottom: 34, left: 16, right: 24 }),
     xAxis: {
       ...chartXAxis(times),
       axisLabel: {
         color: CHART_COLORS.muted,
-        fontSize: 9,
+        fontSize: 12,
+        fontWeight: 700,
         interval: Math.max(0, Math.floor(times.length / 8) - 1),
       },
       boundaryGap: false,
     },
     yAxis: {
       ...chartYAxis(),
+      axisLabel: { color: CHART_COLORS.muted, fontSize: 12 },
       min: 0,
       max: 100,
     },
@@ -133,7 +172,7 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
         data: values,
         smooth: true,
         symbol: 'none',
-        lineStyle: { color: CHART_COLORS.cyan, width: 1.8 },
+        lineStyle: { color: CHART_COLORS.cyan, width: 2.4 },
         itemStyle: { color: CHART_COLORS.cyan },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -223,6 +262,12 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="hud-card__content comp-card__body">
+      <div class="cc-summary">
+        <div v-for="item in summaryItems" :key="item.label" class="cc-summary-item">
+          <span>{{ item.label }}</span>
+          <b>{{ item.value }}</b>
+        </div>
+      </div>
       <div class="cc-charts">
         <!-- 左：对比柱状图 -->
         <div class="cc-chart-panel">
@@ -250,15 +295,58 @@ onBeforeUnmount(() => {
 .comp-card__body {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   overflow: hidden;
+}
+
+.comp-card :deep(.titlebar-text) {
+  font-size: 19px;
+  letter-spacing: 0;
+}
+
+.cc-summary {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cc-summary-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(0, 212, 255, 0.14);
+  background: rgba(2, 18, 33, 0.22);
+  color: #8da8c5;
+  font-size: 13px;
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+}
+
+.cc-summary-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-summary-item b {
+  color: #7af7ff;
+  font-family: 'Rajdhani', 'DINPro', monospace;
+  font-size: 20px;
+  font-weight: 800;
 }
 
 /* 两个图表左右排列 */
 .cc-charts {
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 14px;
 }
 
 .cc-chart-panel {
@@ -270,10 +358,10 @@ onBeforeUnmount(() => {
 
 .cc-chart-panel__label {
   flex: 0 0 auto;
-  font-size: 12px;
-  color: #8da8c5;
-  letter-spacing: 0.04em;
-  margin-bottom: 4px;
+  font-size: 15px;
+  color: #b8e6ff;
+  letter-spacing: 0;
+  margin-bottom: 6px;
   padding-left: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -283,5 +371,12 @@ onBeforeUnmount(() => {
 .cc-echart-box {
   flex: 1;
   min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .cc-summary,
+  .cc-charts {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

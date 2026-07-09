@@ -224,8 +224,8 @@ onUnmounted(() => {
 
 .cyber-tab {
   display: inline-flex;
-  min-width: 142px;
-  height: 46px;
+  min-width: 158px;
+  height: 48px;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -233,7 +233,7 @@ onUnmounted(() => {
   color: rgba(255, 255, 255, 0.58);
   background: transparent;
   font-family: 'AlimamaShuHeiTi', 'Microsoft YaHei', sans-serif;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 800;
   text-decoration: none;
   transition:
@@ -264,8 +264,8 @@ onUnmounted(() => {
 
 .cyber-tab__icon {
   display: inline-flex;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   color: currentColor;
   filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.28));
 }
@@ -499,8 +499,8 @@ onUnmounted(() => {
   }
 
   .cyber-tab {
-    min-width: 132px;
-    font-size: 14px;
+    min-width: 144px;
+    font-size: 16px;
   }
 }
 
