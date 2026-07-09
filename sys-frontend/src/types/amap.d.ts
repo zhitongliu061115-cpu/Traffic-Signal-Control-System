@@ -17,6 +17,7 @@ declare namespace AMap {
     destroy(): void
     add(overlay: unknown): void
     remove(overlay: unknown): void
+    on(event: string, handler: (...args: any[]) => void): void
   }
 
   class Pixel {
@@ -54,6 +55,7 @@ declare namespace AMap {
     constructor(opts?: MarkerOptions)
     setMap(map: Map | null): void
     setContent(content: string): void
+    setPosition(position: [number, number]): void
     on(event: string, handler: (...args: any[]) => void): void
   }
 }

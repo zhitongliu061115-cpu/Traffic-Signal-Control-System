@@ -28,13 +28,13 @@ function mkIt(
   id: string, name: string, row: number, col: number,
   lng: number, lat: number,
   phase: Intersection['currentPhase'], green: number, ci: number, ds: Intersection['deviceStatus'],
+  roadIds: string[],
 ): Intersection {
   return {
     id, name,
-    // Three.js 抽象路网用归一化坐标（从真实经纬度推算）
     x: (lng - 121.450) / 0.035,
     y: (31.240 - lat) / 0.027,
-    lng, lat, row, col,
+    lng, lat, row, col, roadIds,
     currentPhase: phase,
     greenRemain: green,
     queueLength: 5 + Math.round((row + col) * 2 + Math.random() * 8),
@@ -45,22 +45,23 @@ function mkIt(
 }
 
 // 上海市中心真实路口坐标（人民广场→静安→黄浦核心区）
+// roadIds: 每对相邻路口之间有一条路，按横向→纵向分配
+// R01=R02=R03=R04=R05=R06=R07=R08=R09=R10=R11=R12=R15=R16=R18=R19=R21=R22=R24=R25
+
+// 每个路口关联的道路（grid 结构: 4列×3行）：
 export const mockIntersections: Intersection[] = [
-  // row 1 — 南京路（北）
-  mkIt('A01', '西藏中路-南京东路', 1, 1, 121.4756, 31.2356, 'eastwest_straight',  28, 68, 'online'),
-  mkIt('A02', '黄陂北路-南京西路', 1, 2, 121.4710, 31.2335, 'northsouth_left',    14, 45, 'online'),
-  mkIt('A03', '茂名北路-南京西路', 1, 3, 121.4612, 31.2318, 'eastwest_straight',  42, 87, 'online'),
-  mkIt('A04', '常德路-南京西路',   1, 4, 121.4518, 31.2305, 'eastwest_left',      18, 32, 'online'),
-  // row 2 — 淮海路（中）
-  mkIt('A05', '西藏南路-淮海东路', 2, 1, 121.4770, 31.2275, 'northsouth_straight', 35, 72, 'online'),
-  mkIt('A06', '黄陂南路-淮海中路', 2, 2, 121.4725, 31.2255, 'eastwest_straight',   0, 92, 'fault'),
-  mkIt('A07', '瑞金二路-淮海中路', 2, 3, 121.4632, 31.2238, 'northsouth_left',    22, 55, 'online'),
-  mkIt('A08', '常熟路-淮海中路',   2, 4, 121.4530, 31.2225, 'all_red',             3, 22, 'online'),
-  // row 3 — 建国路（南）
-  mkIt('A09', '西藏南路-建国东路', 3, 1, 121.4778, 31.2208, 'eastwest_straight',  50, 48, 'online'),
-  mkIt('A10', '黄陂南路-建国东路', 3, 2, 121.4730, 31.2190, 'northsouth_straight', 32, 64, 'online'),
-  mkIt('A11', '瑞金二路-建国中路', 3, 3, 121.4640, 31.2160, 'eastwest_left',      25, 40, 'online'),
-  mkIt('A12', '襄阳南路-建国西路', 3, 4, 121.4538, 31.2145, 'northsouth_left',    40, 30, 'offline'),
+  mkIt('A01','西藏中路-南京东路',1,1,121.4756,31.2356,'eastwest_straight',28,68,'online',['R01','R15']),
+  mkIt('A02','黄陂北路-南京西路',1,2,121.4710,31.2335,'northsouth_left',14,45,'online',['R01','R02','R18']),
+  mkIt('A03','茂名北路-南京西路',1,3,121.4612,31.2318,'eastwest_straight',42,87,'online',['R02','R03','R21']),
+  mkIt('A04','常德路-南京西路',1,4,121.4518,31.2305,'eastwest_left',18,32,'online',['R03','R24']),
+  mkIt('A05','西藏南路-淮海东路',2,1,121.4770,31.2275,'northsouth_straight',35,72,'online',['R05','R15','R16']),
+  mkIt('A06','黄陂南路-淮海中路',2,2,121.4725,31.2255,'eastwest_straight',0,92,'fault',['R05','R06','R18','R19']),
+  mkIt('A07','瑞金二路-淮海中路',2,3,121.4632,31.2238,'northsouth_left',22,55,'online',['R06','R07','R21','R22']),
+  mkIt('A08','常熟路-淮海中路',2,4,121.4530,31.2225,'all_red',3,22,'online',['R07','R24','R25']),
+  mkIt('A09','西藏南路-建国东路',3,1,121.4778,31.2208,'eastwest_straight',50,48,'online',['R10','R16']),
+  mkIt('A10','黄陂南路-建国东路',3,2,121.4730,31.2190,'northsouth_straight',32,64,'online',['R10','R11','R19']),
+  mkIt('A11','瑞金二路-建国中路',3,3,121.4640,31.2160,'eastwest_left',25,40,'online',['R11','R12','R22']),
+  mkIt('A12','襄阳南路-建国西路',3,4,121.4538,31.2145,'northsouth_left',40,30,'offline',['R12','R25']),
 ]
 
 // ================================================================
