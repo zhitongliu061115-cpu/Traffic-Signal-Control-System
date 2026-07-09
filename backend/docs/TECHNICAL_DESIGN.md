@@ -73,6 +73,8 @@ CityFlow Engine step
 
 当前初始化表：
 
+本地连接已经存在的 PostgreSQL `traffic_signal` 数据库时，使用 `postgres` profile，连接方式见 `DATABASE_CONNECTION.md`。该 profile 暂时关闭 Flyway 和 Hibernate 自动建表，避免改动数据处理侧已经建好的表结构。
+
 | 表名 | 作用 |
 |---|---|
 | `cityflow_scene` | 保存仿真场景 |

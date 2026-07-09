@@ -90,6 +90,48 @@ POST /api/v1/simulations/{sid}/stop
 
 当前阶段至少需要 `start` 可用，`pause` 和 `stop` 可先保留基础状态切换。
 
+### 3.4 数据库连接状态
+
+```http
+GET /api/v1/database/status
+```
+
+用途：
+
+- 验证 Spring Boot 是否能连接 PostgreSQL。
+- 返回核心业务表是否存在以及行数统计。
+
+### 3.5 路口数据读写
+
+读取全部路口：
+
+```http
+GET /api/v1/intersections
+```
+
+按路口编码读取：
+
+```http
+GET /api/v1/intersections/{code}
+```
+
+更新路口状态：
+
+```http
+PATCH /api/v1/intersections/{code}/status
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "status": "online"
+}
+```
+
+`status` 允许 `online`、`maintenance`、`offline`。
+
 ## 4. WebSocket 接口
 
 前端连接：

@@ -103,6 +103,30 @@ src/main/resources/db/migration/V1__init_core_tables.sql
 
 原则：高频车辆位置通过 WebSocket 实时推送，不逐帧全量入库；数据库只保存静态路网、会话记录和指标快照。
 
+## 连接现有 PostgreSQL 数据库
+
+当前本地已有 `traffic_signal` 数据库时，使用 `postgres` profile 启动后端：
+
+```powershell
+$env:TRAFFIC_DB_PASSWORD="你的数据库密码"
+mvn spring-boot:run "-Dspring-boot.run.profiles=postgres"
+```
+
+默认连接 `jdbc:postgresql://localhost:5432/traffic_signal`，用户名为 `postgres`。可通过 `TRAFFIC_DB_URL`、`TRAFFIC_DB_USERNAME`、`TRAFFIC_DB_PASSWORD` 覆盖。
+
+为了不改动已经建好的数据库表结构，`postgres` profile 暂时关闭 Flyway，且 Hibernate 不自动建表或改表。详细说明见 `docs/DATABASE_CONNECTION.md`。
+
+当前已提供最小数据库读写验证接口：
+
+```http
+GET   /api/v1/database/status
+GET   /api/v1/intersections
+GET   /api/v1/intersections/{code}
+PATCH /api/v1/intersections/{code}/status
+```
+
+其中 `PATCH /api/v1/intersections/{code}/status` 只更新路口状态字段，用于验证后端具备修改数据库能力。
+
 ## 编译验证
 
 ```sh
