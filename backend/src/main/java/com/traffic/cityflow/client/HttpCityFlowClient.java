@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.util.Map;
+
 @Component
 public class HttpCityFlowClient implements CityFlowClient {
 
@@ -53,5 +55,15 @@ public class HttpCityFlowClient implements CityFlowClient {
                 .uri("/cityflow/simulations/{sid}/frame", sid)
                 .retrieve()
                 .body(SimFrameData.class);
+    }
+
+    @Override
+        @SuppressWarnings("unchecked")
+    public Map<String, Object> dispatchEV(String sid, Map<String, Object> request) {
+        return restClient.post()
+                .uri("/cityflow/simulations/{sid}/dispatch", sid)
+                .body(request)
+                .retrieve()
+                .body(Map.class);
     }
 }
