@@ -45,7 +45,7 @@ class BailianAgentServiceTest {
 
         assertThat(response.fallback()).isTrue();
         assertThat(response.source()).isEqualTo("config");
-        assertThat(response.reply()).contains("BAILIAN_API_KEY");
+        assertThat(response.reply()).contains("DASHSCOPE_API_KEY").contains("BAILIAN_API_KEY");
     }
 
     @Test
@@ -66,13 +66,74 @@ class BailianAgentServiceTest {
                 .andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer sk-test-secret"))
                 .andRespond(withStatus(HttpStatus.UNAUTHORIZED)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .body("{\"code\":\"InvalidApiKey\",\"message\":\"Invalid API-key\"}"));
+                        .body("{\"code\":\"InvalidApiKey\",\"message\":\"API-key is blocked.\"}"));
 
         assertThatThrownBy(() -> service.chat(new AgentChatRequest("当前路网状态如何？", null, Map.of())))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("HTTP 401")
-                .hasMessageContaining("BAILIAN_API_KEY")
+                .hasMessageContaining("DASHSCOPE_API_KEY")
+                .hasMessageContaining("重新创建 API Key")
                 .hasMessageContaining("InvalidApiKey")
                 .hasMessageNotContaining("sk-test-secret");
+    }
+
+    @Test
+    void normalizesBailianConfigBeforeCalling() {
+        RestClient.Builder builder = RestClient.builder()
+                .baseUrl("https://dashscope.aliyuncs.com/api/v1");
+        server = MockRestServiceServer.bindTo(builder).build();
+        BailianAgentService service = new BailianAgentService(
+                " https://dashscope.aliyuncs.com/api/v1/ ",
+                " app-1234567890 ",
+                " \"sk-test-secret\" ",
+                new ObjectMapper(),
+                builder.build()
+        );
+
+        server.expect(requestTo("https://dashscope.aliyuncs.com/api/v1/apps/app-1234567890/completion"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer sk-test-secret"))
+                .andRespond(withStatus(HttpStatus.OK)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"output\":{\"text\":\"百炼连接测试成功\",\"session_id\":\"session-1\"},\"request_id\":\"req-1\"}"));
+
+        AgentChatResponse response = service.chat(new AgentChatRequest("当前路网状态如何？", null, Map.of()));
+
+        assertThat(response.reply()).isEqualTo("百炼连接测试成功");
+        assertThat(response.sessionId()).isEqualTo("session-1");
+        assertThat(response.source()).isEqualTo("bailian");
+        assertThat(response.fallback()).isFalse();
+    }
+
+    @Test
+    void callsOpenAiCompatibleEndpointWhenConfigured() {
+        RestClient.Builder compatibleBuilder = RestClient.builder()
+                .baseUrl("https://example.aliyuncs.com/compatible-mode/v1");
+        server = MockRestServiceServer.bindTo(compatibleBuilder).build();
+        BailianAgentService service = new BailianAgentService(
+                "https://example.aliyuncs.com/api/v1",
+                "",
+                "sk-test-secret",
+                "",
+                "qwen-plus",
+                "compatible",
+                new ObjectMapper(),
+                RestClient.builder().baseUrl("https://example.aliyuncs.com/api/v1").build(),
+                compatibleBuilder.build()
+        );
+
+        server.expect(requestTo("https://example.aliyuncs.com/compatible-mode/v1/chat/completions"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer sk-test-secret"))
+                .andRespond(withStatus(HttpStatus.OK)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"));
+
+        AgentChatResponse response = service.chat(new AgentChatRequest("ping", null, Map.of()));
+
+        assertThat(response.reply()).isEqualTo("ok");
+        assertThat(response.sessionId()).isNull();
+        assertThat(response.source()).isEqualTo("bailian");
+        assertThat(response.fallback()).isFalse();
     }
 }

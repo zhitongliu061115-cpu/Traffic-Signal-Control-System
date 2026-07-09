@@ -7,8 +7,12 @@ import com.traffic.agent.dto.AgentChatRequest;
 import com.traffic.agent.dto.AgentChatResponse;
 import com.traffic.common.exception.BusinessException;
 import java.io.IOException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +21,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.ClientHttpResponse;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
@@ -88,9 +93,13 @@ public class BailianAgentService {
             """;
 
     private final String baseUrl;
+    private final String compatibleBaseUrl;
     private final String appId;
     private final String apiKey;
+    private final String callMode;
+    private final String model;
     private final RestClient restClient;
+    private final RestClient compatibleRestClient;
     private final ObjectMapper objectMapper;
 
     @Autowired
@@ -98,10 +107,32 @@ public class BailianAgentService {
             @Value("${bailian.base-url}") String baseUrl,
             @Value("${bailian.app-id}") String appId,
             @Value("${bailian.api-key}") String apiKey,
+            @Value("${bailian.compatible-base-url}") String compatibleBaseUrl,
+            @Value("${bailian.model}") String model,
+            @Value("${bailian.call-mode}") String callMode,
+            @Value("${bailian.connect-timeout-ms}") int connectTimeoutMs,
+            @Value("${bailian.read-timeout-ms}") int readTimeoutMs,
             ObjectMapper objectMapper
     ) {
-        this(baseUrl, appId, apiKey, objectMapper, RestClient.builder()
+        this(baseUrl, appId, apiKey, compatibleBaseUrl, model, callMode, objectMapper, RestClient.builder()
+                .requestFactory(requestFactory(connectTimeoutMs, readTimeoutMs))
                 .baseUrl(removeTrailingSlash(baseUrl))
+                .build(), RestClient.builder()
+                .requestFactory(requestFactory(connectTimeoutMs, readTimeoutMs))
+                .baseUrl(resolveCompatibleBaseUrl(baseUrl, compatibleBaseUrl))
+                .build());
+    }
+
+    BailianAgentService(
+            String baseUrl,
+            String appId,
+            String apiKey,
+            ObjectMapper objectMapper
+    ) {
+        this(baseUrl, appId, apiKey, "", "qwen-plus", "app", objectMapper, RestClient.builder()
+                .baseUrl(removeTrailingSlash(baseUrl))
+                .build(), RestClient.builder()
+                .baseUrl(resolveCompatibleBaseUrl(baseUrl, ""))
                 .build());
     }
 
@@ -112,21 +143,54 @@ public class BailianAgentService {
             ObjectMapper objectMapper,
             RestClient restClient
     ) {
+        this(baseUrl, appId, apiKey, "", "qwen-plus", "app", objectMapper, restClient, RestClient.builder()
+                .baseUrl(resolveCompatibleBaseUrl(baseUrl, ""))
+                .build());
+    }
+
+    BailianAgentService(
+            String baseUrl,
+            String appId,
+            String apiKey,
+            String compatibleBaseUrl,
+            String model,
+            String callMode,
+            ObjectMapper objectMapper,
+            RestClient restClient,
+            RestClient compatibleRestClient
+    ) {
         this.baseUrl = removeTrailingSlash(baseUrl);
-        this.appId = appId;
-        this.apiKey = apiKey;
+        this.compatibleBaseUrl = resolveCompatibleBaseUrl(this.baseUrl, compatibleBaseUrl);
+        this.appId = normalizeConfigValue(appId);
+        this.apiKey = normalizeConfigValue(apiKey);
+        this.callMode = normalizeCallMode(callMode);
+        this.model = normalizeModel(model);
         this.objectMapper = objectMapper;
         this.restClient = restClient;
+        this.compatibleRestClient = compatibleRestClient;
+        log.info(
+                "Bailian agent configured: mode={}, appId={}, baseUrl={}, compatibleBaseUrl={}, model={}, apiKeySet={}, apiKeyFingerprint={}",
+                this.callMode,
+                mask(this.appId),
+                this.baseUrl,
+                this.compatibleBaseUrl,
+                this.model,
+                StringUtils.hasText(this.apiKey),
+                fingerprint(this.apiKey)
+        );
     }
 
     public AgentChatResponse chat(AgentChatRequest request) {
-        if (!StringUtils.hasText(appId)) {
+        if (!isCompatibleMode() && !StringUtils.hasText(appId)) {
             log.warn("Bailian agent config fallback: appId missing");
             return configFallback("百炼应用 ID 未配置，请设置 BAILIAN_APP_ID 或 application.yml 中的 bailian.app-id。");
         }
         if (!StringUtils.hasText(apiKey)) {
             log.warn("Bailian agent config fallback: apiKey missing, appId={}", mask(appId));
-            return configFallback("百炼 API Key 未配置，请在后端环境变量 BAILIAN_API_KEY 中设置后重启服务。");
+            return configFallback("百炼 API Key 未配置，请在后端环境变量 DASHSCOPE_API_KEY 或 BAILIAN_API_KEY 中设置后重启服务。");
+        }
+        if (isCompatibleMode()) {
+            return chatCompatible(request);
         }
 
         Map<String, Object> input = new LinkedHashMap<>();
@@ -202,6 +266,71 @@ public class BailianAgentService {
         }
     }
 
+    private AgentChatResponse chatCompatible(AgentChatRequest request) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", model);
+        payload.put("messages", List.of(Map.of(
+                "role", "user",
+                "content", buildPrompt(request)
+        )));
+        payload.put("stream", false);
+
+        log.info(
+                "Bailian compatible request start: model={}, baseUrl={}, messageChars={}, contextKeys={}",
+                model,
+                compatibleBaseUrl,
+                request.message() == null ? 0 : request.message().length(),
+                request.context() == null ? "[]" : request.context().keySet()
+        );
+
+        try {
+            JsonNode response = compatibleRestClient.post()
+                    .uri("/chat/completions")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                    .body(payload)
+                    .retrieve()
+                    .onStatus(status -> status.isError(), (request_, response_) -> {
+                        int statusCode = response_.getStatusCode().value();
+                        String responseBody = sanitize(readResponseBody(response_));
+                        log.warn(
+                                "Bailian compatible request failed: status={}, model={}, baseUrl={}, responseBody={}",
+                                statusCode,
+                                model,
+                                compatibleBaseUrl,
+                                responseBody
+                        );
+                        throw new BusinessException(buildStatusMessage(statusCode, responseBody));
+                    })
+                    .body(JsonNode.class);
+
+            String reply = extractReply(response);
+            if (!StringUtils.hasText(reply)) {
+                log.warn("Bailian compatible empty reply: model={}, response={}", model, sanitize(toJson(response)));
+                throw new BusinessException("百炼返回为空，请检查 OpenAI 兼容地址、模型名称、API Key 权限和响应格式。");
+            }
+
+            log.info("Bailian compatible request success: model={}, replyChars={}", model, reply.length());
+            return new AgentChatResponse(reply, null, "bailian", false);
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (RestClientException ex) {
+            log.warn(
+                    "Bailian compatible client error: model={}, baseUrl={}, errorType={}, message={}",
+                    model,
+                    compatibleBaseUrl,
+                    ex.getClass().getSimpleName(),
+                    sanitize(ex.getMessage()),
+                    ex
+            );
+            throw new BusinessException("百炼调用失败：OpenAI 兼容接口网络或客户端异常，请检查 DASHSCOPE_COMPATIBLE_BASE_URL、DASHSCOPE_MODEL、API Key 与百炼服务状态。", ex);
+        } catch (RuntimeException ex) {
+            log.error("Bailian compatible unexpected error: model={}, baseUrl={}", model, compatibleBaseUrl, ex);
+            throw new BusinessException("百炼调用失败：后端处理异常，请查看后端日志定位。", ex);
+        }
+    }
+
     private String buildPrompt(AgentChatRequest request) {
         return SYSTEM_PROMPT
                 + "\n\n当前路网上下文（仅可基于这些数据作实时判断，缺失则说明无法获取）：\n"
@@ -250,6 +379,15 @@ public class BailianAgentService {
             }
         }
 
+        JsonNode rootChoices = response.path("choices");
+        if (rootChoices.isArray() && !rootChoices.isEmpty()) {
+            JsonNode first = rootChoices.get(0);
+            String content = first.path("message").path("content").asText(null);
+            if (StringUtils.hasText(content)) {
+                return content;
+            }
+        }
+
         return response.path("message").path("content").asText(null);
     }
 
@@ -270,8 +408,11 @@ public class BailianAgentService {
     }
 
     private static String buildStatusMessage(int statusCode, String responseBody) {
+        String normalizedBody = responseBody == null ? "" : responseBody.toLowerCase(Locale.ROOT);
         String hint = switch (statusCode) {
-            case 401 -> "请检查 BAILIAN_API_KEY 是否有效、是否有 DashScope/百炼调用权限，以及 API Key 与应用 ID 是否属于同一账号。";
+            case 401 -> normalizedBody.contains("api-key is blocked")
+                    ? "当前 API Key 已被百炼侧封禁或停用，请在阿里云百炼/模型服务灵积密钥管理中重新创建 API Key，更新 DASHSCOPE_API_KEY 后重启后端，并确认新 Key 与应用 ID 属于同一账号。"
+                    : "请检查 DASHSCOPE_API_KEY/BAILIAN_API_KEY 是否有效、是否有 DashScope/百炼调用权限，以及 API Key 与应用 ID 是否属于同一账号。";
             case 403 -> "请检查 API Key 权限、应用发布状态、服务开通状态和账号授权。";
             case 404 -> "请检查 BAILIAN_APP_ID、BAILIAN_BASE_URL 和应用是否已发布。";
             case 429 -> "百炼限流或额度不足，请稍后重试并检查账户额度。";
@@ -304,6 +445,23 @@ public class BailianAgentService {
                 : sanitized.substring(0, MAX_ERROR_BODY_CHARS) + "...";
     }
 
+    private static String fingerprint(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "<empty>";
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder prefix = new StringBuilder();
+            for (int i = 0; i < Math.min(4, hash.length); i++) {
+                prefix.append(String.format("%02x", hash[i]));
+            }
+            return "len=" + value.length() + ",sha256=" + prefix;
+        } catch (NoSuchAlgorithmException ex) {
+            return "len=" + value.length();
+        }
+    }
+
     private static String mask(String value) {
         if (!StringUtils.hasText(value)) {
             return "<empty>";
@@ -315,9 +473,80 @@ public class BailianAgentService {
     }
 
     private static String removeTrailingSlash(String baseUrl) {
-        if (!StringUtils.hasText(baseUrl)) {
+        String normalized = normalizeConfigValue(baseUrl);
+        if (!StringUtils.hasText(normalized)) {
             return "https://dashscope.aliyuncs.com/api/v1";
         }
-        return baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        return trimTrailingSlashes(normalized);
+    }
+
+    private static String normalizeConfigValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        String normalized = value.trim();
+        if (normalized.length() < 2) {
+            return normalized;
+        }
+        char first = normalized.charAt(0);
+        char last = normalized.charAt(normalized.length() - 1);
+        if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+            return normalized.substring(1, normalized.length() - 1).trim();
+        }
+        return normalized;
+    }
+
+    private static String resolveCompatibleBaseUrl(String baseUrl, String compatibleBaseUrl) {
+        String explicitCompatibleUrl = normalizeConfigValue(compatibleBaseUrl);
+        if (StringUtils.hasText(explicitCompatibleUrl)) {
+            return trimTrailingSlashes(explicitCompatibleUrl);
+        }
+
+        String normalizedBaseUrl = removeTrailingSlash(baseUrl);
+        String lowerBaseUrl = normalizedBaseUrl.toLowerCase(Locale.ROOT);
+        if (lowerBaseUrl.endsWith("/compatible-mode/v1")) {
+            return normalizedBaseUrl;
+        }
+        if (lowerBaseUrl.endsWith("/api/v1")) {
+            return normalizedBaseUrl.substring(0, normalizedBaseUrl.length() - "/api/v1".length())
+                    + "/compatible-mode/v1";
+        }
+        return normalizedBaseUrl + "/compatible-mode/v1";
+    }
+
+    private static String normalizeCallMode(String callMode) {
+        String normalized = normalizeConfigValue(callMode);
+        if (!StringUtils.hasText(normalized)) {
+            return "app";
+        }
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (lower.equals("compatible") || lower.equals("openai") || lower.equals("openai-compatible")) {
+            return "compatible";
+        }
+        return "app";
+    }
+
+    private static String normalizeModel(String model) {
+        String normalized = normalizeConfigValue(model);
+        return StringUtils.hasText(normalized) ? normalized : "qwen-plus";
+    }
+
+    private boolean isCompatibleMode() {
+        return "compatible".equals(callMode);
+    }
+
+    private static SimpleClientHttpRequestFactory requestFactory(int connectTimeoutMs, int readTimeoutMs) {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(Math.max(connectTimeoutMs, 1000));
+        requestFactory.setReadTimeout(Math.max(readTimeoutMs, 1000));
+        return requestFactory;
+    }
+
+    private static String trimTrailingSlashes(String value) {
+        String normalized = value;
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
     }
 }

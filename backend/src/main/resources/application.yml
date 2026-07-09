@@ -37,9 +37,14 @@ cityflow:
   frame-poll-interval-ms: 200
 
 bailian:
-  base-url: ${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/api/v1}
-  app-id: ${BAILIAN_APP_ID:d77d3dffe51447ecb6d3d34e7a779560}
-  api-key: ${BAILIAN_API_KEY:}
+  base-url: ${DASHSCOPE_HTTP_BASE_URL:${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/api/v1}}
+  app-id: ${DASHSCOPE_APP_ID:${BAILIAN_APP_ID:d77d3dffe51447ecb6d3d34e7a779560}}
+  api-key: ${DASHSCOPE_API_KEY:${BAILIAN_API_KEY:}}
+  call-mode: ${BAILIAN_CALL_MODE:app}
+  compatible-base-url: ${DASHSCOPE_COMPATIBLE_BASE_URL:${BAILIAN_COMPATIBLE_BASE_URL:}}
+  model: ${DASHSCOPE_MODEL:${BAILIAN_MODEL:qwen-plus}}
+  connect-timeout-ms: ${BAILIAN_CONNECT_TIMEOUT_MS:10000}
+  read-timeout-ms: ${BAILIAN_READ_TIMEOUT_MS:30000}
 
 ---
 
