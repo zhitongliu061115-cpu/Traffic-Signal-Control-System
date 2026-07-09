@@ -11,7 +11,7 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
-import config as cfg
+from app import ev_config as cfg
 
 
 # ============================================================

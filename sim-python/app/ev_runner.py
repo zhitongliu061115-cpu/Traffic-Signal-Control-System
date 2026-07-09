@@ -8,9 +8,9 @@ import time
 import json
 from collections import defaultdict
 
-import config as cfg
-from network_utils import generate_roadnet, generate_flow
-from ev_priority import (
+from app import ev_config as cfg
+from app.network_utils import generate_roadnet, generate_flow
+from app.ev_priority import (
     DijkstraPathPlanner, LWRQueueModel, LWRParams,
     SignalStrategy, SignalState, IntersectionCoordinator,
     RecoveryManager, ConflictResolver, EVLogger, CoordinateSnapper,
