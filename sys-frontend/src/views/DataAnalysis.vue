@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
+import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import bgVideo from '@/assets/images/bg/bg-video.mp4'
 
 type Tone = 'amber' | 'emerald' | 'rose' | 'sky'
@@ -540,23 +541,6 @@ const records = ref<MonitoringRecord[]>([
     water_m3: 12.8,
   },
 ])
-
-const dateText = computed(() =>
-  new Intl.DateTimeFormat('zh-CN', {
-    day: '2-digit',
-    month: '2-digit',
-    weekday: 'short',
-  }).format(now.value),
-)
-
-const timeText = computed(() =>
-  new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit',
-    hour12: false,
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(now.value),
-)
 
 const statusTotal = computed(() => statusDistribution.value.reduce((sum, item) => sum + item.count, 0))
 const warningCount = computed(
@@ -1846,140 +1830,7 @@ function ratio(value: number, total: number) {
     </div>
     <div class="cockpit-atmosphere" />
 
-    <header class="data-header">
-      <nav class="cyber-nav-shell" aria-label="Workspace navigation">
-        <RouterLink class="cyber-tab" to="/">能耗查询</RouterLink>
-        <RouterLink class="cyber-tab cyber-tab-active" to="/data-analysis">数据分析</RouterLink>
-        <button class="cyber-tab" type="button">智慧运维</button>
-      </nav>
-
-      <div class="title-plate">
-        <svg aria-hidden="true" preserveAspectRatio="none" viewBox="0 0 620 58">
-          <defs>
-            <linearGradient id="dataTitleStrokeVue" x1="0" x2="1" y1="0" y2="0">
-              <stop offset="0%" stop-color="#034d7a" stop-opacity="0" />
-              <stop offset="16%" stop-color="#00d4ff" stop-opacity="0.76" />
-              <stop offset="50%" stop-color="#7af7ff" stop-opacity="0.95" />
-              <stop offset="84%" stop-color="#00d4ff" stop-opacity="0.76" />
-              <stop offset="100%" stop-color="#034d7a" stop-opacity="0" />
-            </linearGradient>
-            <linearGradient id="dataTitleFillVue" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stop-color="#0a2540" stop-opacity="0.68" />
-              <stop offset="100%" stop-color="#020817" stop-opacity="0.08" />
-            </linearGradient>
-          </defs>
-          <path
-            d="M48 6H572L606 29L572 52H48L14 29L48 6Z"
-            fill="url(#dataTitleFillVue)"
-            stroke="url(#dataTitleStrokeVue)"
-            stroke-width="1.8"
-          />
-          <path d="M118 14H502M118 44H502" stroke="url(#dataTitleStrokeVue)" stroke-linecap="round" stroke-width="1.4" />
-          <path d="M54 14H96M524 14H566M54 44H96M524 44H566" stroke="#7af7ff" stroke-linecap="round" stroke-width="2.2" />
-          <path d="M78 7L52 29L78 51M542 7L568 29L542 51" fill="none" opacity="0.55" stroke="#00d4ff" stroke-width="1.2" />
-        </svg>
-        <div class="title-plate-text">建筑能耗管理与运维系统</div>
-      </div>
-
-      <div class="data-header-status">
-        <div
-          class="data-status-cell data-status-online"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '系统运行时长', value: '18 天 06:42' },
-                { label: '在线设备数', value: '286 / 292' },
-                { label: 'CPU / 内存', value: '38% / 61%' },
-                { label: '最近心跳', value: `${syncSeconds} 秒前` },
-              ],
-              title: '系统在线状态',
-            })
-          "
-        >
-          <span class="data-status-dot" />
-          <div>
-            <div class="data-status-kicker">系统在线</div>
-            <div class="data-status-value text-emerald">健康运行</div>
-          </div>
-        </div>
-        <span class="data-status-divider" />
-        <div
-          class="data-status-cell text-right"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '服务器时间', value: timeText },
-                { label: '时区', value: 'Asia/Shanghai' },
-                { label: 'NTP 同步', value: '正常' },
-              ],
-              title: '时间同步状态',
-            })
-          "
-        >
-          <div>
-            <div class="data-status-kicker">{{ dateText }}</div>
-            <div class="status-time">{{ timeText }}</div>
-          </div>
-        </div>
-        <span class="data-status-divider" />
-        <div
-          class="data-status-cell data-status-weather"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '天气', value: '多云' },
-                { label: '室外温度', value: '26°C' },
-                { label: '体感温度', value: '27°C' },
-                { label: '数据来源', value: '本地气象站' },
-              ],
-              title: '室外天气',
-            })
-          "
-        >
-          <span class="weather-glyph" aria-hidden="true" />
-          <div>
-            <div class="data-status-kicker">多云</div>
-            <div class="data-status-value text-cyan">26°C</div>
-          </div>
-        </div>
-        <button
-          class="data-status-icon-btn data-status-bell"
-          type="button"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '活动告警', tone: 'rose', value: `${warningCount} 条` },
-                { label: '待处理问题', value: '1 个' },
-                { label: '最近事件', value: toasts[0]?.title ?? '暂无' },
-              ],
-              title: '通知中心',
-            })
-          "
-        >
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M12 3.5a5.5 5.5 0 0 0-5.5 5.5v3.4L5 15v1h14v-1l-1.5-2.6V9A5.5 5.5 0 0 0 12 3.5Zm-2.2 14a2.3 2.3 0 0 0 4.4 0h-4.4Z" fill="currentColor" />
-          </svg>
-        </button>
-        <button
-          class="data-status-icon-btn data-status-gear"
-          type="button"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '刷新策略', value: '实时 / 当前时段 / 累计分层' },
-                { label: '动效模式', value: 'CSS HUD' },
-                { label: '数据源', value: 'mock 实时模型' },
-              ],
-              title: '页面设置',
-            })
-          "
-        >
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M19.4 13.5a7.8 7.8 0 0 0 0-3l2-1.5-2-3.4-2.4 1a7.3 7.3 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.6A7.3 7.3 0 0 0 7 6.6l-2.4-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 3l-2 1.5 2 3.4 2.4-1a7.3 7.3 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a7.3 7.3 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.5ZM12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z" fill="currentColor" />
-          </svg>
-        </button>
-      </div>
-    </header>
+    <SystemWorkbenchHeader active-page="analytics" />
 
     <section
       class="realtime-sync-widget"
