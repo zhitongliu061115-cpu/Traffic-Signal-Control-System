@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import sys
@@ -11,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.cityflow_adapter import CityFlowAdapter
 from app.config import DATA_DIR, DEFAULT_SCENE_ID
+from app.errors import ApiError, error_response
 
 
 class CityFlowRequestHandler(BaseHTTPRequestHandler):
@@ -19,6 +22,9 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path_parts = self._path_parts()
         try:
+            if self._matches(path_parts, ["health"]):
+                self._send_json(200, self.adapter.health())
+                return
             if self._matches(path_parts, ["cityflow", "scenes", None, "roadnet"]):
                 scene_id = path_parts[2]
                 self._send_json(200, self.adapter.get_roadnet(scene_id))
@@ -27,11 +33,13 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
                 sid = path_parts[2]
                 self._send_json(200, self.adapter.next_frame(sid))
                 return
-            self._send_json(404, {"message": "not found"})
-        except KeyError as ex:
-            self._send_json(404, {"message": str(ex)})
+            self._send_error(ApiError(404, "NOT_FOUND", "endpoint not found", False))
+        except ApiError as ex:
+            self._send_error(ex)
+        except json.JSONDecodeError:
+            self._send_error(ApiError(400, "INVALID_JSON", "request body must be valid JSON", False))
         except Exception as ex:
-            self._send_json(500, {"message": str(ex)})
+            self._send_error(ApiError(500, "INTERNAL_ERROR", str(ex), True))
 
     def do_POST(self) -> None:
         path_parts = self._path_parts()
@@ -42,9 +50,23 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
                 speed = body.get("speed", 1.0)
                 self._send_json(200, self.adapter.create_simulation(scene_id, speed))
                 return
-            self._send_json(404, {"message": "not found"})
+            if self._matches(path_parts, ["cityflow", "simulations", None, "actions"]):
+                sid = path_parts[2]
+                body = self._read_json_body()
+                self._send_json(200, self.adapter.apply_control_actions(sid, body))
+                return
+            self._send_error(ApiError(404, "NOT_FOUND", "endpoint not found", False))
+        except ApiError as ex:
+            self._send_error(ex)
+        except json.JSONDecodeError:
+            self._send_error(ApiError(400, "INVALID_JSON", "request body must be valid JSON", False))
         except Exception as ex:
-            self._send_json(500, {"message": str(ex)})
+            self._send_error(ApiError(500, "INTERNAL_ERROR", str(ex), True))
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._send_common_headers(0)
+        self.end_headers()
 
     def log_message(self, format: str, *args) -> None:
         print("%s - %s" % (self.address_string(), format % args))
@@ -67,11 +89,19 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
     def _send_json(self, status: int, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_common_headers(len(data))
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_error(self, error: ApiError) -> None:
+        self._send_json(error.status, error_response(error))
+
+    def _send_common_headers(self, content_length: int) -> None:
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
 
 def run(host: str, port: int) -> None:

@@ -3,6 +3,10 @@ node_modules/
 dist/
 coverage/
 target/
+.maven-repo/
+.maven-tmp/
+temp-three-frontend/node_modules/
+temp-three-frontend/dist/
 
 # Python
 __pycache__/
@@ -21,6 +25,10 @@ __pycache__/
 *.ckpt
 vector_store/
 sumo_output/
+
+# Local runtime logs
+*.log
+sim-python/logs/
 
 # Editors and system files
 .vscode/
