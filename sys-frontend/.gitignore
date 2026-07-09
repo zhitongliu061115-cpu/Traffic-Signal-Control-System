@@ -38,5 +38,9 @@ __screenshots__/
 # Vite
 *.timestamp-*-*.mjs
 
+# Env
+.env
+.env.local
+
 test-results/
 playwright-report/
