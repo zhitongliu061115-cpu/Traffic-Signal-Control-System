@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 
 from app.errors import ApiError
+from app.ev_service import EVPriorityService
 from app.models import JsonDict
 from app.roadnet_parser import PHASE_CODES, RoadnetParser
 from app.scene_registry import SceneDefinition, SceneRegistry
@@ -49,6 +50,7 @@ class RealCityFlowEngine(SimulationEngine):
         self.parsers: dict[str, RoadnetParser] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
         self.phase_indexes: dict[str, dict[str, list[int]]] = {}
+        self.ev_service = EVPriorityService()
 
     def active_session_count(self) -> int:
         return len(self.sessions)
@@ -103,6 +105,18 @@ class RealCityFlowEngine(SimulationEngine):
             parser = self.parsers[session.scene_id]
             road_by_id = self.road_index[session.scene_id]
             self._advance_signal_phases(session, sim_time)
+
+            # ---- EV priority: detect and adjust signals ----
+            if self.ev_service.has_evs(sid):
+                ev_overrides = self.ev_service.step(sid, session.engine, sim_time)
+                for inter_id, phase_idx in ev_overrides.items():
+                    try:
+                        session.engine.set_tl_phase(inter_id, phase_idx - 1)
+                        session.current_phases[inter_id] = phase_idx
+                    except Exception:
+                        pass
+            # -------------------------------------------------
+
             vehicles = self._vehicle_states(session, road_by_id)
             roads = self._road_states(session, vehicles, road_by_id)
             intersections = self._intersection_states(session.scene_id, roads)

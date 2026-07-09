@@ -50,6 +50,12 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
                 speed = body.get("speed", 1.0)
                 self._send_json(200, self.adapter.create_simulation(scene_id, speed))
                 return
+            if self._matches(path_parts, ["cityflow", "simulations", None, "dispatch"]):
+                sid = path_parts[2]
+                body = self._read_json_body()
+                self._send_json(200, self.adapter.dispatch(sid, body))
+                return
+
             if self._matches(path_parts, ["cityflow", "simulations", None, "actions"]):
                 sid = path_parts[2]
                 body = self._read_json_body()
