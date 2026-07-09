@@ -27,6 +27,11 @@ cityflow:
   default-scene-id: jinan_3x4
   frame-poll-interval-ms: 200
 
+bailian:
+  base-url: ${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/api/v1}
+  app-id: ${BAILIAN_APP_ID:d77d3dffe51447ecb6d3d34e7a779560}
+  api-key: ${BAILIAN_API_KEY:}
+
 ---
 
 spring:
