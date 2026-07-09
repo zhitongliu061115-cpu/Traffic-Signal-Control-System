@@ -71,8 +71,31 @@ function maybeGenerateRandomAlert(): void {
 let vehicleTimer: ReturnType<typeof setInterval> | null = null
 let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
+let dataRetryTimer: ReturnType<typeof setInterval> | null = null
+
+async function syncDashboardData(): Promise<void> {
+  const loaded = await store.loadDashboardData()
+  if (loaded && dataRetryTimer) {
+    clearInterval(dataRetryTimer)
+    dataRetryTimer = null
+  }
+}
 
 onMounted(() => {
+  void syncDashboardData()
+
+  dataRetryTimer = setInterval(() => {
+    if (store.dataSourceStatus === 'database') {
+      if (dataRetryTimer) {
+        clearInterval(dataRetryTimer)
+        dataRetryTimer = null
+      }
+      return
+    }
+
+    void syncDashboardData()
+  }, 3000)
+
   // 200ms — 车辆位置高频更新
   vehicleTimer = setInterval(() => {
     store.updateVehiclePositions(200)
@@ -96,6 +119,7 @@ onUnmounted(() => {
   if (vehicleTimer) clearInterval(vehicleTimer)
   if (statsTimer) clearInterval(statsTimer)
   if (trendTimer) clearInterval(trendTimer)
+  if (dataRetryTimer) clearInterval(dataRetryTimer)
   console.log('[Dashboard] 定时刷新已停止')
 })
 </script>

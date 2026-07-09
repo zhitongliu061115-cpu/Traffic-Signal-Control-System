@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useTrafficStore } from '@/stores/traffic'
 
 type ActivePage = 'analytics' | 'network'
 
@@ -8,6 +10,8 @@ const props = defineProps<{
 }>()
 
 const SYSTEM_TITLE = '信号灯配时控制与应急通行信控系统'
+const trafficStore = useTrafficStore()
+const { dataSourceStatus, dataSourceMessage } = storeToRefs(trafficStore)
 
 const navItems = [
   {
@@ -43,6 +47,23 @@ const timeText = computed(() =>
     second: '2-digit',
   }).format(now.value),
 )
+
+const sourceText = computed(() => {
+  if (dataSourceStatus.value === 'database') return '数据库数据'
+  if (dataSourceStatus.value === 'loading') return '连接中'
+  return '本地演示'
+})
+
+const sourceToneClass = computed(() => {
+  if (dataSourceStatus.value === 'database') return 'text-emerald'
+  if (dataSourceStatus.value === 'loading') return 'text-cyan'
+  return 'text-amber'
+})
+
+const sourceDotClass = computed(() => ({
+  'data-status-dot--loading': dataSourceStatus.value === 'loading',
+  'data-status-dot--warning': dataSourceStatus.value === 'mock',
+}))
 
 onMounted(() => {
   clockTimer = setInterval(() => {
@@ -138,11 +159,11 @@ onUnmounted(() => {
       </div>
 
       <div class="data-header-status">
-        <div class="data-status-cell data-status-online" title="系统在线状态">
-          <span class="data-status-dot" />
+        <div class="data-status-cell data-status-online" :title="dataSourceMessage">
+          <span class="data-status-dot" :class="sourceDotClass" />
           <div>
-            <div class="data-status-kicker">系统在线</div>
-            <div class="data-status-value text-emerald">健康运行</div>
+            <div class="data-status-kicker">数据来源</div>
+            <div class="data-status-value" :class="sourceToneClass">{{ sourceText }}</div>
           </div>
         </div>
         <span class="data-status-divider" />
@@ -356,6 +377,10 @@ onUnmounted(() => {
   color: #22d3a0;
 }
 
+.text-amber {
+  color: #fbbf24;
+}
+
 .text-cyan,
 .status-time {
   color: #7af7ff;
@@ -378,6 +403,20 @@ onUnmounted(() => {
     0 0 0 4px rgba(34, 211, 160, 0.1),
     0 0 14px rgba(34, 211, 160, 0.85);
   animation: workbench-status-dot-breathe 1.8s ease-in-out infinite;
+}
+
+.data-status-dot--loading {
+  background: #7af7ff;
+  box-shadow:
+    0 0 0 4px rgba(122, 247, 255, 0.1),
+    0 0 14px rgba(122, 247, 255, 0.85);
+}
+
+.data-status-dot--warning {
+  background: #fbbf24;
+  box-shadow:
+    0 0 0 4px rgba(251, 191, 36, 0.1),
+    0 0 14px rgba(251, 191, 36, 0.85);
 }
 
 .data-status-divider {
