@@ -10,7 +10,7 @@
 import { onMounted, onUnmounted } from 'vue'
 import { useTrafficStore } from '@/stores/traffic'
 
-import SystemStatusBar from '@/components/SystemStatusBar.vue'
+import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import TrafficStats from '@/components/TrafficStats.vue'
 import AlertPanel from '@/components/AlertPanel.vue'
 import MapRoadNetwork from '@/components/MapRoadNetwork.vue'
@@ -20,6 +20,10 @@ import CompareCharts from '@/components/CompareCharts.vue'
 import AiAssistant from '@/components/AiAssistant.vue'
 
 const store = useTrafficStore()
+
+defineOptions({
+  name: 'DashboardView',
+})
 
 // ---- 随机告警素材 ----
 const randomAlertPool = [
@@ -107,10 +111,8 @@ onUnmounted(() => {
     </div>
     <div class="cockpit-atmosphere" />
 
-    <!-- ============ 顶部：系统状态栏 (8%) ============ -->
-    <header class="ts-topbar">
-      <SystemStatusBar />
-    </header>
+    <!-- ============ 顶部：宿主导航栏 (8%) ============ -->
+    <SystemWorkbenchHeader active-page="network" class="ts-topbar" />
 
     <!-- ============ 主体：左-中-右三栏 (65%) ============ -->
     <main class="ts-body">
