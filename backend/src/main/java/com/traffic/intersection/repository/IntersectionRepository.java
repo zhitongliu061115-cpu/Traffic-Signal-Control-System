@@ -24,7 +24,7 @@ public class IntersectionRepository {
     public List<IntersectionResponse> findAll() {
         return jdbcTemplate.query("""
                 select id, code, name, district, longitude, latitude, status,
-                       metadata::text as metadata, created_at, updated_at
+                       metadata, created_at, updated_at
                 from intersections
                 order by code
                 """, this::mapIntersection);
@@ -33,7 +33,7 @@ public class IntersectionRepository {
     public Optional<IntersectionResponse> findByCode(String code) {
         List<IntersectionResponse> rows = jdbcTemplate.query("""
                 select id, code, name, district, longitude, latitude, status,
-                       metadata::text as metadata, created_at, updated_at
+                       metadata, created_at, updated_at
                 from intersections
                 where code = ?
                 """, this::mapIntersection, code);

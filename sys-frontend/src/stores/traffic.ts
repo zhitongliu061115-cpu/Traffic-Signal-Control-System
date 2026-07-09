@@ -32,6 +32,9 @@ import {
   findAssistantReply,
   mockAssistantReplies,
 } from '@/mock/trafficMock'
+import { fetchDashboardBootstrap } from '@/api/dashboard'
+
+type DataSourceStatus = 'loading' | 'database' | 'mock'
 
 // ---- 相位循环顺序 ----
 const PHASE_CYCLE: SignalPhase[] = [
@@ -70,9 +73,12 @@ export const useTrafficStore = defineStore('traffic', () => {
   const compareMetrics = ref<CompareMetrics>(structuredClone(mockCompareMetrics))
   const congestionTrend = ref<CongestionTrendPoint[]>(generateInitialTrend())
   const refreshConfig = ref<RefreshConfig>({ ...mockRefreshConfig })
+  const assistantReplies = ref(structuredClone(mockAssistantReplies))
   const systemLatency = ref(42)
   const mapZoom = ref(13)
   const alertIdCounter = ref(100)
+  const dataSourceStatus = ref<DataSourceStatus>('mock')
+  const dataSourceMessage = ref('当前显示本地演示数据')
 
   // ================================================================
   // 2. Getters
@@ -166,7 +172,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
 
     // 将 E001 车辆类型设为救护车并放置于应急路线首段
-    const amber = vehicles.value.find((v) => v.id === 'E001')
+    const amber = vehicles.value.find((v) => v.id === emergencyVehicle.value.id)
     if (amber) {
       amber.type = 'ambulance'
       amber.speed = 62
@@ -208,7 +214,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     activeGreenWaveIndex.value = -1
 
     // 将应急车辆还原为普通车辆
-    const ev = vehicles.value.find((v) => v.id === 'E001')
+    const ev = vehicles.value.find((v) => v.id === emergencyVehicle.value.id)
     if (ev) {
       ev.type = 'normal'
       ev.speed = 30 + Math.random() * 30
@@ -244,7 +250,7 @@ export const useTrafficStore = defineStore('traffic', () => {
 
       // 应急车辆靠近目标时推进绿波索引
       if (
-        v.id === 'E001' &&
+        v.id === emergencyVehicle.value.id &&
         v.progress > 0.6 &&
         activeGreenWaveIndex.value < emergencyRoute.value.length - 1
       ) {
@@ -296,7 +302,9 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     // ---- 统计指标 ----
     const s = statistics.value
-    s.totalFlow = Math.max(2500, Math.min(5500, s.totalFlow + Math.round((Math.random() - 0.5) * 120)))
+    const minFlow = dataSourceStatus.value === 'database' ? 6500 : 2500
+    const maxFlow = dataSourceStatus.value === 'database' ? 12000 : 5500
+    s.totalFlow = Math.max(minFlow, Math.min(maxFlow, s.totalFlow + Math.round((Math.random() - 0.5) * 120)))
     s.averageSpeed = Math.max(30, Math.min(55, +(s.averageSpeed + (Math.random() - 0.5) * 2).toFixed(1)))
     s.averageWaitTime = Math.max(20, Math.min(50, +(s.averageWaitTime + (Math.random() - 0.5) * 3).toFixed(1)))
     s.congestionIndex = Math.max(30, Math.min(80, +(s.congestionIndex + (Math.random() - 0.5) * 4).toFixed(1)))
@@ -402,7 +410,11 @@ export const useTrafficStore = defineStore('traffic', () => {
       }
 
       // 应急车辆靠近目标路口时推进绿波索引
-      if (v.id === 'E001' && v.progress > 0.6 && activeGreenWaveIndex.value < emergencyRoute.value.length - 1) {
+      if (
+        v.id === emergencyVehicle.value.id &&
+        v.progress > 0.6 &&
+        activeGreenWaveIndex.value < emergencyRoute.value.length - 1
+      ) {
         activeGreenWaveIndex.value++
       }
     }
@@ -455,7 +467,9 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     // ---- 5d. 统计指标轻微变化 ----
     const s = statistics.value
-    s.totalFlow = Math.max(2500, Math.min(5500, s.totalFlow + Math.round((Math.random() - 0.5) * 120)))
+    const minFlow = dataSourceStatus.value === 'database' ? 6500 : 2500
+    const maxFlow = dataSourceStatus.value === 'database' ? 12000 : 5500
+    s.totalFlow = Math.max(minFlow, Math.min(maxFlow, s.totalFlow + Math.round((Math.random() - 0.5) * 120)))
     s.averageSpeed = Math.max(30, Math.min(55, +(s.averageSpeed + (Math.random() - 0.5) * 2).toFixed(1)))
     s.averageWaitTime = Math.max(20, Math.min(50, +(s.averageWaitTime + (Math.random() - 0.5) * 3).toFixed(1)))
     s.congestionIndex = Math.max(30, Math.min(80, +(s.congestionIndex + (Math.random() - 0.5) * 4).toFixed(1)))
@@ -543,7 +557,35 @@ export const useTrafficStore = defineStore('traffic', () => {
 
   /** 智能体问答 */
   function askAssistant(input: string): string {
-    return findAssistantReply(input, mockAssistantReplies)
+    return findAssistantReply(input, assistantReplies.value)
+  }
+
+  async function loadDashboardData(): Promise<boolean> {
+    dataSourceStatus.value = 'loading'
+    dataSourceMessage.value = '正在连接后端数据库'
+
+    try {
+      const data = await fetchDashboardBootstrap()
+      intersections.value = data.intersections
+      roads.value = data.roads
+      vehicles.value = data.vehicles
+      emergencyVehicle.value = data.emergencyVehicle
+      emergencyRoute.value = data.emergencyRoute
+      alerts.value = data.alerts
+      statistics.value = data.statistics
+      compareMetrics.value = data.compareMetrics
+      congestionTrend.value = data.congestionTrend
+      assistantReplies.value = data.assistantReplies
+      dataSourceStatus.value = 'database'
+      dataSourceMessage.value = '已连接后端数据库，当前显示数据库数据'
+      console.log('[TrafficStore] dashboard data loaded from backend')
+      return true
+    } catch (error) {
+      dataSourceStatus.value = 'mock'
+      dataSourceMessage.value = '后端接口不可用，当前显示本地演示数据'
+      console.warn('[TrafficStore] backend dashboard data unavailable, using local mock', error)
+      return false
+    }
   }
 
   /** 重置所有数据到初始状态 */
@@ -555,6 +597,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     emergencyRoute.value = structuredClone(mockEmergencyRoute)
     alerts.value = structuredClone(mockInitialAlerts)
     statistics.value = structuredClone(mockStatistics)
+    compareMetrics.value = structuredClone(mockCompareMetrics)
     congestionTrend.value = generateInitialTrend()
     systemMode.value = 'normal'
     aiEnabled.value = true
@@ -562,6 +605,9 @@ export const useTrafficStore = defineStore('traffic', () => {
     activeGreenWaveIndex.value = 0
     systemLatency.value = 42
     alertIdCounter.value = 100
+    assistantReplies.value = structuredClone(mockAssistantReplies)
+    dataSourceStatus.value = 'mock'
+    dataSourceMessage.value = '当前显示本地演示数据'
     trendTick = 0
     // 数据已全部重置
   }
@@ -589,6 +635,8 @@ export const useTrafficStore = defineStore('traffic', () => {
     systemLatency,
     mapZoom,
     alertIdCounter,
+    dataSourceStatus,
+    dataSourceMessage,
 
     // getters
     selectedIntersection,
@@ -618,6 +666,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     updateSystemLatency,
     addCongestionTrendPoint,
     askAssistant,
+    loadDashboardData,
     resetAllData,
   }
 })
