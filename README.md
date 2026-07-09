@@ -40,7 +40,9 @@ Traffic-Signal-Control-System/
 
 ## 文档入口
 
+- [项目简要介绍](docs/PROJECT_BRIEF.md)
 - [项目结构说明](docs/PROJECT_STRUCTURE.md)
+- [Traffic-R1 算法资料索引](docs/TRAFFIC_R1_REFERENCES.md)
 - [后端文档入口](backend/docs/README.md)
 - [阶段 2 调用链说明](backend/docs/CALL_CHAIN.md)
 - [后端架构说明](backend/docs/BACKEND_ARCHITECTURE.md)
