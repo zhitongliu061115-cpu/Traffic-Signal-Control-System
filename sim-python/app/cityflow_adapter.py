@@ -67,6 +67,36 @@ class CityFlowAdapter:
             "engineMode": self.engine_mode,
         }
 
+    def _session_roadnet(self, sid: str) -> JsonDict:
+        """Get roadnet dict for a session (real engine only)."""
+        if self.real_engine is not None:
+            scene_id = self.real_engine.sessions[sid].scene_id
+            return self._parser(scene_id).raw()
+        return {}
+
+    def _session_scene(self, sid: str) -> str:
+        """Get scene_id for a session."""
+        if self.real_engine is not None and sid in self.real_engine.sessions:
+            return self.real_engine.sessions[sid].scene_id
+        if sid in self.sessions:
+            return self.sessions[sid].scene_id
+        return ""
+
+    def dispatch(self, sid: str, params: JsonDict) -> JsonDict:
+        """Dispatch an emergency vehicle with coordinate-based routing."""
+        if self.real_engine is not None:
+            return self.real_engine.ev_service.dispatch(
+                sid=sid,
+                scene_id=self._session_scene(sid),
+                roadnet=self._session_roadnet(sid),
+                params=params,
+            )
+        raise ApiError(
+            status=400, code="CITYFLOW_ENGINE_NOT_CONFIGURED",
+            message="dispatch requires cityflow engine mode",
+            retryable=False,
+        )
+
     def next_frame(self, sid: str) -> JsonDict:
         if self.real_engine is not None:
             return self.real_engine.next_frame(sid)
