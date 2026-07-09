@@ -4,8 +4,10 @@
 
 ## 公共文档
 
+- `PROJECT_BRIEF.md`：项目简要介绍，包含当前实现、计划模块和整体路线。
 - `PROJECT_STRUCTURE.md`：项目整体目录结构和模块边界。
 - `CFRP-1.0-前后端通信协议.md`：前后端实时仿真通信协议。
+- `TRAFFIC_R1_REFERENCES.md`：Traffic-R1 / LLMTSCS 算法实验资料索引和接入关系。
 - `GIT_GUIDELINES.md`：Git 分支、提交和协作规范。
 - `PROMPTS.md`：团队可复用 Prompt 和 AI 协作提示词。
 
