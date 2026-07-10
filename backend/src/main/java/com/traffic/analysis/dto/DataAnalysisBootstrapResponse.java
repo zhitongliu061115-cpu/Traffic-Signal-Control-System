@@ -68,6 +68,7 @@ public record DataAnalysisBootstrapResponse(
             double chilled_water_supply_temp,
             String device_id,
             String device_status,
+            String control_strategy,
             double electricity_kwh,
             double env_humidity,
             double env_temperature,
