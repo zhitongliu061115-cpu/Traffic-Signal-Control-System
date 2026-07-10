@@ -11,7 +11,6 @@ import { initAMap, type AMapInstance } from '@/map/amapInit'
 import { addAMapRoadLayer } from '@/map/amapRoads'
 import { createTLMarkers, type TLMarker } from '@/map/amapMarkers'
 import { fetchDrivingPath } from '@/map/amapPathGen'
-import { searchIntersection } from '@/map/amapGeocode'
 import RoadNetwork from '@/components/RoadNetwork.vue'
 import MapLegend from '@/components/MapLegend.vue'
 import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
@@ -56,12 +55,8 @@ async function bootstrapMap(): Promise<void> {
 async function loadRealData(): Promise<void> {
   const map = amapInstance!.map
 
-  // ---- 第 1 步：POI 修正路口坐标 ----
-  for (const it of intersections.value) {
-    const kw = it.name.replace(/-/g, '')
-    const geo = await searchIntersection(kw)
-    if (geo) { it.lng = geo.lng; it.lat = geo.lat }
-  }
+  // ---- 第 1 步：从后端加载数据（失败自动降级 mock）----
+  await store.loadDashboardData()
 
   // ---- 第 2 步：路径规划 ----
   for (const r of roads.value) {

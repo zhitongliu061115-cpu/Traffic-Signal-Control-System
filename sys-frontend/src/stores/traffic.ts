@@ -17,6 +17,13 @@ import type {
   CompareMetrics,
   CongestionTrendPoint,
   RefreshConfig,
+  SimulationStatus,
+  SimFrameData,
+  SimVehicleState,
+  SimRoadState,
+  SimSignalState,
+  SimIntersectionState,
+  SimMetrics,
 } from '@/types/traffic'
 import {
   mockIntersections,
@@ -33,6 +40,14 @@ import {
   mockAssistantReplies,
 } from '@/mock/trafficMock'
 import { fetchDashboardBootstrap } from '@/api/dashboard'
+import {
+  createSimulation,
+  startSimulation,
+  pauseSimulation,
+  stopSimulation,
+  fetchRoadnet,
+} from '@/api/simulation'
+import type { CreateSimulationResponse } from '@/types/traffic'
 
 type DataSourceStatus = 'loading' | 'database' | 'mock'
 
@@ -79,6 +94,22 @@ export const useTrafficStore = defineStore('traffic', () => {
   const alertIdCounter = ref(100)
   const dataSourceStatus = ref<DataSourceStatus>('mock')
   const dataSourceMessage = ref('当前显示本地演示数据')
+
+  // ---- 仿真状态 ----
+  const simulationStatus = ref<SimulationStatus>('booting')
+  const simulationSid = ref<string | null>(null)
+  const simulationSceneId = ref('jinan_3x4')
+  const simulationSpeed = ref(1.0)
+  const simulationControllerType = ref('fixed')
+  const simulationSimTime = ref(0)
+  const simulationFrameCount = ref(0)
+  const simulationLastFrameAt = ref(0)
+  const simulationVehicles = ref<SimVehicleState[]>([])
+  const simulationRoads = ref<SimRoadState[]>([])
+  const simulationSignals = ref<SimSignalState[]>([])
+  const simulationIntersections = ref<SimIntersectionState[]>([])
+  const simulationMetrics = ref<SimMetrics | null>(null)
+  const simulationErrorMessage = ref<string | null>(null)
 
   // ================================================================
   // 2. Getters
@@ -588,6 +619,182 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
   }
 
+  // ================================================================
+  // 6. Actions — 仿真管理
+  // ================================================================
+
+  /** 处理从 WebSocket/API 收到的仿真帧数据 */
+  function handleSimFrame(frame: SimFrameData): void {
+    simulationSimTime.value = frame.simTime
+    simulationVehicles.value = frame.vehicles ?? []
+    simulationRoads.value = frame.roads ?? []
+    simulationSignals.value = frame.signals ?? []
+    simulationIntersections.value = frame.intersections ?? []
+    simulationMetrics.value = frame.metrics ?? null
+    simulationFrameCount.value++
+    simulationLastFrameAt.value = Date.now()
+
+    // 用仿真数据同步刷新前端路口/道路/车辆状态
+    applySimFrameToTrafficData(frame)
+
+    // 检查是否有帧超时（仿真运行中但 3.5s 没收到新帧）
+    if (
+      simulationStatus.value === 'running' &&
+      simulationLastFrameAt.value > 0 &&
+      Date.now() - simulationLastFrameAt.value > 3500
+    ) {
+      simulationErrorMessage.value = `等待新帧中… last frame ${simulationFrameCount.value}`
+    } else {
+      simulationErrorMessage.value = null
+    }
+  }
+
+  /** 将仿真帧数据同步到现有的 traffic 数据结构（渐进式替换 mock） */
+  function applySimFrameToTrafficData(frame: SimFrameData): void {
+    // ---- 信号灯 → 路口相位 ----
+    for (const sig of frame.signals) {
+      const it = intersections.value.find((i) => i.id === sig.intersectionId)
+      if (!it) continue
+
+      // 映射 phaseCode → SignalPhase
+      // CFRP 1.0: ETWT=东西直行, NTST=南北直行, ELWL=东西左转, NLSL=南北左转
+      const phaseMap: Record<string, SignalPhase> = {
+        ETWT: 'eastwest_straight', ew_straight: 'eastwest_straight',
+        NTST: 'northsouth_straight', ns_straight: 'northsouth_straight',
+        ELWL: 'eastwest_left', ew_left: 'eastwest_left',
+        NLSL: 'northsouth_left', ns_left: 'northsouth_left',
+        all_red: 'all_red',
+      }
+      it.currentPhase = phaseMap[sig.phaseCode] ?? it.currentPhase
+      // 标记设备在线
+      it.deviceStatus = 'online'
+    }
+
+    // ---- 路口排队/延误 ----
+    for (const istate of frame.intersections) {
+      const it = intersections.value.find((i) => i.id === istate.id)
+      if (!it) continue
+      it.queueLength = istate.queueCount
+      it.averageDelay = Math.round(istate.avgWait)
+      it.congestionIndex = istate.level === 'jammed' ? 90
+        : istate.level === 'slow' ? 55
+        : 25
+    }
+
+    // ---- 道路状态 ----
+    for (const roadState of frame.roads) {
+      const r = roads.value.find((rd) => rd.id === roadState.id)
+      if (!r) continue
+      r.flow = roadState.vehicleCount * 60 // 粗略换算 veh/h
+      r.speed = roadState.avgSpeed
+      r.queueLength = roadState.queueCount
+      r.congestionIndex =
+        roadState.level === 'jammed' ? 90
+        : roadState.level === 'slow' ? 55
+        : 20
+    }
+
+    // ---- 车辆：将 SimVehicleState[] 注入到 vehicles[] ----
+    if (frame.vehicles.length > 0) {
+      const newVehicles: Vehicle[] = frame.vehicles.map((sv) => ({
+        id: sv.id,
+        roadId: sv.roadId,
+        progress: 0,
+        speed: sv.speed,
+        type: 'normal' as const,
+        laneIndex: sv.lane,
+      }))
+      const specialVehicles = vehicles.value.filter((v) => v.type !== 'normal')
+      vehicles.value = [...newVehicles, ...specialVehicles]
+    }
+
+    // ---- 全局统计 ----
+    if (frame.metrics) {
+      statistics.value.totalFlow = frame.metrics.throughput ?? statistics.value.totalFlow
+      statistics.value.averageSpeed = frame.metrics.avgSpeed ?? statistics.value.averageSpeed
+      statistics.value.averageWaitTime = frame.metrics.avgWait ?? statistics.value.averageWaitTime
+    }
+  }
+
+  /** 创建并初始化仿真会话 */
+  async function initSimulationSession(): Promise<CreateSimulationResponse | null> {
+    simulationStatus.value = 'booting'
+    simulationErrorMessage.value = null
+
+    try {
+      const result = await createSimulation({
+        sceneId: simulationSceneId.value,
+        speed: simulationSpeed.value,
+        controllerType: simulationControllerType.value,
+      })
+
+      simulationSid.value = result.sid
+      simulationStatus.value = 'paused'
+      console.log('[TrafficStore] simulation created', result)
+      return result
+    } catch (err) {
+      simulationStatus.value = 'finished'
+      simulationErrorMessage.value = `创建仿真会话失败: ${err instanceof Error ? err.message : String(err)}`
+      console.error('[TrafficStore] simulation creation failed', err)
+      return null
+    }
+  }
+
+  /** 启动仿真（帧开始推送） */
+  async function resumeSimulation(): Promise<void> {
+    if (!simulationSid.value || simulationStatus.value !== 'paused') return
+    try {
+      await startSimulation(simulationSid.value)
+      simulationStatus.value = 'running'
+      simulationErrorMessage.value = null
+      console.log('[TrafficStore] simulation started')
+    } catch (err) {
+      simulationErrorMessage.value = `启动仿真失败: ${err instanceof Error ? err.message : String(err)}`
+      throw err
+    }
+  }
+
+  /** 暂停仿真 */
+  async function pauseSimulationSession(): Promise<void> {
+    if (!simulationSid.value || simulationStatus.value !== 'running') return
+    try {
+      await pauseSimulation(simulationSid.value)
+      simulationStatus.value = 'paused'
+      console.log('[TrafficStore] simulation paused')
+    } catch (err) {
+      simulationErrorMessage.value = `暂停仿真失败: ${err instanceof Error ? err.message : String(err)}`
+      throw err
+    }
+  }
+
+  /** 停止仿真 */
+  async function stopSimulationSession(): Promise<void> {
+    if (!simulationSid.value || simulationStatus.value === 'finished') return
+    try {
+      await stopSimulation(simulationSid.value)
+      simulationStatus.value = 'finished'
+      console.log('[TrafficStore] simulation stopped')
+    } catch (err) {
+      simulationErrorMessage.value = `停止仿真失败: ${err instanceof Error ? err.message : String(err)}`
+      throw err
+    }
+  }
+
+  /** 重置仿真状态（不操作后端） */
+  function resetSimulationState(): void {
+    simulationStatus.value = 'booting'
+    simulationSid.value = null
+    simulationSimTime.value = 0
+    simulationFrameCount.value = 0
+    simulationLastFrameAt.value = 0
+    simulationVehicles.value = []
+    simulationRoads.value = []
+    simulationSignals.value = []
+    simulationIntersections.value = []
+    simulationMetrics.value = null
+    simulationErrorMessage.value = null
+  }
+
   /** 重置所有数据到初始状态 */
   function resetAllData(): void {
     intersections.value = structuredClone(mockIntersections)
@@ -638,6 +845,21 @@ export const useTrafficStore = defineStore('traffic', () => {
     dataSourceStatus,
     dataSourceMessage,
 
+    // simulation state
+    simulationStatus,
+    simulationSid,
+    simulationSceneId,
+    simulationSpeed,
+    simulationControllerType,
+    simulationSimTime,
+    simulationFrameCount,
+    simulationVehicles,
+    simulationRoads,
+    simulationSignals,
+    simulationIntersections,
+    simulationMetrics,
+    simulationErrorMessage,
+
     // getters
     selectedIntersection,
     onlineIntersections,
@@ -668,5 +890,14 @@ export const useTrafficStore = defineStore('traffic', () => {
     askAssistant,
     loadDashboardData,
     resetAllData,
+
+    // simulation actions
+    handleSimFrame,
+    applySimFrameToTrafficData,
+    initSimulationSession,
+    resumeSimulation,
+    pauseSimulationSession,
+    stopSimulationSession,
+    resetSimulationState,
   }
 })

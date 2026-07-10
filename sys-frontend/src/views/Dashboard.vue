@@ -7,8 +7,10 @@
 //   - 2s：   交通统计 + 道路指数 + 信号灯（中频）
 //   - 5s：   拥堵趋势 + 随机告警（低频）
 // ================================================================
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useTrafficStore } from '@/stores/traffic'
+import { useSimulationWebSocket } from '@/composables/useSimulationWebSocket'
+import type { SimFrameData } from '@/types/traffic'
 
 import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import TrafficStats from '@/components/TrafficStats.vue'
@@ -20,6 +22,7 @@ import CompareCharts from '@/components/CompareCharts.vue'
 import AiAssistant from '@/components/AiAssistant.vue'
 
 const store = useTrafficStore()
+const { status: wsStatus, lastFrameData, connect: wsConnect, disconnect: wsDisconnect } = useSimulationWebSocket()
 
 defineOptions({
   name: 'DashboardView',
@@ -96,6 +99,17 @@ onMounted(() => {
     void syncDashboardData()
   }, 3000)
 
+  // ---- 仿真初始化：创建会话 → 连接 WebSocket ----
+  async function initSimulation(): Promise<void> {
+    const result = await store.initSimulationSession()
+    if (result?.sid) {
+      wsConnect(result.sid)
+    }
+  }
+
+  // 页面启动自动连接仿真 WebSocket（后端不可用时不影响 mock 模式运行）
+  void initSimulation()
+
   // 200ms — 车辆位置高频更新
   vehicleTimer = setInterval(() => {
     store.updateVehiclePositions(200)
@@ -115,12 +129,25 @@ onMounted(() => {
   console.log('[Dashboard] 定时刷新已启动 (200ms / 2s / 5s)')
 })
 
+// ---- 仿真帧数据 → Store ----
+watch(
+  lastFrameData,
+  (frame) => {
+    if (frame) {
+      store.handleSimFrame(frame as SimFrameData)
+    }
+  },
+  { deep: true },
+)
+
 onUnmounted(() => {
   if (vehicleTimer) clearInterval(vehicleTimer)
   if (statsTimer) clearInterval(statsTimer)
   if (trendTimer) clearInterval(trendTimer)
   if (dataRetryTimer) clearInterval(dataRetryTimer)
-  console.log('[Dashboard] 定时刷新已停止')
+  wsDisconnect()
+  store.resetSimulationState()
+  console.log('[Dashboard] 定时刷新已停止，WebSocket 已断开')
 })
 </script>
 
