@@ -2,23 +2,30 @@
 
 本文档记录当前后端与 Python CityFlow 服务的部署方式、环境边界和云端部署注意事项。后续部署前必须先阅读本文档，避免把本地 WSL 联调方式误当成云端部署方案。
 
-## 1. 当前本地联调方式
+## 1. 当前默认联调方式
 
-当前本地联调采用两个独立进程：
+当前默认联调方式是：Spring Boot 在本地运行，Python CityFlow 在阿里云 24 小时运行，Traffic-R 在 AutoDL 按需启动。
 
 ```text
-Spring Boot 主后端
-  -> HTTP 调用
-Python CityFlow 服务
-  -> 调用
-CityFlow Engine
+本地 Spring Boot
+  -> HTTP 调用阿里云 Python CityFlow
+  -> CityFlow Engine
+
+本地 Spring Boot
+  -> SSH 隧道
+  -> AutoDL Traffic-R /predict-batch（仅 RL 测试时需要）
 ```
 
-Spring Boot 不负责启动 Python 进程，也不会进入 WSL 或 conda 环境。Spring Boot 只读取配置项：
+Spring Boot 不负责启动 Python 进程，也不会进入 WSL、conda 或 AutoDL 环境。Spring Boot 只读取配置项：
 
 ```yaml
 cityflow:
-  base-url: http://localhost:9000
+  base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9000}
+  api-token: ${CITYFLOW_API_TOKEN:jLEc-o3L16migUKQ7f_OlH94qsjEstFf}
+  client-id: ${CITYFLOW_CLIENT_ID:hcj}
+
+traffic-r:
+  base-url: http://127.0.0.1:16008
 ```
 
 然后通过 HTTP 调用 Python 服务：
@@ -27,9 +34,23 @@ cityflow:
 GET  /cityflow/scenes/{sceneId}/roadnet
 POST /cityflow/simulations
 GET  /cityflow/simulations/{sid}/frame
+POST /cityflow/simulations/{sid}/actions
+POST /cityflow/simulations/{sid}/start
+POST /cityflow/simulations/{sid}/pause
+POST /cityflow/simulations/{sid}/stop
 ```
 
-本地真实 CityFlow 模式需要手动在 WSL Ubuntu 中启动：
+当前阿里云 CityFlow 的路径、systemd、启动和更新流程以 `CITYFLOW_CLOUD_RUNBOOK.md` 为准；Traffic-R 的 AutoDL 启动和隧道流程以 `TRAFFIC_R_CLOUD_RUNBOOK.md` 为准。
+
+### 本地 WSL 备用 CityFlow
+
+如果阿里云 CityFlow 不可用，才需要在本地 WSL Ubuntu 中启动真实 CityFlow 模式，并通过环境变量把 Spring Boot 切回本地：
+
+```powershell
+$env:CITYFLOW_BASE_URL="http://127.0.0.1:9000"
+```
+
+WSL 内手动启动：
 
 ```sh
 cd /mnt/d/Github/Traffic-Signal-Control-System/sim-python
@@ -97,12 +118,157 @@ curl http://127.0.0.1:9000/health
 - Spring Boot 通过 HTTP 调用 Python 服务。
 - `cityflow.base-url` 必须指向云端 Python 服务真实地址，不能盲目使用 `localhost`。
 - 前端仍然只连接 Spring Boot，不直接连接 Python CityFlow 服务。
+- CityFlow 如果开放公网端口，必须启用 `CITYFLOW_API_TOKEN`，Spring Boot 通过 `X-CityFlow-Token` 访问。
+- 多人开发时，每个成员应配置不同 `CITYFLOW_CLIENT_ID`，避免同一 client 下创建新仿真时清理他人的旧会话。
+- AutoDL Traffic-R 不需要长期运行；只有选择 `traffic-r` / `rl` 策略做模型测试时才启动。
 
-## 3. 推荐部署方案
+## 3. 本地通过隧道接入云端 Traffic-R
+
+当前阶段是本地 Spring Boot 通过 SSH 隧道访问 AutoDL 上的 Traffic-R。公网未映射模型服务端口时，本地 Spring Boot 不能直接访问云端 `6008`，必须先在本机打开 SSH 本地端口转发：
+
+```powershell
+ssh -p 49328 -L 16008:127.0.0.1:6008 root@connect.westd.seetacloud.com
+```
+
+其中：
+
+- `6008` 是云端 Traffic-R 服务监听端口。
+- `16008` 是本机转发端口。
+- Spring Boot 只访问本机隧道地址 `http://127.0.0.1:16008`。
+
+后端默认配置为：
+
+```yaml
+traffic-r:
+  enabled: true
+  base-url: ${TRAFFIC_R_BASE_URL:http://127.0.0.1:16008}
+  health-path: ${TRAFFIC_R_HEALTH_PATH:/health}
+  predict-path: ${TRAFFIC_R_PREDICT_PATH:/predict}
+  batch-predict-path: ${TRAFFIC_R_BATCH_PREDICT_PATH:/predict-batch}
+  decision-interval-sec: ${TRAFFIC_R_DECISION_INTERVAL_SEC:10}
+  timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:30}
+  fallback-controller: ${TRAFFIC_R_FALLBACK_CONTROLLER:max-pressure}
+```
+
+本地验证隧道和模型接口：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:16008/health
+```
+
+批量预测接口验证建议使用 PowerShell 原生 JSON 序列化，避免 `curl` 在 PowerShell 中被别名和引号转义影响：
+
+```powershell
+$body = @{
+  sceneId = "jinan_3x4"
+  simTime = 120.0
+  intersections = @(
+    @{
+      intersectionId = "intersection_1_1"
+      currentPhaseIndex = 1
+      currentPhaseCode = "ETWT"
+      phaseCandidates = @(
+        @{ phaseIndex = 1; phaseCode = "ETWT" },
+        @{ phaseIndex = 2; phaseCode = "NTST" },
+        @{ phaseIndex = 3; phaseCode = "ELWL" },
+        @{ phaseIndex = 4; phaseCode = "NLSL" }
+      )
+    },
+    @{
+      intersectionId = "intersection_1_2"
+      currentPhaseIndex = 2
+      currentPhaseCode = "NTST"
+      phaseCandidates = @(
+        @{ phaseIndex = 1; phaseCode = "ETWT" },
+        @{ phaseIndex = 2; phaseCode = "NTST" },
+        @{ phaseIndex = 3; phaseCode = "ELWL" },
+        @{ phaseIndex = 4; phaseCode = "NLSL" }
+      )
+    }
+  )
+  observation = @{
+    roads = @(
+      @{ id = "road_1_1_0"; queueCount = 8; vehicleCount = 12 },
+      @{ id = "road_1_1_1"; queueCount = 2; vehicleCount = 4 }
+    )
+    metrics = @{
+      queueCount = 10
+    }
+  }
+} | ConvertTo-Json -Depth 10
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:16008/predict-batch" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Traffic-R 在线批量推理当前测试平均约 7 秒，不能按 `cityflow.frame-poll-interval-ms=100` 每帧调用。后端策略调度必须按 `traffic-r.decision-interval-sec` 做低频决策，当前联调默认 10 秒仿真时间每个仿真会话最多调用一次 `/predict-batch`；推理完成后一次性下发所有路口决策。若连续 3 次无效、超时或请求失败，后端自动启用 Max-Pressure fallback，连续 3 次有效后恢复 RL。
+
+注意：`http://127.0.0.1:16008` 只适用于“本地 Windows 通过 SSH 隧道访问云端模型”的联调场景。后续如果 Spring Boot、Python CityFlow、Traffic-R 模型都部署在同一台云服务器上，不能继续使用 `16008` 隧道端口。
+
+## 4. 后续同机部署方案
+
+后续验收或演示如果把 Spring Boot、Python CityFlow、Traffic-R 模型和 PostgreSQL 都部署在同一台 Linux 云服务器上，推荐采用“四个独立进程 + 仅 Spring Boot 对外暴露”的方式：
+
+```text
+Linux 云服务器
+|-- Spring Boot:       0.0.0.0:8080   对前端开放
+|-- Python CityFlow:   127.0.0.1:9000 仅 Spring Boot 访问
+|-- Traffic-R Service: 127.0.0.1:6008 仅 Spring Boot 访问
+`-- PostgreSQL:        127.0.0.1:5432 仅后端访问
+```
+
+Spring Boot 配置应改为服务器内本机地址：
+
+```yaml
+cityflow:
+  base-url: ${CITYFLOW_BASE_URL:http://127.0.0.1:9000}
+
+traffic-r:
+  enabled: true
+  base-url: ${TRAFFIC_R_BASE_URL:http://127.0.0.1:6008}
+  health-path: /health
+  predict-path: /predict
+  batch-predict-path: /predict-batch
+  decision-interval-sec: 10
+  timeout-sec: 30
+  fallback-controller: max-pressure
+```
+
+推荐启动顺序：
+
+1. 启动 PostgreSQL，并确认后端数据库账号可连接。
+2. 启动 Python CityFlow 服务，监听 `127.0.0.1:9000` 或服务器内网地址。
+3. 启动 Traffic-R 服务，监听 `127.0.0.1:6008`。
+4. 在服务器本机验证 `curl http://127.0.0.1:9000/health`。
+5. 在服务器本机验证 `curl http://127.0.0.1:6008/health` 和 `POST /predict-batch`。
+6. 启动 Spring Boot，并通过环境变量覆盖：
+
+```sh
+export CITYFLOW_BASE_URL=http://127.0.0.1:9000
+export TRAFFIC_R_BASE_URL=http://127.0.0.1:6008
+java -jar traffic-signal-backend.jar
+```
+
+同机部署时不需要 SSH `-L` 本地端口转发，也不需要把 Traffic-R 的 `6008` 暴露到公网。公网只需要开放 Spring Boot 或 Nginx 网关端口；Python CityFlow 和 Traffic-R 保持服务器内部访问即可。
+
+如果后续使用 Docker Compose，同一规则仍然成立，但容器内 `127.0.0.1` 只代表当前容器本身，Spring Boot 容器访问其他容器时必须使用服务名：
+
+```yaml
+cityflow:
+  base-url: http://sim-python:9000
+
+traffic-r:
+  base-url: http://traffic-r:6008
+```
+
+## 5. 其他推荐部署方案
 
 ### 方案 A：同一台 Linux 服务器
 
-适合实训验收和小规模演示，配置简单。
+适合实训验收和小规模演示，配置简单；如果接入 Traffic-R，应优先采用上一节“四个独立进程”的同机方案。
 
 ```text
 Linux 云服务器
@@ -146,7 +312,7 @@ cityflow:
 
 注意：容器内的 `localhost` 只代表当前容器本身。Spring Boot 容器访问 Python 容器时，不能写 `http://localhost:9000`，应使用 Compose 服务名 `sim-python`。
 
-## 4. 不推荐方案
+## 6. 不推荐方案
 
 不要让 Spring Boot 通过命令行启动 WSL、conda 或 Python：
 
@@ -162,7 +328,15 @@ Spring Boot -> Runtime.exec("wsl ... python app/server.py")
 - 权限和环境变量容易出错。
 - 不利于后续容器化和 CI/CD。
 
-## 5. 部署前检查清单
+同样不要让 Spring Boot 通过命令行启动 Traffic-R 模型服务：
+
+```text
+Spring Boot -> Runtime.exec("python traffic_r_service.py ...")
+```
+
+Traffic-R 推理进程启动慢、依赖 GPU 和虚拟环境，必须作为独立服务管理。后续可用 `systemd`、`tmux`、`supervisor` 或容器编排托管进程生命周期。
+
+## 7. 部署前检查清单
 
 部署前必须逐项确认：
 
@@ -172,13 +346,24 @@ Spring Boot -> Runtime.exec("wsl ... python app/server.py")
 | Python 服务启动 | `curl http://127.0.0.1:9000/health` | `engineMode=cityflow` |
 | Spring Boot 能访问 Python | 创建仿真接口 | 返回 `sid` |
 | Spring Boot 能拉取 frame | 启动仿真后观察 WebSocket | 收到 `sim.frame` |
+| CityFlow lane-level 状态可用 | 检查 `sim.frame.data.laneStates` | 每个真实路口包含 `WT/WL/ST/SL/ET/EL/NT/NL` |
+| Traffic-R 隧道可用 | `Invoke-RestMethod http://127.0.0.1:16008/health` | 返回健康状态 |
+| Traffic-R 批量预测可用 | 按上文示例 POST `/predict-batch` | 返回 `decisions` 列表 |
+| 同机 Traffic-R 配置 | `TRAFFIC_R_BASE_URL=http://127.0.0.1:6008` | 不再使用本地隧道端口 `16008` |
 | 前端不直连 Python | 检查前端配置 | 只访问 Spring Boot |
 | 数据库可用 | Spring Boot 启动日志 / Flyway | 迁移成功 |
 
-## 6. 当前已知部署风险
+## 8. 当前已知部署风险
 
 - 当前 Python 服务仍使用 `ThreadingHTTPServer`，适合实训联调，不适合长期生产运行。
 - 当前仿真会话保存在 Python 内存中，Python 服务重启后会话丢失。
 - 当前 Spring Boot 尚未主动调用 `/health` 做 Python 服务启动前检查。
 - Windows 中文用户目录可能导致 Maven/Spring Boot 插件运行 classpath 转码异常；本项目已在 `backend/.mvn/maven.config` 中固定本地 Maven 仓库和临时目录，开发启动时应先 `cd backend` 再执行 `mvn spring-boot:run`。
 - 云端如果拆分部署 Spring Boot 和 Python，必须修改 `cityflow.base-url`，不能继续使用本地默认值。
+- 云端 Traffic-R 如果未做公网端口映射，必须保持 SSH 隧道进程运行；后端默认 `traffic-r.base-url` 只代表本机隧道地址，不代表 AutoDL 公网可直连。
+- 后续三服务同机部署时，`traffic-r.base-url` 应切换为服务器内服务地址 `http://127.0.0.1:6008`；`http://127.0.0.1:16008` 只代表本地 Windows SSH 隧道。
+
+## 9. 运行手册入口
+
+- CityFlow 阿里云 24h 服务路径、启动、验证与更新流程见 `CITYFLOW_CLOUD_RUNBOOK.md`。
+- Traffic-R / AutoDL 云端模型启动、SSH 隧道、本地验证与后端接入流程见 `TRAFFIC_R_CLOUD_RUNBOOK.md`。

@@ -234,7 +234,9 @@ controller 中直接写复杂业务逻辑
 SimulationFrameScheduler
   -> SimulationService.publishNextFrame
   -> CityFlowClient.nextFrame
-  -> Python CityFlow 推进一步
+  -> Python CityFlow 返回最新缓存快照
+  -> StrategyDispatchService 低频生成策略决策
+  -> CityFlowClient.applyControlActions 异步下发 actions
   -> SimulationWebSocketHandler
   -> 前端 WebSocket 接收 sim.frame
 ```
@@ -251,13 +253,16 @@ SimulationFrameScheduler
 
 ## 8. 当前验收边界
 
-当前阶段验收只看：
+当前阶段验收至少看：
 
 1. Spring Boot 能编译启动。
 2. 能从 Python CityFlow 获取静态路网。
 3. 能创建仿真会话。
 4. 能定时获取仿真帧。
 5. 能通过 WebSocket 推送 `sim.frame`。
-6. 前端能渲染路网和车辆动画。
+6. FixedTime、MaxPressure、Traffic-R 都能生成统一 `ControlDecision`。
+7. `ControlDecision` 能通过 Python `/cityflow/simulations/{sid}/actions` 下发到 CityFlow。
+8. 前端车辆和信号灯只能根据 `sim.frame` 渲染，不能根据模型响应伪造真实状态。
+9. 前端能渲染路网、车辆动画、道路状态和信号灯。
 
-不验收 RL 控制效果、Max-Pressure 控制效果、应急绿波和智能体。
+应急绿波、智能体和正式权限体系仍不在当前验收边界内。

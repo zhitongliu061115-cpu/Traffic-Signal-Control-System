@@ -10,6 +10,8 @@
 - `DATABASE_CONNECTION.md`：PostgreSQL 连接方式、环境变量和现有数据库兼容说明。
 - `TECHNICAL_DESIGN.md`：后端技术设计、数据流、数据库原则和当前阶段开发顺序。
 - `DEPLOYMENT.md`：本地联调、云端部署、服务地址配置和部署风险说明。
+- `CITYFLOW_CLOUD_RUNBOOK.md`：阿里云 CityFlow 24h 服务路径、启动、验证和更新流程。
+- `TRAFFIC_R_CLOUD_RUNBOOK.md`：AutoDL Traffic-R 模型启动、SSH 隧道、本地验证和后端接入流程。
 - `RISK_TODO.md`：后端风险、半成品、漏洞和 TODO 清单。
 
 ## 阅读顺序
@@ -29,5 +31,6 @@
 - 调用链变化：同步更新 `CALL_CHAIN.md`。
 - 数据库或技术方案变化：同步更新 `TECHNICAL_DESIGN.md`。
 - 部署方式、服务地址或运行环境变化：同步更新 `DEPLOYMENT.md`。
+- 云端 CityFlow 或 Traffic-R 启动方式变化：同步更新对应 runbook。
 - 发现半成品、不完善实现、潜在漏洞或可能误导团队的代码：必须同步更新 `RISK_TODO.md`。
 - 前后端共同协议变化：同步更新公共文档 `../../docs/CFRP-1.0-前后端通信协议.md`。

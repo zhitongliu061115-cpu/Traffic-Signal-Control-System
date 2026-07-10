@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import './styles.css';
 
-const SCENE_ID = 'jinan_3x4';
+const DEFAULT_SCENE_ID = 'jinan_3x4_stress';
 const DEFAULT_API_BASE = 'http://127.0.0.1:8080';
 const API_BASE = new URLSearchParams(window.location.search).get('api') || DEFAULT_API_BASE;
 const WS_BASE = API_BASE.replace(/^http/, 'ws');
@@ -16,21 +16,32 @@ const levelColors = {
 
 const LANE_WIDTH = 10;
 const ROAD_SHOULDER = 4;
+const VISUAL_LANES_PER_DIRECTION = 3;
+const MEDIAN_GAP = 7;
 const VEHICLE_WIDTH = 6.2;
 const VEHICLE_LENGTH = 13.5;
 const VEHICLE_HEIGHT = 5.2;
 const MAX_LINEAR_INTERPOLATION = 90;
 const FRAME_INTERVAL_MS = 200;
 const VEHICLE_LERP_MS = 180;
+const MIN_DYNAMIC_LERP_MS = 120;
+const MAX_DYNAMIC_LERP_MS = 2500;
 
 const els = {
   canvas: document.querySelector('#trafficCanvas'),
   statusDot: document.querySelector('#statusDot'),
   statusText: document.querySelector('#statusText'),
+  sceneSelect: document.querySelector('#sceneSelect'),
+  controllerSelect: document.querySelector('#controllerSelect'),
+  speedSelect: document.querySelector('#speedSelect'),
+  recreateButton: document.querySelector('#recreateButton'),
+  activeController: document.querySelector('#activeController'),
+  cityflowApplyState: document.querySelector('#cityflowApplyState'),
+  cityflowAppliedPhase: document.querySelector('#cityflowAppliedPhase'),
+  scheduledDepartureCount: document.querySelector('#scheduledDepartureCount'),
   vehicleCount: document.querySelector('#vehicleCount'),
   queueCount: document.querySelector('#queueCount'),
   avgSpeed: document.querySelector('#avgSpeed'),
-  avgWait: document.querySelector('#avgWait'),
   throughput: document.querySelector('#throughput'),
   toggleRunButton: document.querySelector('#toggleRunButton'),
   stopButton: document.querySelector('#stopButton'),
@@ -83,10 +94,14 @@ directional.position.set(500, 900, 300);
 scene.add(ambient, directional);
 
 let roadnet = null;
+let activeSceneId = DEFAULT_SCENE_ID;
 let sid = null;
 let ws = null;
 let frameCount = 0;
 let lastFrameAt = 0;
+let lastMessageAt = 0;
+let lastVisualSimTime = null;
+let observedFrameIntervalMs = FRAME_INTERVAL_MS;
 let roadMeshesById = new Map();
 let intersectionById = new Map();
 let roadById = new Map();
@@ -97,6 +112,14 @@ let vehiclesById = new Map();
 let bounds = { minX: 0, maxX: 1, minZ: 0, maxZ: 1 };
 let simulationState = 'booting';
 let controlBusy = false;
+let activeControllerType = 'traffic-r';
+let latestSignals = [];
+
+const controllerLabels = {
+  'traffic-r': 'RL',
+  'max-pressure': 'Max Pressure',
+  'fixed-time': 'Fixed Time',
+};
 
 function worldPoint(point) {
   return new THREE.Vector3(point.x, 0, -point.y);
@@ -107,6 +130,33 @@ function setStatus(text, mode = 'loading') {
   els.statusDot.className = `dot ${mode}`;
 }
 
+function selectedControllerType() {
+  return els.controllerSelect?.value || 'traffic-r';
+}
+
+function selectedSceneId() {
+  return els.sceneSelect?.value || DEFAULT_SCENE_ID;
+}
+
+function selectedSimulationSpeed() {
+  const value = Number(els.speedSelect?.value || 20);
+  return Number.isFinite(value) && value > 0 ? value : 20;
+}
+
+function selectedWarmupSeconds() {
+  return 0;
+}
+
+function controllerLabel(controllerType) {
+  return controllerLabels[controllerType] || controllerType || 'Unknown';
+}
+
+function resetDecisionPanel(controllerType = selectedControllerType()) {
+  els.activeController.textContent = controllerLabel(controllerType);
+  els.cityflowApplyState.textContent = 'Waiting for CityFlow';
+  els.cityflowAppliedPhase.textContent = 'Waiting';
+}
+
 function setSimulationState(nextState) {
   simulationState = nextState;
   const hasSession = Boolean(sid);
@@ -115,6 +165,10 @@ function setSimulationState(nextState) {
 
   els.toggleRunButton.disabled = !hasSession || isFinished;
   els.stopButton.disabled = !hasSession || isFinished;
+  els.recreateButton.disabled = isRunning || controlBusy;
+  els.sceneSelect.disabled = isRunning || controlBusy;
+  els.controllerSelect.disabled = isRunning || controlBusy;
+  els.speedSelect.disabled = isRunning || controlBusy;
   els.toggleRunButton.textContent = isRunning ? '暂停' : '启动';
   els.toggleRunButton.classList.toggle('running', isRunning);
   els.stopButton.classList.toggle('stopped', isFinished);
@@ -211,6 +265,29 @@ function roadWidth(laneCount) {
   return Math.max(1, laneCount) * LANE_WIDTH + ROAD_SHOULDER * 2;
 }
 
+function visualLaneCount() {
+  return VISUAL_LANES_PER_DIRECTION;
+}
+
+function visualRoadWidth() {
+  return roadWidth(visualLaneCount());
+}
+
+function visualRoadOffset(road) {
+  if (!road || !road.points || road.points.length < 2) return new THREE.Vector3();
+  const points = road.points.map(worldPoint);
+  const direction = new THREE.Vector3().subVectors(points[points.length - 1], points[0]).setY(0);
+  if (direction.lengthSq() < 0.001) return new THREE.Vector3();
+  direction.normalize();
+  const side = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
+  return side.multiplyScalar(visualRoadWidth() / 2 + MEDIAN_GAP / 2);
+}
+
+function visualRoadPoints(road) {
+  const offset = visualRoadOffset(road);
+  return road.points.map((point) => worldPoint(point).add(offset));
+}
+
 function drawIntersections() {
   const realIntersections = roadnet.intersections.filter((item) => !item.virtual);
   const virtualIntersections = roadnet.intersections.filter((item) => item.virtual);
@@ -244,15 +321,15 @@ function drawRoads() {
   for (const road of roadnet.roads) {
     roadById.set(road.id, road);
     const meshes = [];
-    const points = road.points.map(worldPoint);
+    const points = visualRoadPoints(road);
 
     for (let i = 0; i < points.length - 1; i += 1) {
-      const mesh = makeRoadSegmentMesh(points[i], points[i + 1], road.laneCount, levelColors.unknown, 0);
+      const mesh = makeRoadSegmentMesh(points[i], points[i + 1], visualLaneCount(), levelColors.unknown, 0);
       mesh.userData.roadId = road.id;
       roadGroup.add(mesh);
       meshes.push(mesh);
 
-      const laneMark = makeLaneMark(points[i], points[i + 1], road.laneCount);
+      const laneMark = makeLaneMark(points[i], points[i + 1], visualLaneCount());
       for (const mark of laneMark) {
         roadGroup.add(mark);
       }
@@ -334,7 +411,7 @@ function buildSignalApproaches() {
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
-    const points = road.points.map(worldPoint);
+    const points = visualRoadPoints(road);
     const first = points[0];
     const last = points[points.length - 1];
     const near = first.distanceTo(intersection.point) <= last.distanceTo(intersection.point) ? first : last;
@@ -344,10 +421,9 @@ function buildSignalApproaches() {
     direction.normalize();
 
     const side = new THREE.Vector3(-direction.z, 0, direction.x);
-    const stopDistance = 38 + Math.max(0, road.laneCount - 1) * 1.5;
-    const sideOffset = roadWidth(road.laneCount) / 2 + 10;
-    const position = intersection.point
-      .clone()
+    const stopDistance = 42 + Math.max(0, visualLaneCount() - 1) * 1.5;
+    const sideOffset = visualRoadWidth() / 2 + 12;
+    const position = near.clone()
       .addScaledVector(direction, -stopDistance)
       .addScaledVector(side, sideOffset);
 
@@ -358,7 +434,7 @@ function buildSignalApproaches() {
       roadId: roadLink.fromRoadId,
       position,
       direction,
-      laneCount: road.laneCount,
+      laneCount: visualLaneCount(),
     });
   }
 
@@ -396,64 +472,53 @@ function updateSignals(signals = []) {
       drawTurnHint(roadLink);
     }
 
-    const signalGreenRoads = greenRoadsForSignal(activeLinks);
-    const highlightedRoads = new Set(activeLinks.map((roadLink) => roadLink.fromRoadId));
     const approaches = signalApproachesByIntersection.get(signal.intersectionId) || [];
+    const movementStates = movementStatesForActiveLinks(activeLinks);
+    const highlightedRoads = new Set(activeLinks.map((roadLink) => roadLink.fromRoadId));
     for (const approach of approaches) {
-      drawSignalHead(approach, signalGreenRoads.has(approach.roadId), signal);
+      drawSignalHead(approach, movementStates.get(approach.roadId) || { straight: false, left: false }, signal);
     }
     drawPhaseRing(intersection.point, signal, highlightedRoads.size > 0);
   }
 }
 
-function greenRoadsForSignal(activeLinks) {
-  const primaryLinks = activeLinks.filter((roadLink) => roadLink.type !== 'turn_right');
-  const linksForLamp = primaryLinks.length > 0 ? primaryLinks : activeLinks;
-  return new Set(linksForLamp.map((roadLink) => roadLink.fromRoadId));
+function movementStatesForActiveLinks(activeLinks) {
+  const states = new Map();
+  for (const roadLink of activeLinks) {
+    if (roadLink.type === 'turn_right') continue;
+    if (!states.has(roadLink.fromRoadId)) {
+      states.set(roadLink.fromRoadId, { straight: false, left: false });
+    }
+    const state = states.get(roadLink.fromRoadId);
+    if (roadLink.type === 'turn_left') {
+      state.left = true;
+    } else {
+      state.straight = true;
+    }
+  }
+  return states;
 }
 
-function drawSignalHead(approach, isGreen, signal) {
+function drawSignalHead(approach, movementState, signal) {
   const group = new THREE.Group();
   group.position.copy(approach.position);
   group.rotation.y = Math.atan2(approach.direction.x, approach.direction.z);
+  const hasGreen = movementState.straight || movementState.left;
 
   const arm = new THREE.Mesh(
-    new THREE.BoxGeometry(roadWidth(approach.laneCount) + 18, 2.6, 2.6),
+    new THREE.BoxGeometry(visualRoadWidth() + 26, 2.6, 2.6),
     new THREE.MeshStandardMaterial({ color: 0x2d3942, roughness: 0.6 }),
   );
   arm.position.set(0, 54, 0);
   group.add(arm);
 
-  const box = new THREE.Mesh(
-    new THREE.BoxGeometry(20, 20, 8),
-    new THREE.MeshStandardMaterial({
-      color: isGreen ? 0x0c3d25 : 0x42151a,
-      emissive: isGreen ? 0x16ff7a : 0xff3347,
-      emissiveIntensity: 0.55,
-      roughness: 0.42,
-    }),
-  );
-  box.position.set(0, 52, -8);
-  group.add(box);
-
-  const lampColor = isGreen ? 0x26ff7a : 0xff3b4a;
-  const lamp = new THREE.Mesh(
-    new THREE.SphereGeometry(7.5, 24, 24),
-    new THREE.MeshStandardMaterial({
-      color: lampColor,
-      emissive: lampColor,
-      emissiveIntensity: 1.9,
-      roughness: 0.28,
-    }),
-  );
-  lamp.position.set(0, 52, -13);
-  lamp.userData.signalLamp = true;
-  group.add(lamp);
+  drawMovementLamp(group, -11, movementState.left, 'left');
+  drawMovementLamp(group, 11, movementState.straight, 'straight');
 
   const stopLine = new THREE.Mesh(
-    new THREE.BoxGeometry(roadWidth(approach.laneCount), 2.5, 5),
+    new THREE.BoxGeometry(visualRoadWidth(), 2.5, 5),
     new THREE.MeshBasicMaterial({
-      color: isGreen ? 0x62ff99 : 0xff4d5a,
+      color: hasGreen ? 0x62ff99 : 0xff4d5a,
       transparent: true,
       opacity: 0.88,
     }),
@@ -463,6 +528,57 @@ function drawSignalHead(approach, isGreen, signal) {
   group.userData.signalPhaseIndex = signal.phaseIndex;
   group.userData.roadId = approach.roadId;
   signalGroup.add(group);
+}
+
+function drawMovementLamp(group, x, isGreen, movement) {
+  const lampColor = isGreen ? 0x26ff7a : 0xff3b4a;
+  const housing = new THREE.Mesh(
+    new THREE.BoxGeometry(19, 21, 8),
+    new THREE.MeshStandardMaterial({
+      color: isGreen ? 0x0c3d25 : 0x42151a,
+      emissive: isGreen ? 0x16ff7a : 0xff3347,
+      emissiveIntensity: 0.42,
+      roughness: 0.42,
+    }),
+  );
+  housing.position.set(x, 52, -8);
+  group.add(housing);
+
+  const lamp = new THREE.Mesh(
+    new THREE.SphereGeometry(7.2, 24, 24),
+    new THREE.MeshStandardMaterial({
+      color: lampColor,
+      emissive: lampColor,
+      emissiveIntensity: isGreen ? 1.9 : 1.35,
+      roughness: 0.28,
+    }),
+  );
+  lamp.position.set(x, 52, -13);
+  lamp.userData.signalLamp = true;
+  group.add(lamp);
+  drawLampArrow(group, x, lampColor, movement);
+}
+
+function drawLampArrow(group, x, color, movement) {
+  const material = new THREE.MeshBasicMaterial({ color });
+  const shaft = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.4, 10), material);
+  shaft.position.set(x, 52, -20.5);
+  shaft.rotation.x = Math.PI / 2;
+  if (movement === 'left') {
+    shaft.rotation.z = Math.PI / 4;
+    shaft.position.x -= 1.8;
+  }
+  group.add(shaft);
+
+  const head = new THREE.Mesh(new THREE.ConeGeometry(4.2, 7.5, 3), material);
+  head.position.set(x, 52, -25.5);
+  head.rotation.x = Math.PI / 2;
+  if (movement === 'left') {
+    head.rotation.z = Math.PI / 4;
+    head.position.x -= 5.6;
+    head.position.z += 2.8;
+  }
+  group.add(head);
 }
 
 function drawPhaseRing(point, signal, hasActivePhase) {
@@ -483,9 +599,9 @@ function drawPhaseRing(point, signal, hasActivePhase) {
 function highlightRoadDirection(roadId, color) {
   const road = roadById.get(roadId);
   if (!road) return;
-  const points = road.points.map(worldPoint);
+  const points = visualRoadPoints(road);
   for (let i = 0; i < points.length - 1; i += 1) {
-    const mesh = makeRoadSegmentMesh(points[i], points[i + 1], road.laneCount, color, 9);
+    const mesh = makeRoadSegmentMesh(points[i], points[i + 1], visualLaneCount(), color, 9);
     mesh.scale.x = 0.48;
     mesh.scale.z = 0.7;
     mesh.material.transparent = true;
@@ -576,8 +692,8 @@ function vehiclePosition(vehicle) {
 
   const roadDirection = roadDirectionAtPoint(road, base);
   const side = new THREE.Vector3(-roadDirection.z, 0, roadDirection.x).normalize();
-  const offset = laneOffset(vehicle.lane, road.laneCount);
-  return base.addScaledVector(side, offset);
+  const offset = laneOffset(vehicle.lane, visualLaneCount());
+  return base.add(visualRoadOffset(road)).addScaledVector(side, offset);
 }
 
 function degToRad(angle) {
@@ -618,6 +734,11 @@ function closestPointOnSegment(point, start, end) {
 function updateVehicles(vehicles = []) {
   const now = performance.now();
   const activeIds = new Set();
+  const lerpMs = THREE.MathUtils.clamp(
+    Math.max(VEHICLE_LERP_MS, observedFrameIntervalMs * 1.05),
+    MIN_DYNAMIC_LERP_MS,
+    MAX_DYNAMIC_LERP_MS,
+  );
 
   for (const vehicle of vehicles) {
     activeIds.add(vehicle.id);
@@ -635,6 +756,7 @@ function updateVehicles(vehicles = []) {
         roadId: vehicle.roadId,
         startAt: now,
         lastSeenAt: now,
+        lerpMs,
       };
       vehiclesById.set(vehicle.id, entry);
     }
@@ -648,6 +770,7 @@ function updateVehicles(vehicles = []) {
     entry.roadId = vehicle.roadId;
     entry.startAt = now;
     entry.lastSeenAt = now;
+    entry.lerpMs = lerpMs;
     const body = entry.mesh.children.find((child) => child.userData.vehicleBody);
     if (body) {
       body.material.color.setHex(vehicle.speed < 1 ? 0xffd166 : 0x4cc9ff);
@@ -674,10 +797,11 @@ function vehicleRotation(vehicle) {
 }
 
 function updateMetrics(metrics = {}) {
-  els.vehicleCount.textContent = numberText(metrics.vehicleCount);
+  metrics = metrics || {};
+  els.scheduledDepartureCount.textContent = numberText(metrics.scheduledDepartureCount);
+  els.vehicleCount.textContent = numberText(metrics.activeVehicleCount ?? metrics.vehicleCount);
   els.queueCount.textContent = numberText(metrics.queueCount);
   els.avgSpeed.textContent = fixedText(metrics.avgSpeed);
-  els.avgWait.textContent = fixedText(metrics.avgWait);
   els.throughput.textContent = numberText(metrics.throughput);
 }
 
@@ -692,15 +816,48 @@ function fixedText(value) {
 function handleFrame(message) {
   if (message.type !== 'sim.frame') return;
   frameCount = message.seq ?? frameCount + 1;
-  lastFrameAt = performance.now();
-  updateRoadStates(message.data?.roads);
-  updateSignals(message.data?.signals);
-  updateVehicles(message.data?.vehicles);
+  const now = performance.now();
+  lastMessageAt = now;
+  const frameSimTime = Number(message.simTime ?? message.data?.simTime);
+  const isNewVisualFrame = !Number.isFinite(lastVisualSimTime)
+    || !Number.isFinite(frameSimTime)
+    || Math.abs(frameSimTime - lastVisualSimTime) > 0.0001;
+  if (isNewVisualFrame && lastFrameAt) {
+    observedFrameIntervalMs = THREE.MathUtils.clamp(now - lastFrameAt, MIN_DYNAMIC_LERP_MS, MAX_DYNAMIC_LERP_MS);
+  }
+  if (isNewVisualFrame) {
+    lastFrameAt = now;
+    lastVisualSimTime = frameSimTime;
+    updateRoadStates(message.data?.roads);
+    latestSignals = Array.isArray(message.data?.signals) ? message.data.signals : [];
+    updateSignals(latestSignals);
+    updateVehicles(message.data?.vehicles);
+  }
   updateMetrics(message.data?.metrics);
   const firstSignal = message.data?.signals?.[0];
   const phaseText = firstSignal ? ` | phase ${firstSignal.phaseIndex}${firstSignal.phaseCode ? ` ${firstSignal.phaseCode}` : ''}` : '';
   els.statusText.title = `收到 ${message.data?.vehicles?.length ?? 0} 辆车，${message.data?.signals?.length ?? 0} 个信号灯状态`;
   setStatus(`sid ${message.sid} | frame ${frameCount} | t=${fixedText(message.simTime)}s${phaseText}`, 'ok');
+}
+
+function handleDecision(message) {
+  if (message.type !== 'control.decision') return;
+  const decisions = Array.isArray(message.data) ? message.data : [];
+  if (decisions.length === 0) return;
+  const selectedDecision = decisions.find((decision) => decision?.controllerType === 'traffic-r') || decisions[0];
+  const controllerType = selectedDecision.controllerType || activeControllerType;
+  const appliedPhase = selectedDecision.metadata?.cityflowAppliedPhaseIndex
+    || selectedDecision.metadata?.cityflowPhaseIndex
+    || selectedDecision.phaseIndex;
+  const appliedPhaseId = selectedDecision.metadata?.cityflowAppliedPhaseId
+    ?? selectedDecision.metadata?.cityflowPhaseId
+    ?? (Number(appliedPhase) - 1);
+  const phaseCode = selectedDecision.metadata?.businessPhaseCode || selectedDecision.phaseCode || '';
+  els.activeController.textContent = controllerLabel(controllerType);
+  els.cityflowApplyState.textContent = selectedDecision.metadata?.cityflowApplied
+    ? `Applied ${decisions.length} intersections`
+    : 'Waiting for CityFlow';
+  els.cityflowAppliedPhase.textContent = `phaseIndex ${appliedPhase}${phaseCode ? ` ${phaseCode}` : ''} | phaseId ${appliedPhaseId}`;
 }
 
 async function startSimulation() {
@@ -727,6 +884,72 @@ async function stopSimulation() {
   setStatus(`已停止 | sid ${sid}`, 'error');
 }
 
+function disconnectWebSocket() {
+  if (!ws) return;
+  const currentWs = ws;
+  ws = null;
+  currentWs.onclose = null;
+  currentWs.onerror = null;
+  currentWs.close();
+}
+
+function resetRuntimeState() {
+  frameCount = 0;
+  lastFrameAt = 0;
+  lastMessageAt = 0;
+  lastVisualSimTime = null;
+  vehiclesById.forEach((entry) => {
+    entry.mesh.geometry?.dispose?.();
+    entry.mesh.material?.dispose?.();
+    vehicleGroup.remove(entry.mesh);
+  });
+  vehiclesById.clear();
+  updateMetrics(null);
+}
+
+function resetSceneState() {
+  disconnectWebSocket();
+  sid = null;
+  resetRuntimeState();
+  clearGroup(roadGroup);
+  clearGroup(intersectionGroup);
+  clearGroup(signalGroup);
+  roadMeshesById.clear();
+  intersectionById.clear();
+  roadById.clear();
+  phaseByIntersectionAndIndex.clear();
+  roadLinkByIntersectionAndIndex.clear();
+  signalApproachesByIntersection.clear();
+}
+
+async function recreateSimulation() {
+  if (controlBusy || simulationState === 'running') return;
+  controlBusy = true;
+  els.recreateButton.disabled = true;
+  try {
+    if (sid && simulationState !== 'finished') {
+      await apiFetch(`/api/v1/simulations/${sid}/stop`, { method: 'POST', body: '{}' });
+    }
+    if (selectedSceneId() !== activeSceneId) {
+      resetSceneState();
+      await loadRoadnetAndDraw();
+    } else {
+      disconnectWebSocket();
+      sid = null;
+      resetRuntimeState();
+    }
+    setSimulationState('booting');
+    await createSimulation();
+    await connectWebSocket();
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message || '切换控制方法失败', 'error');
+  } finally {
+    controlBusy = false;
+    setSimulationState(sid ? simulationState : 'booting');
+  }
+}
+
 async function toggleSimulation() {
   if (controlBusy) return;
   controlBusy = true;
@@ -747,7 +970,8 @@ async function toggleSimulation() {
 
 async function loadRoadnetAndDraw() {
   setStatus('1/11 获取静态路网');
-  roadnet = await apiFetch(`/api/v1/scenes/${SCENE_ID}/roadnet`);
+  activeSceneId = selectedSceneId();
+  roadnet = await apiFetch(`/api/v1/scenes/${activeSceneId}/roadnet`);
   computeBounds();
   fitCamera();
 
@@ -762,11 +986,20 @@ async function loadRoadnetAndDraw() {
 
 async function createSimulation() {
   setStatus('5/11 创建仿真会话');
+  activeControllerType = selectedControllerType();
+  resetDecisionPanel(activeControllerType);
   const data = await apiFetch('/api/v1/simulations', {
     method: 'POST',
-    body: JSON.stringify({ sceneId: SCENE_ID, speed: 1.0 }),
+    body: JSON.stringify({
+      sceneId: activeSceneId,
+      speed: selectedSimulationSpeed(),
+      warmupSeconds: selectedWarmupSeconds(),
+      controllerType: activeControllerType,
+    }),
   });
   sid = data.sid;
+  activeControllerType = data.controllerType || activeControllerType;
+  resetDecisionPanel(activeControllerType);
   setSimulationState('paused');
 }
 
@@ -795,6 +1028,7 @@ async function connectWebSocket() {
   ws.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
     handleFrame(message);
+    handleDecision(message);
   });
 
   ws.addEventListener('close', () => setStatus('WebSocket 已断开', 'error'));
@@ -825,7 +1059,7 @@ function animate() {
   const now = performance.now();
 
   for (const entry of vehiclesById.values()) {
-    const t = Math.min(1, (now - entry.startAt) / VEHICLE_LERP_MS);
+    const t = Math.min(1, (now - entry.startAt) / (entry.lerpMs || VEHICLE_LERP_MS));
     const eased = easeOutCubic(t);
     entry.mesh.position.lerpVectors(entry.from, entry.to, eased);
     entry.mesh.rotation.y = lerpAngle(entry.fromRotation ?? entry.mesh.rotation.y, entry.toRotation ?? entry.mesh.rotation.y, eased);
@@ -838,8 +1072,8 @@ function animate() {
     }
   });
 
-  if (simulationState === 'running' && lastFrameAt && now - lastFrameAt > 3500 && ws?.readyState === WebSocket.OPEN) {
-    setStatus(`等待新帧 | last frame ${frameCount}`, 'loading');
+  if (simulationState === 'running' && lastMessageAt && now - lastMessageAt > 5000 && ws?.readyState === WebSocket.OPEN) {
+    setStatus(`等待后端推送 | last frame ${frameCount}`, 'loading');
   }
 
   controls.update();
@@ -856,6 +1090,13 @@ function lerpAngle(from, to, t) {
 }
 
 window.addEventListener('resize', resize);
+els.controllerSelect.addEventListener('change', () => {
+  resetDecisionPanel(selectedControllerType());
+});
+els.sceneSelect.addEventListener('change', () => {
+  setStatus('Scene changed, click switch to recreate simulation', 'loading');
+});
+els.recreateButton.addEventListener('click', recreateSimulation);
 els.toggleRunButton.addEventListener('click', toggleSimulation);
 els.stopButton.addEventListener('click', async () => {
   try {

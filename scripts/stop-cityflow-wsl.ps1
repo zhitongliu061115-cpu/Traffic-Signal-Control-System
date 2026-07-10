@@ -10,10 +10,18 @@ function Invoke-Wsl {
 
     if ([string]::IsNullOrWhiteSpace($Distro)) {
         $wslArgs = @("--") + $Arguments
-        & wsl.exe @wslArgs
     } else {
         $wslArgs = @("-d", $Distro, "--") + $Arguments
+    }
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
         & wsl.exe @wslArgs
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        if ($attempt -lt 5) {
+            Write-Warning "wsl.exe failed with exit code $LASTEXITCODE on attempt $attempt/5. Retrying after WSL startup settles..."
+            Start-Sleep -Seconds 2
+        }
     }
 }
 
@@ -30,46 +38,120 @@ function ConvertTo-WslPath {
     return "/mnt/$drive/$rest"
 }
 
-$distroLabel = if ([string]::IsNullOrWhiteSpace($Distro)) { "default" } else { $Distro }
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-try {
-    $wslRepoRoot = ConvertTo-WslPath "$repoRoot"
-} catch {
-    Write-Error "Failed to convert repository path to WSL path: $_"
-    throw
+$wslRepoRoot = ConvertTo-WslPath "$repoRoot"
+
+$bash = @'
+set -u
+REPO_ROOT="$1"
+PORT="$2"
+SERVICE_DIR="$REPO_ROOT/sim-python"
+
+echo "Stopping Python CityFlow service on port $PORT ..."
+
+collect_pids() {
+  {
+    if [ -f "$SERVICE_DIR/logs/cityflow-service.pid" ]; then
+      cat "$SERVICE_DIR/logs/cityflow-service.pid" 2>/dev/null || true
+    fi
+
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
+    fi
+
+    if command -v fuser >/dev/null 2>&1; then
+      fuser -n tcp "$PORT" 2>/dev/null || true
+      fuser "$PORT"/tcp 2>/dev/null || true
+    fi
+
+    if command -v ss >/dev/null 2>&1; then
+      ss -ltnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' || true
+    fi
+
+    ps -eo pid=,args= | awk -v port="$PORT" '
+      /python/ && /app\/server.py/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i == "--port" && (i + 1) <= NF && $(i + 1) == port) {
+            print $1
+          }
+        }
+      }
+    '
+  } | tr ' ' '\n' | sed '/^[[:space:]]*$/d' | sort -u
 }
 
-$bashTemplate = @'
-set -e
-REPO_ROOT='__REPO_ROOT__'
-PORT='__PORT__'
-cd "$REPO_ROOT/sim-python"
-if [ -f logs/cityflow-service.pid ]; then
-  PID="$(cat logs/cityflow-service.pid || true)"
-  if [ -n "$PID" ] && kill -0 "$PID" >/dev/null 2>&1; then
-    kill "$PID"
-    echo "Stopped Python CityFlow service pid $PID."
-  else
-    echo "PID file exists, but process is not running."
+kill_pids() {
+  PIDS="$1"
+  if [ -z "$PIDS" ]; then
+    return 0
   fi
-  rm -f logs/cityflow-service.pid
+
+  echo "Stopping process(es): $PIDS"
+  kill $PIDS >/dev/null 2>&1 || true
+  sleep 1
+  for PID in $PIDS; do
+    if kill -0 "$PID" >/dev/null 2>&1; then
+      kill -9 "$PID" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+port_is_listening() {
+  if command -v lsof >/dev/null 2>&1 && lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v fuser >/dev/null 2>&1 && fuser -n tcp "$PORT" >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :$PORT" 2>/dev/null | grep -q ":$PORT"; then
+    return 0
+  fi
+  return 1
+}
+
+if [ -d "$SERVICE_DIR" ]; then
+  cd "$SERVICE_DIR"
 else
-  echo "No PID file found."
+  echo "Service directory not found: $SERVICE_DIR"
 fi
 
-echo "Trying to stop process by port $PORT."
-if command -v lsof >/dev/null 2>&1; then
-  PID="$(lsof -ti :"$PORT" || true)"
-  if [ -n "$PID" ]; then
-    kill $PID
-    echo "Stopped process on port ${PORT}: $PID."
-  else
-    echo "No process found on port $PORT."
-  fi
+PIDS="$(collect_pids)"
+if [ -z "$PIDS" ]; then
+  echo "No CityFlow process found by pid file, port, or command line."
 else
-  echo "lsof is unavailable."
+  kill_pids "$PIDS"
 fi
+
+rm -f "$SERVICE_DIR/logs/cityflow-service.pid"
+
+for ATTEMPT in 1 2 3 4 5; do
+  if ! port_is_listening; then
+    echo "Port $PORT is free."
+    exit 0
+  fi
+  PIDS="$(collect_pids)"
+  if [ -n "$PIDS" ]; then
+    echo "Port $PORT is still busy after stop attempt $ATTEMPT."
+    kill_pids "$PIDS"
+  fi
+  sleep 1
+done
+
+echo "Failed to stop CityFlow service: port $PORT is still listening."
+if command -v ss >/dev/null 2>&1; then
+  ss -ltnp "sport = :$PORT" 2>/dev/null || true
+fi
+exit 1
 '@
 
-$bash = $bashTemplate.Replace("__REPO_ROOT__", $wslRepoRoot).Replace("__PORT__", "$Port")
-Invoke-Wsl -Arguments @("bash", "-lc", $bash)
+$logsDir = Join-Path $repoRoot "sim-python\logs"
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+$stopScriptWindowsPath = Join-Path $logsDir "stop-cityflow-service.sh"
+$stopScript = $bash.Replace("`r`n", "`n")
+[System.IO.File]::WriteAllText($stopScriptWindowsPath, $stopScript, [System.Text.UTF8Encoding]::new($false))
+$wslStopScriptPath = ConvertTo-WslPath "$stopScriptWindowsPath"
+
+Invoke-Wsl -Arguments @("bash", $wslStopScriptPath, $wslRepoRoot, "$Port")
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to stop Python CityFlow service in WSL. wsl.exe exit code: $LASTEXITCODE"
+}

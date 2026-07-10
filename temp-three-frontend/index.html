@@ -12,19 +12,56 @@
           <span class="dot" id="statusDot"></span>
           <div>
             <strong>CityFlow 实时仿真</strong>
-            <small id="statusText">初始化</small>
+            <small id="statusText">初始化中</small>
           </div>
+        </div>
+        <div class="strategy-panel" aria-label="control strategy">
+          <label for="sceneSelect">Scene</label>
+          <select id="sceneSelect">
+            <option value="jinan_3x4_stress" selected>Jinan Stress</option>
+            <option value="jinan_3x4">Jinan Normal</option>
+          </select>
+          <label for="controllerSelect">控制方法</label>
+          <select id="controllerSelect">
+            <option value="traffic-r">RL</option>
+            <option value="max-pressure">Max Pressure</option>
+            <option value="fixed-time">固定配时</option>
+          </select>
+          <label for="speedSelect">Speed</label>
+          <select id="speedSelect">
+            <option value="1">1x</option>
+            <option value="5">5x</option>
+            <option value="10">10x</option>
+            <option value="20" selected>20x</option>
+            <option value="30">30x</option>
+            <option value="50">50x</option>
+          </select>
+          <button id="recreateButton" type="button">切换</button>
         </div>
         <div class="controls" aria-label="simulation controls">
           <button id="toggleRunButton" type="button" disabled>启动</button>
           <button id="stopButton" type="button" disabled>停止</button>
         </div>
         <div class="metrics">
-          <div><span>车辆</span><strong id="vehicleCount">0</strong></div>
+          <div><span>累计发车</span><strong id="scheduledDepartureCount">0</strong></div>
+          <div><span>当前在网</span><strong id="vehicleCount">0</strong></div>
           <div><span>排队</span><strong id="queueCount">0</strong></div>
           <div><span>均速</span><strong id="avgSpeed">0.0</strong></div>
-          <div><span>等待</span><strong id="avgWait">0.0</strong></div>
-          <div><span>吞吐</span><strong id="throughput">0</strong></div>
+          <div><span>完成车辆</span><strong id="throughput">0</strong></div>
+        </div>
+      </section>
+      <section class="cityflow-apply-panel" aria-label="cityflow applied decision">
+        <div>
+          <span>当前策略</span>
+          <strong id="activeController">RL</strong>
+        </div>
+        <div>
+          <span>CityFlow 应用</span>
+          <strong id="cityflowApplyState">等待</strong>
+        </div>
+        <div>
+          <span>应用相位</span>
+          <strong id="cityflowAppliedPhase">等待</strong>
         </div>
       </section>
       <section class="scene-shell">

@@ -17,6 +17,12 @@ public interface CityFlowClient {
 
     CityFlowCreateSimulationResponse createSimulation(CityFlowCreateSimulationRequest request);
 
+    void startSimulation(String sid);
+
+    void pauseSimulation(String sid);
+
+    void stopSimulation(String sid);
+
     ApplyControlActionsResponse applyControlActions(String sid, ApplyControlActionsRequest request);
 
     SimFrameData nextFrame(String sid);
