@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 
+import { fetchDataAnalysisBootstrap, type DataAnalysisBootstrapData } from '@/api/dataAnalysis'
 import AiAssistant from '@/components/AiAssistant.vue'
 import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import bgVideo from '@/assets/images/bg/bg-video.mp4'
@@ -238,7 +239,7 @@ const statusDistribution = ref<StatusBucket[]>([
   { count: 0, label: '离线', tone: 'slate' },
 ])
 
-const dailySeries: DailyPoint[] = [
+const dailySeries = reactive<DailyPoint[]>([
   { date: '06-28', electricity: 42860, hvac: 0, occupancy: 28.6, water: 0 },
   { date: '06-29', electricity: 46210, hvac: 0, occupancy: 31.2, water: 0 },
   { date: '06-30', electricity: 48780, hvac: 0, occupancy: 35.8, water: 0 },
@@ -251,7 +252,7 @@ const dailySeries: DailyPoint[] = [
   { date: '07-07', electricity: 70420, hvac: 0, occupancy: 56.7, water: 0 },
   { date: '07-08', electricity: 74180, hvac: 0, occupancy: 61.8, water: 0 },
   { date: '07-09', electricity: 64280, hvac: 0, occupancy: 46.8, water: 0 },
-]
+])
 
 const hourlySeries = ref<HourlyPoint[]>([
   { electricity: 320, hour: '00:00', hvac: 24, occupancy: 32, temperature: 5.4 },
@@ -307,7 +308,7 @@ const buildingSummaries = ref<BuildingSummary[]>([
   },
 ])
 
-const heatmap: HeatmapCell[] = dailySeries.slice(-7).flatMap((day, dayIndex) =>
+const heatmap = reactive<HeatmapCell[]>(dailySeries.slice(-7).flatMap((day, dayIndex) =>
   hourlySeries.value.map((slot, slotIndex) => {
     const slotBase = [88, 142, 166, 218][slotIndex] ?? 120
     const dayWave = (day.electricity - 40000) / 50000
@@ -322,7 +323,7 @@ const heatmap: HeatmapCell[] = dailySeries.slice(-7).flatMap((day, dayIndex) =>
       occupancy: Number(clamp(slot.occupancy + dayIndex * 1.9, 0, 120).toFixed(1)),
     }
   }),
-)
+))
 
 const composition = ref<CompositionItem[]>([
   { color: '#3b82f6', label: '东西直行', value: 293760 },
@@ -361,7 +362,7 @@ const scatterHourOffsets = [
   { electricity: 12.8, hour: '18:00', occupancy: 520, temperature: 21 },
 ] as const
 
-const scatterPoints: ScatterPoint[] = scatterProfiles.flatMap((profile, profileIndex) =>
+const scatterPoints = reactive<ScatterPoint[]>(scatterProfiles.flatMap((profile, profileIndex) =>
   scatterHourOffsets.map((slot, slotIndex) => {
     const sampleIndex = profileIndex * scatterHourOffsets.length + slotIndex + 1
     const drift = ((profileIndex % 3) - 1) * 1.4 + slotIndex * 0.6
@@ -377,7 +378,7 @@ const scatterPoints: ScatterPoint[] = scatterProfiles.flatMap((profile, profileI
       tone: profile.tone,
     }
   }),
-)
+))
 
 const records = ref<MonitoringRecord[]>([
   {
@@ -585,6 +586,28 @@ const records = ref<MonitoringRecord[]>([
     water_m3: 16,
   },
 ])
+
+function replaceReactiveArray<T>(target: T[], source: T[]) {
+  target.splice(0, target.length, ...source)
+}
+
+function applyBootstrapData(data: DataAnalysisBootstrapData) {
+  sampleCount.value = data.sampleCount
+  sampleRate.value = data.sampleRate
+  healthScore.value = data.healthScore
+  sampledPointId.value = data.sampledPointId
+  metrics.value = data.metrics
+  statusDistribution.value = data.statusDistribution
+  replaceReactiveArray(dailySeries, data.dailySeries)
+  hourlySeries.value = data.hourlySeries
+  buildingSummaries.value = data.buildingSummaries
+  replaceReactiveArray(heatmap, data.heatmap)
+  composition.value = data.composition
+  replaceReactiveArray(scatterPoints, data.scatterPoints)
+  records.value = data.records
+  toasts.value = data.toasts
+  syncSeconds.value = 0
+}
 
 const statusTotal = computed(() => statusDistribution.value.reduce((sum, item) => sum + item.count, 0))
 const warningCount = computed(
@@ -1400,17 +1423,20 @@ function handleTooltipHide(event: PointerEvent) {
 }
 
 onMounted(() => {
-  seedMetricTrends()
-  pushToast({
-    body: `当前采样速率 ${sampleRate.value} 帧/分钟，12 个路口监测流稳定接入。`,
-    title: '路口监测流已接入',
-    tone: 'emerald',
-  })
-  pushToast({
-    body: '路口 3-2 近 24 小时排队长度持续偏高。',
-    title: '拥堵事件告警',
-    tone: 'rose',
-  })
+  void fetchDataAnalysisBootstrap()
+    .then((data) => {
+      applyBootstrapData(data)
+    })
+    .catch(() => {
+      pushToast({
+        body: '暂时无法读取数据库，已保留页面内置演示数据。',
+        title: '数据库连接异常',
+        tone: 'rose',
+      })
+    })
+    .finally(() => {
+      seedMetricTrends()
+    })
 
   clockTimer = setInterval(() => {
     now.value = new Date()

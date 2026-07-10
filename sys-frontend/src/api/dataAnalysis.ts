@@ -79,6 +79,7 @@ interface MonitoringRecord {
   building_type: string
   chilled_water_return_temp: number
   chilled_water_supply_temp: number
+  control_strategy: 'FixedTime' | 'MaxPressure' | 'RL' | 'Traffic-R1' | '应急绿波'
   device_id: string
   device_status: 'maintenance' | 'normal' | 'offline' | 'warning'
   electricity_kwh: number

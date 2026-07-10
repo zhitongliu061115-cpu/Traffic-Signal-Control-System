@@ -174,7 +174,7 @@ public class DataAnalysisRepository {
     private List<MonitoringRecordDto> findRecords() {
         return jdbcTemplate.query("""
                 select record_id, building_id, building_type, chilled_water_return_temp,
-                       chilled_water_supply_temp, device_id, device_status, electricity_kwh,
+                       chilled_water_supply_temp, device_id, device_status, control_strategy, electricity_kwh,
                        env_humidity, env_temperature, hvac_kwh, monitor_time,
                        occupancy_density, water_m3
                 from analytics_monitoring_record
@@ -187,6 +187,7 @@ public class DataAnalysisRepository {
                 rs.getDouble("chilled_water_supply_temp"),
                 rs.getString("device_id"),
                 rs.getString("device_status"),
+                rs.getString("control_strategy"),
                 rs.getDouble("electricity_kwh"),
                 rs.getDouble("env_humidity"),
                 rs.getDouble("env_temperature"),
