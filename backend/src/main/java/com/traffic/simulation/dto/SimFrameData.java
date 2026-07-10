@@ -8,6 +8,8 @@ public record SimFrameData(
         List<RoadStateDto> roads,
         List<IntersectionStateDto> intersections,
         List<SignalStateDto> signals,
-        SimulationMetricsDto metrics
+        SimulationMetricsDto metrics,
+        List<EvEventDto> evEvents,
+        List<EvStatusDto> evStatus
 ) {
 }

@@ -1,4 +1,4 @@
-# 接口协作规范
+﻿# 接口协作规范
 
 ## 基本原则
 
@@ -397,3 +397,68 @@ Python 服务错误统一返回：
 - 改变已有字段含义。
 - 前端直接访问 Python 服务。
 - Controller 直接调用数据库或编写复杂业务逻辑。
+
+### 应急车辆调度
+
+```http
+POST /api/v1/simulations/{sid}/dispatch
+Content-Type: application/json
+```
+
+路径参数：
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| sid | String | 仿真任务唯一标识 |
+
+请求：
+
+```json
+{
+  "startCoord": { "x": 113.5, "y": 22.3 },
+  "endCoord":   { "x": 113.6, "y": 22.4 },
+  "evId":       "ambulance_001",
+  "evType":     "fire_truck",
+  "priority":   1,
+  "maxSpeed":   20.0
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| startCoord | CoordDTO {x,y} | 是 | 起点坐标（米） |
+| endCoord | CoordDTO {x,y} | 是 | 终点坐标（米） |
+| evId | String | 是 | 应急车唯一标识 |
+| evType | String | 否 | fire_truck / ambulance / police / convoy，默认 fire_truck |
+| priority | Integer | 否 | 越小越高，默认 1 |
+| maxSpeed | Double | 否 | 最高速度 m/s，默认 20.0 |
+
+响应：
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "data": {
+    "sid": "run_001",
+    "evId": "ev_default",
+    "evType": "fire_truck",
+    "priority": 1,
+    "route": ["intersection_1_1", "intersection_2_1", "intersection_3_3"],
+    "routeRoads": ["road_1_1_0", "road_2_1_0"],
+    "estimatedTravelTime": 120.0
+  }
+}
+```
+
+内部流程：EmergencyController → EmergencyService → HttpCityFlowClient.dispatchEV() → Python POST /cityflow/simulations/{sid}/dispatch。
+
+### 内部车辆注入
+
+```http
+POST /cityflow/simulations/{sid}/dispatch
+Content-Type: application/json
+```
+
+请求由 Spring Boot EmergencyService 自动构造，字段同上方的请求表。
+Python 直接返回 data 字段内容（同上方响应 data），Spring Boot 包装为 ApiResponse 后返回前端。
