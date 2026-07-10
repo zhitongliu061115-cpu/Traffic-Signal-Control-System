@@ -7,10 +7,12 @@
 //   - 2s：   交通统计 + 道路指数 + 信号灯（中频）
 //   - 5s：   拥堵趋势 + 随机告警（低频）
 // ================================================================
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useTrafficStore } from '@/stores/traffic'
+import { useSimulationWebSocket } from '@/composables/useSimulationWebSocket'
+import type { SimFrameData } from '@/types/traffic'
 
-import SystemStatusBar from '@/components/SystemStatusBar.vue'
+import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import TrafficStats from '@/components/TrafficStats.vue'
 import AlertPanel from '@/components/AlertPanel.vue'
 import MapRoadNetwork from '@/components/MapRoadNetwork.vue'
@@ -20,6 +22,11 @@ import CompareCharts from '@/components/CompareCharts.vue'
 import AiAssistant from '@/components/AiAssistant.vue'
 
 const store = useTrafficStore()
+const { status: wsStatus, lastFrameData, connect: wsConnect, disconnect: wsDisconnect } = useSimulationWebSocket()
+
+defineOptions({
+  name: 'DashboardView',
+})
 
 // ---- 随机告警素材 ----
 const randomAlertPool = [
@@ -67,8 +74,42 @@ function maybeGenerateRandomAlert(): void {
 let vehicleTimer: ReturnType<typeof setInterval> | null = null
 let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
+let dataRetryTimer: ReturnType<typeof setInterval> | null = null
+
+async function syncDashboardData(): Promise<void> {
+  const loaded = await store.loadDashboardData()
+  if (loaded && dataRetryTimer) {
+    clearInterval(dataRetryTimer)
+    dataRetryTimer = null
+  }
+}
 
 onMounted(() => {
+  void syncDashboardData()
+
+  dataRetryTimer = setInterval(() => {
+    if (store.dataSourceStatus === 'database') {
+      if (dataRetryTimer) {
+        clearInterval(dataRetryTimer)
+        dataRetryTimer = null
+      }
+      return
+    }
+
+    void syncDashboardData()
+  }, 3000)
+
+  // ---- 仿真初始化：创建会话 → 连接 WebSocket ----
+  async function initSimulation(): Promise<void> {
+    const result = await store.initSimulationSession()
+    if (result?.sid) {
+      wsConnect(result.sid)
+    }
+  }
+
+  // 页面启动自动连接仿真 WebSocket（后端不可用时不影响 mock 模式运行）
+  void initSimulation()
+
   // 200ms — 车辆位置高频更新
   vehicleTimer = setInterval(() => {
     store.updateVehiclePositions(200)
@@ -88,11 +129,25 @@ onMounted(() => {
   console.log('[Dashboard] 定时刷新已启动 (200ms / 2s / 5s)')
 })
 
+// ---- 仿真帧数据 → Store ----
+watch(
+  lastFrameData,
+  (frame) => {
+    if (frame) {
+      store.handleSimFrame(frame as SimFrameData)
+    }
+  },
+  { deep: true },
+)
+
 onUnmounted(() => {
   if (vehicleTimer) clearInterval(vehicleTimer)
   if (statsTimer) clearInterval(statsTimer)
   if (trendTimer) clearInterval(trendTimer)
-  console.log('[Dashboard] 定时刷新已停止')
+  if (dataRetryTimer) clearInterval(dataRetryTimer)
+  wsDisconnect()
+  store.resetSimulationState()
+  console.log('[Dashboard] 定时刷新已停止，WebSocket 已断开')
 })
 </script>
 
@@ -107,10 +162,8 @@ onUnmounted(() => {
     </div>
     <div class="cockpit-atmosphere" />
 
-    <!-- ============ 顶部：系统状态栏 (8%) ============ -->
-    <header class="ts-topbar">
-      <SystemStatusBar />
-    </header>
+    <!-- ============ 顶部：宿主导航栏 (8%) ============ -->
+    <SystemWorkbenchHeader active-page="network" class="ts-topbar" />
 
     <!-- ============ 主体：左-中-右三栏 (65%) ============ -->
     <main class="ts-body">
@@ -132,11 +185,12 @@ onUnmounted(() => {
       </div>
     </main>
 
-    <!-- ============ 底部：控制效果对比 + 智能体辅助决策 (27%) ============ -->
+    <!-- ============ 底部：控制效果对比 (27%) ============ -->
     <footer class="ts-footer">
       <CompareCharts />
-      <AiAssistant />
     </footer>
+
+    <AiAssistant />
   </div>
 </template>
 
@@ -150,28 +204,26 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* 顶部状态栏：约 8% */
+/* 顶部状态栏：约 5% */
 .ts-topbar {
-  flex: 8 1 0;
-  min-height: 58px;
-  max-height: 92px;
+  flex: 5 1 0;
+  min-height: 44px;
+  max-height: 68px;
 }
 
-/* 主体三栏区：约 65% */
+/* 主体三栏区：约 70% */
 .ts-body {
-  flex: 65 1 0;
+  flex: 70 1 0;
   display: grid;
   grid-template-columns: minmax(0, 22fr) minmax(0, 56fr) minmax(0, 22fr);
   gap: 12px;
   min-height: 0;
 }
 
-/* 底部区：约 30%，对比图表 60% / 智能体 40% */
+/* 底部区：约 30%，对比图表横向占满 */
 .ts-footer {
   flex: 30 1 0;
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  gap: 12px;
+  display: block;
   min-height: 0;
 }
 
@@ -196,6 +248,7 @@ onUnmounted(() => {
 /* 网格/弹性子项防溢出 */
 .ts-body > .ts-col,
 .ts-footer > :deep(*) {
+  height: 100%;
   min-width: 0;
 }
 </style>

@@ -467,6 +467,8 @@ wss://api.example.com/ws/v1/simulations/run_001
 | `intersections` | `IntersectionState[]` | 是 | 当前路口状态。前端用它显示路口拥堵和排队。 | `[{ "id": "intersection_1_1", "queueCount": 14 }]` |
 | `signals` | `SignalState[]` | 是 | 当前信号灯状态。前端用它高亮放行方向。 | `[{ "intersectionId": "intersection_1_1", "phaseIndex": 1 }]` |
 | `metrics` | `SimulationMetrics` | 是 | 全局指标。前端用它更新大屏指标卡。 | `{ "vehicleCount": 582, "queueCount": 96 }` |
+| `evEvents` | `EvEvent[]` | 是 | 本帧信号控制事件。应急车接近路口时产生延绿/红灯缩短等动作。 | `[{ intersectionId: intersection_1_1, decision: extend_green }]` |
+| `evStatus` | `EvStatus[]` | 是 | 应急车进度追踪。前端用它显示进度条和剩余时间。 | `[{ evId: ev_default, passedCount: 1, totalCount: 5 }]` |
 
 ### 9.5 VehicleState 字段说明
 
@@ -545,6 +547,38 @@ wss://api.example.com/ws/v1/simulations/run_001
 | `avgSpeed` | `number` | 是 | 当前全局平均速度。 | `7.4` |
 | `avgWait` | `number` | 是 | 当前全局平均等待时间，单位秒。 | `35.2` |
 | `throughput` | `number` | 是 | 已完成行程车辆数。 | `128` |
+
+### 9.10 EvEvent 字段说明
+
+| 字段 | 类型 | 必需 | 含义 | 示例 |
+|---|---|---|---|---|
+| `evId` | `string` | 否 | 触发事件的应急车 ID。 | `"ev_default"` |
+| `evType` | `string` | 否 | 车辆类型。 | `"fire_truck"` |
+| `priority` | `int` | 否 | 优先级，1 最高。 | `1` |
+| `intersectionId` | `string` | 是 | 触发事件的路口 ID。 | `"intersection_1_1"` |
+| `decision` | `string` | 是 | 信号决策类型：`extend_green` / `shorten_red`。 | `"extend_green"` |
+| `phaseIndex` | `int` | 是 | 决策后的相位索引。 | `2` |
+| `phaseIndexBefore` | `int` | 否 | 决策前的相位索引。 | `1` |
+| `timestamp` | `number` | 是 | 事件触发时的仿真时间（秒）。 | `5.2` |
+| `status` | `string` | 否 | 事件状态。 | `"resolved"` |
+| `blockedBy` | `string` | 否 | 仲裁时被阻塞方 ID。 | `"ev_002"` |
+
+前端兼容说明：`evEvents` 为空数组时表示本帧无应急事件。前端可按 `intersectionId` 找到对应路口并闪烁提示。
+
+### 9.11 EvStatus 字段说明
+
+| 字段 | 类型 | 必需 | 含义 | 示例 |
+|---|---|---|---|---|
+| `evId` | `string` | 是 | 应急车 ID。 | `"ev_default"` |
+| `evType` | `string` | 是 | 车辆类型。 | `"fire_truck"` |
+| `priority` | `int` | 是 | 优先级，1 最高。 | `1` |
+| `route` | `string[]` | 是 | 规划路径（交叉口 ID 列表）。 | `["intersection_1_1", "intersection_2_1"]` |
+| `passedCount` | `int` | 是 | 已通过交叉口数。 | `1` |
+| `totalCount` | `int` | 是 | 总交叉口数。 | `5` |
+| `completed` | `bool` | 是 | 是否已完成全程。 | `false` |
+| `elapsedTime` | `number` | 是 | 已用时间（秒）。 | `12.5` |
+
+前端兼容说明：用 `passedCount / totalCount` 渲染进度条。`completed` 为 `true` 时切换为已完成状态。
 
 ---
 
@@ -1032,3 +1066,4 @@ export interface AlertCreatedData {
 - 用户权限系统实现。
 
 这些内容可以在其他设计文档中单独定义。
+

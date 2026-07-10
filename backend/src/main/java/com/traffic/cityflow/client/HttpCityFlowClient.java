@@ -14,6 +14,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
+import java.util.Map;
+
 @Component
 public class HttpCityFlowClient implements CityFlowClient {
 
@@ -105,5 +107,16 @@ public class HttpCityFlowClient implements CityFlowClient {
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("failed to serialize CityFlow request body", ex);
         }
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> dispatchEV(String sid, Map<String, Object> request) {
+        return restClient.post()
+                .uri("/cityflow/simulations/{sid}/dispatch", sid)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(request)
+                .retrieve()
+                .body(Map.class);
     }
 }

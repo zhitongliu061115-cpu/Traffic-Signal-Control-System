@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import math
@@ -130,7 +130,49 @@ class CityFlowAdapter:
                 "intersections": intersections,
                 "signals": signals,
                 "metrics": metrics,
+                "evEvents": [],
+                "evStatus": [],
             }
+
+    def _session_roadnet(self, sid: str) -> JsonDict:
+        """Get roadnet dict for a session (real engine only)."""
+        if self.real_engine is not None:
+            scene_id = self.real_engine.sessions[sid].scene_id
+            self._load_scene(scene_id)
+            return self.parsers[scene_id].raw
+        return {}
+
+    def _session_scene(self, sid: str) -> str:
+        """Get scene_id for a session."""
+        if self.real_engine is not None and sid in self.real_engine.sessions:
+            return self.real_engine.sessions[sid].scene_id
+        if sid in self.sessions:
+            return self.sessions[sid].scene_id
+        return ""
+
+    def dispatch(self, sid: str, params: JsonDict, owner_id: str = "default") -> JsonDict:
+        """Dispatch an emergency vehicle with coordinate-based routing."""
+        if self.real_engine is not None:
+            session = self.real_engine._session(sid, owner_id)
+            print(f'[dispatch] sid={sid} scene={self._session_scene(sid)}', flush=True)
+            try:
+                result = self.real_engine.ev_service.dispatch(
+                    sid=sid,
+                    scene_id=session.scene_id,
+                    roadnet=self._session_roadnet(sid),
+                    engine=session.engine,
+                    params=params,
+                )
+                print(f'[dispatch] result={result}', flush=True)
+                return result
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                raise
+        raise ApiError(
+            status=400, code="CITYFLOW_ENGINE_NOT_CONFIGURED",
+            message="dispatch requires cityflow engine mode",
+            retryable=False,
+        )
 
     def start_simulation(self, sid: str, owner_id: str = "default") -> JsonDict:
         if self.real_engine is not None:

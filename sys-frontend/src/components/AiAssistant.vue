@@ -1,21 +1,34 @@
 <script setup lang="ts">
 // ================================================================
-// AiAssistant — 智能体辅助决策问答
-// 自然语言交通调度问答 + 预留 RAG / 大模型接入接口
+// AiAssistant — 悬浮式智能体辅助决策问答
+// 通过后端代理连接阿里百炼，失败时使用本地交通规则兜底
 // ================================================================
-import { ref, nextTick } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { ChatDotRound, Close, Promotion, Refresh } from '@element-plus/icons-vue'
 import { useTrafficStore } from '@/stores/traffic'
 
 const store = useTrafficStore()
 const { intersections, roads, statistics, emergencyVehicle } = storeToRefs(store)
 
-// ---- 消息类型 ----
 interface ChatMessage {
   id: number
   role: 'user' | 'ai'
   text: string
   time: string
+}
+
+interface ApiResponse<T> {
+  success: boolean
+  message: string
+  data: T | null
+}
+
+interface AgentChatResponse {
+  reply: string
+  sessionId?: string | null
+  source: 'bailian' | 'config' | string
+  fallback: boolean
 }
 
 let msgId = 0
@@ -25,112 +38,189 @@ function nowTime(): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-// ---- 聊天状态 ----
-const messages = ref<ChatMessage[]>([
-  {
-    id: msgId++,
-    role: 'ai',
-    text: '👋 您好！我是交通调度智能体。您可以向我提问路网拥堵、信号控制、应急绿波、设备状态等问题，我将结合实时数据和知识库为您提供辅助决策建议。',
-    time: nowTime(),
-  },
-])
+const apiBaseUrl = computed(() => {
+  const configured = import.meta.env.VITE_API_BASE_URL?.trim()
+  return (configured || 'http://localhost:8080').replace(/\/$/, '')
+})
 
+const isOpen = ref(false)
 const input = ref('')
 const isThinking = ref(false)
 const chatBody = ref<HTMLDivElement | null>(null)
+const inputRef = ref<HTMLInputElement | null>(null)
+const sessionId = ref<string | null>(null)
+const assistantStatusText = ref('百炼待连接')
 
-// ---- 快捷提问 ----
-const quickAsks = ['哪个路口最拥堵？', '为什么延长绿灯？', '应急车辆怎么走？', '设备离线怎么办？', '生成绿波方案']
+const messages = ref<ChatMessage[]>([
+  createWelcomeMessage(),
+])
 
-// ---- 核心问答引擎（预留真实接口） ----
-// ────────────────────────────────────────────────────────────
-// TODO: 后续接入真实 LLM / RAG 时，替换此函数实现。
-// 当前为基于关键词的模拟回复，补充 store.askAssistant() 的通用匹配。
-// 接口签名已设计为 async (userInput: string, context: ChatContext) => Promise<string>
-//   context 包含 { intersections, roads, statistics, alerts, emergencyVehicle, congestionTrend }
-// ────────────────────────────────────────────────────────────
+const quickAsks = ['当前路网状态', '哪个路口最拥堵？', '生成调度建议', '应急车辆怎么走？', '解释 Traffic-R1']
 
-/** 扩展关键词匹配（补充 store.askAssistant 未覆盖的场景） */
+function createWelcomeMessage(): ChatMessage {
+  return {
+    id: msgId++,
+    role: 'ai',
+    text: '您好，我是城市交通信号调度辅助决策智能体。请询问路网状态、拥堵成因、信号调度建议或应急绿波方案；涉及控制动作时，我只给出建议与待确认方案。',
+    time: nowTime(),
+  }
+}
+
+function openAssistant(): void {
+  isOpen.value = true
+  void nextTick(() => inputRef.value?.focus())
+}
+
+function closeAssistant(): void {
+  isOpen.value = false
+}
+
+function toggleAssistant(): void {
+  if (isOpen.value) {
+    closeAssistant()
+  } else {
+    openAssistant()
+  }
+}
+
+function startNewConversation(): void {
+  if (isThinking.value) return
+  sessionId.value = null
+  assistantStatusText.value = '百炼待连接'
+  input.value = ''
+  messages.value = [createWelcomeMessage()]
+  void nextTick(() => inputRef.value?.focus())
+}
+
+function buildTrafficContext(): Record<string, unknown> {
+  const topIntersections = [...intersections.value]
+    .sort((a, b) => b.congestionIndex - a.congestionIndex)
+    .slice(0, 5)
+    .map((it) => ({
+      id: it.id,
+      name: it.name,
+      congestionIndex: Math.round(it.congestionIndex),
+      queueLength: it.queueLength,
+      averageDelay: Math.round(it.averageDelay),
+      currentPhase: it.currentPhase,
+      deviceStatus: it.deviceStatus,
+    }))
+
+  return {
+    statistics: statistics.value,
+    topIntersections,
+    roadCount: roads.value.length,
+    emergencyVehicle: emergencyVehicle.value,
+    emergencyRoute: store.emergencyRoute,
+    compareMetrics: store.compareMetrics,
+  }
+}
+
+async function requestBailianAssistant(userInput: string): Promise<string> {
+  const response = await fetch(`${apiBaseUrl.value}/api/v1/agent/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: userInput,
+      sessionId: sessionId.value,
+      context: buildTrafficContext(),
+    }),
+  })
+
+  let payload: ApiResponse<AgentChatResponse> | null = null
+  try {
+    payload = (await response.json()) as ApiResponse<AgentChatResponse>
+  } catch {
+    payload = null
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.message || `HTTP ${response.status}`)
+  }
+
+  if (!payload?.success || !payload.data?.reply) {
+    throw new Error(payload?.message || '百炼响应为空')
+  }
+
+  sessionId.value = payload.data.sessionId ?? sessionId.value
+  assistantStatusText.value = payload.data.fallback ? '配置待完成' : '百炼在线'
+  return payload.data.reply
+}
+
+function formatAssistantError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || '')
+  const fallback = message.trim() || '未知错误'
+  return fallback.length > 140 ? `${fallback.slice(0, 140)}...` : fallback
+}
+
 function localMatch(input_: string): string | null {
   const q = input_.trim()
 
-  // 1. 最拥堵路口查询
   if (/哪个.*拥堵|最.*堵|拥堵.*路口|路口.*拥堵/.test(q)) {
     const sorted = [...intersections.value].sort((a, b) => b.congestionIndex - a.congestionIndex)
     const top = sorted[0]
     if (!top) return null
     const count = roads.value.filter((r) => r.from === top.id || r.to === top.id).length
-    return `当前 **${top.name}**（${top.id}）拥堵指数最高，达到 **${Math.round(top.congestionIndex)}**，排队 ${top.queueLength} 辆，平均延误 ${Math.round(top.averageDelay)}s。\n\n建议：① 延长当前${top.currentPhase === 'eastwest_straight' ? '东西' : top.currentPhase === 'northsouth_straight' ? '南北' : ''}方向绿灯 15 秒；② 提前放行下游 ${count} 条连接路段；③ 持续监控排队长度变化。`
+    return `当前 **${top.name}**（${top.id}）拥堵指数最高，达到 **${Math.round(top.congestionIndex)}**，排队 ${top.queueLength} 辆，平均延误 ${Math.round(top.averageDelay)}s。\n\n建议：延长当前${top.currentPhase === 'eastwest_straight' ? '东西' : top.currentPhase === 'northsouth_straight' ? '南北' : ''}方向绿灯 15 秒，提前放行下游 ${count} 条连接路段，并持续监控排队长度变化。\n\n状态：建议-待人工确认。`
   }
 
-  // 2. 为什么延长绿灯
   if (/为什么.*延长|延长.*绿灯|绿灯.*延长|为什么.*绿灯/.test(q)) {
-    return `延长绿灯的核心原因是**当前车流密度持续上升**。\n\n当路口排队车辆超过阈值（如 15 辆）且拥堵指数 ≥ 60 时，AI 算法会计算延长绿灯的边际收益：每延长 1 秒可多放行约 2-3 辆车，从而降低平均等待时间 ${Math.round(statistics.value.averageWaitTime)}s → 目标减少 30% 以上。系统在保证其他相位不严重拥堵的前提下自动调整配时。`
+    return `延长绿灯的核心原因是**当前车流密度持续上升**。\n\n当路口排队车辆超过阈值且拥堵指数较高时，系统会评估延长绿灯的边际收益，以降低平均等待时间。当前平均等待时间约 ${Math.round(statistics.value.averageWaitTime)}s；该说明来自本地实时状态兜底分析，最终建议仍需后端校验与人工确认。`
   }
 
-  // 3. 应急车辆路线
   if (/应急.*车|救护|消防|怎么走|路线|通行/.test(q)) {
     const ev = emergencyVehicle.value
     const route = store.emergencyRoute
       .map((id) => intersections.value.find((it) => it.id === id)?.name ?? id)
       .join(' → ')
     return ev.greenWaveActive
-      ? `应急车辆 **${ev.type === 'ambulance' ? '救护车' : '消防车'}**（${ev.id}）当前正在执行绿波通行。\n\n路线：**${route}**\n目标：${ev.destination}\n预计到达：**${ev.eta} 分钟**\n状态：绿波已激活，沿线 ${store.emergencyRoute.length} 个路口将依次优先放行。`
-      : `系统建议应急车辆沿 **${route}** 通行。该路线覆盖 ${store.emergencyRoute.length} 个路口，沿途将提前激活绿波信号，预计通行时间从 ${store.compareMetrics.emergencyPassTime.traditional} 分钟缩短至 **${store.compareMetrics.emergencyPassTime.ai} 分钟**。请点击"应急绿波控制"面板启动。`
+      ? `应急车辆 **${ev.type === 'ambulance' ? '救护车' : '消防车'}**（${ev.id}）正在执行绿波通行。\n\n路线：**${route}**\n目标：${ev.destination}\n预计到达：**${ev.eta} 分钟**\n状态：建议-待人工确认，沿线 ${store.emergencyRoute.length} 个路口应依次优先放行。`
+      : `建议应急车辆沿 **${route}** 通行。该路线覆盖 ${store.emergencyRoute.length} 个路口，沿途可提前形成绿波窗口，预计通行时间从 ${store.compareMetrics.emergencyPassTime.traditional} 分钟缩短至 **${store.compareMetrics.emergencyPassTime.ai} 分钟**。\n\n状态：建议-待人工确认，请由人工确认后再发起控制流程。`
   }
 
-  // 4. 设备离线
   if (/设备.*离线|离线|故障|通信.*超时/.test(q)) {
     const faults = intersections.value.filter((it) => it.deviceStatus !== 'online')
     if (faults.length === 0) {
       return '当前路网所有信号机 **均在线运行**，设备在线率 **100%**。未检测到离线或故障设备。'
     }
     const names = faults.map((it) => `**${it.name}**（${it.id}，${it.deviceStatus === 'fault' ? '故障' : '离线'}）`).join('\n- ')
-    return `当前检测到 **${faults.length} 台**信号设备异常：\n- ${names}\n\n建议：① 立即派单巡检检查硬件连接和通信模块；② 受影响路口 AI 已切换至降级模式，周边路口自动扩大放行窗口；③ 若超过 30 分钟未恢复，建议启用临时移动信号灯。`
+    return `当前检测到 **${faults.length} 台**信号设备异常：\n- ${names}\n\n建议：立即派单巡检通信模块与硬件连接；受影响路口切换降级控制；若超过 30 分钟未恢复，建议启用临时移动信号灯。\n\n状态：建议-待人工确认。`
   }
 
   return null
 }
 
-/**
- * 统一问答入口。
- * 优先级：本地关键词 > store.askAssistant（mock 关键词）> 默认回复
- */
 async function queryAssistant(userInput: string): Promise<string> {
-  // ---- 预留：真实 API 接入点 ----
-  // 替换此处，直接 return fetch(...) 即可
-  // const response = await fetch('/api/assistant/chat', {
-  //   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  //   body: JSON.stringify({ query: userInput, context: { ... } }),
-  // })
-  // return (await response.json()).reply
+  let bailianError = ''
+  try {
+    return await requestBailianAssistant(userInput)
+  } catch (error) {
+    bailianError = formatAssistantError(error)
+    assistantStatusText.value = '本地兜底'
+  }
 
-  // 本地关键词
+  const note = `注：百炼服务暂不可用（${bailianError}），已使用本地兜底分析。`
   const local = localMatch(userInput)
-  if (local) return local
+  if (local) {
+    return `${local}\n\n${note}`
+  }
 
-  // store 关键词（拥堵/绿波/应急/信号/设备/预案）
   const storeReply = store.askAssistant(userInput)
-  if (storeReply) return storeReply
+  if (storeReply) {
+    return `${storeReply}\n\n${note}`
+  }
 
-  // 默认
-  return '已收到您的问题，系统将结合实时交通状态、信号控制策略和知识库进行辅助分析。您可以尝试输入以下关键词获得更精准的建议：**拥堵**、**绿波**、**应急**、**信号**、**设备**、**预案**。'
+  return `暂时无法连接百炼智能体，且本地兜底规则未覆盖该问题。原因：${bailianError}。请检查后端服务、BAILIAN_API_KEY 配置和百炼应用 ID 后重试。`
 }
 
-// ---- 发送消息 ----
 async function handleSend(): Promise<void> {
   const text = input.value.trim()
   if (!text || isThinking.value) return
 
-  // 用户消息
   messages.value.push({ id: msgId++, role: 'user', text, time: nowTime() })
   input.value = ''
-
-  // 模拟延迟
   isThinking.value = true
-  await new Promise((resolve) => setTimeout(resolve, 300))
 
-  // AI 回复
   const reply = await queryAssistant(text)
   messages.value.push({ id: msgId++, role: 'ai', text: reply, time: nowTime() })
   isThinking.value = false
@@ -139,148 +229,368 @@ async function handleSend(): Promise<void> {
   scrollToBottom()
 }
 
-// ---- 快捷提问点击 ----
 function handleQuickAsk(q: string): void {
+  if (isThinking.value) return
   input.value = q
-  handleSend()
+  void handleSend()
 }
 
-// ---- 回车发送 ----
 function handleKeydown(e: KeyboardEvent): void {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
-    handleSend()
+    void handleSend()
   }
 }
 
-// ---- 自动滚动 ----
 function scrollToBottom(): void {
   if (chatBody.value) {
     chatBody.value.scrollTop = chatBody.value.scrollHeight
   }
 }
 
-// ---- 文本换行渲染（将 \n 转为 <br>，**加粗** 转为 <strong>） ----
-function renderText(text: string): string {
+function escapeHtml(text: string): string {
   return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function renderText(text: string): string {
+  return escapeHtml(text)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
 }
 </script>
 
 <template>
-  <section class="hud-card data-panel-card comp-card">
-    <div class="hud-panel-titlebar">
-      <div class="titlebar-inner">
-        <span class="titlebar-mark" />
-        <span class="titlebar-text">智能体辅助决策</span>
-        <span class="ai-status">
-          <span class="status-dot status-dot--live" />
-          <span class="ai-status__text">在线</span>
-        </span>
-      </div>
-    </div>
+  <div class="ai-assistant-float" :class="{ 'is-open': isOpen }">
+    <button
+      class="ai-float-trigger"
+      type="button"
+      :aria-expanded="isOpen"
+      aria-controls="ai-assistant-panel"
+      title="智能体辅助决策"
+      @click="toggleAssistant"
+    >
+      <span class="ai-float-trigger__halo" aria-hidden="true" />
+      <span class="ai-float-trigger__icon" aria-hidden="true">
+        <ChatDotRound />
+      </span>
+      <span class="ai-float-trigger__text">AI 决策</span>
+      <span class="ai-float-trigger__dot" aria-hidden="true" />
+    </button>
 
-    <div class="hud-card__content comp-card__body">
-      <!-- 聊天消息区域 -->
-      <div ref="chatBody" class="ai-chat-body">
-        <div
-          v-for="m in messages"
-          :key="m.id"
-          class="ai-chat-msg"
-          :class="`ai-chat-msg--${m.role}`"
-        >
-          <!-- AI 头像 -->
-          <div v-if="m.role === 'ai'" class="ai-chat-avatar">AI</div>
+    <aside
+      v-if="isOpen"
+      id="ai-assistant-panel"
+      class="hud-card data-panel-card ai-float-panel"
+      aria-label="智能体辅助决策问答窗口"
+    >
+      <header class="ai-panel-head">
+        <div class="ai-panel-title">
+          <span class="titlebar-mark" />
+          <div>
+            <div class="ai-panel-title__main">智能体辅助决策</div>
+            <div class="ai-panel-title__sub">{{ assistantStatusText }}</div>
+          </div>
+        </div>
+        <div class="ai-panel-actions">
+          <button
+            class="ai-icon-btn ai-new-chat"
+            type="button"
+            title="开启新对话"
+            :disabled="isThinking"
+            @click="startNewConversation"
+          >
+            <Refresh />
+            <span>新对话</span>
+          </button>
+          <button class="ai-icon-btn" type="button" title="关闭" @click="closeAssistant">
+            <Close />
+          </button>
+        </div>
+      </header>
 
-          <!-- 气泡 -->
-          <div class="ai-chat-bubble" :class="`ai-chat-bubble--${m.role}`">
-            <div
-              class="ai-chat-bubble__text"
-              v-html="renderText(m.text)"
-            />
-            <div class="ai-chat-bubble__time">{{ m.time }}</div>
+      <div class="ai-panel-body">
+        <div ref="chatBody" class="ai-chat-body">
+          <div
+            v-for="m in messages"
+            :key="m.id"
+            class="ai-chat-msg"
+            :class="`ai-chat-msg--${m.role}`"
+          >
+            <div v-if="m.role === 'ai'" class="ai-chat-avatar">AI</div>
+            <div class="ai-chat-bubble" :class="`ai-chat-bubble--${m.role}`">
+              <div class="ai-chat-bubble__text" v-html="renderText(m.text)" />
+              <div class="ai-chat-bubble__time">{{ m.time }}</div>
+            </div>
+            <div v-if="m.role === 'user'" class="ai-chat-avatar ai-chat-avatar--user">我</div>
           </div>
 
-          <!-- 用户头像 -->
-          <div v-if="m.role === 'user'" class="ai-chat-avatar ai-chat-avatar--user">我</div>
+          <div v-if="isThinking" class="ai-chat-thinking">
+            <span class="ai-chat-thinking__dot" />
+            <span class="ai-chat-thinking__dot" />
+            <span class="ai-chat-thinking__dot" />
+            <span class="ai-chat-thinking__text">AI 分析中</span>
+          </div>
         </div>
 
-        <!-- 思考中... -->
-        <div v-if="isThinking" class="ai-chat-thinking">
-          <span class="ai-chat-thinking__dot" />
-          <span class="ai-chat-thinking__dot" />
-          <span class="ai-chat-thinking__dot" />
-          <span class="ai-chat-thinking__text">AI 分析中…</span>
+        <div class="ai-quick" aria-label="快捷提问">
+          <div class="ai-quick__head">推荐问题</div>
+          <div class="ai-quick__list">
+            <button
+              v-for="q in quickAsks"
+              :key="q"
+              class="hud-pill hud-pill--neutral ai-quick__pill"
+              type="button"
+              :disabled="isThinking"
+              @click="handleQuickAsk(q)"
+            >
+              {{ q }}
+            </button>
+          </div>
+        </div>
+
+        <div class="ai-input-row">
+          <input
+            ref="inputRef"
+            v-model="input"
+            class="cyber-input ai-input"
+            placeholder="向智能体提问或申请建议..."
+            :disabled="isThinking"
+            @keydown="handleKeydown"
+          />
+          <button
+            class="cyber-btn ai-send"
+            :disabled="isThinking || !input.trim()"
+            type="button"
+            title="发送"
+            @click="handleSend"
+          >
+            <Promotion aria-hidden="true" />
+            <span>{{ isThinking ? '分析中' : '发送' }}</span>
+          </button>
         </div>
       </div>
-
-      <!-- 快捷提问 -->
-      <div class="ai-quick">
-        <span
-          v-for="q in quickAsks"
-          :key="q"
-          class="hud-pill hud-pill--neutral ai-quick__pill"
-          @click="handleQuickAsk(q)"
-        >
-          {{ q }}
-        </span>
-      </div>
-
-      <!-- 输入区 -->
-      <div class="ai-input-row">
-        <input
-          v-model="input"
-          class="cyber-input ai-input"
-          placeholder="向智能体提问或下达指令…"
-          :disabled="isThinking"
-          @keydown="handleKeydown"
-        />
-        <button
-          class="cyber-btn ai-send"
-          :disabled="isThinking || !input.trim()"
-          @click="handleSend"
-        >
-          {{ isThinking ? '思考中…' : '发送' }}
-        </button>
-      </div>
-    </div>
-  </section>
+    </aside>
+  </div>
 </template>
 
 <style scoped>
-/* ===== 面板根容器 ===== */
-.comp-card {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
+.ai-assistant-float {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 80;
+  pointer-events: none;
 }
 
-.comp-card__body {
+.ai-float-trigger,
+.ai-float-panel {
+  pointer-events: auto;
+}
+
+.ai-float-trigger {
+  position: relative;
+  display: inline-flex;
+  width: 72px;
+  min-height: 96px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid rgba(122, 247, 255, 0.72);
+  color: #e8f4ff;
+  background:
+    linear-gradient(180deg, rgba(7, 30, 54, 0.92), rgba(2, 8, 23, 0.72)),
+    rgba(0, 212, 255, 0.1);
+  box-shadow: 0 0 22px rgba(0, 212, 255, 0.22), inset 0 0 14px rgba(122, 247, 255, 0.08);
+  clip-path: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.ai-float-trigger:hover {
+  color: #7af7ff;
+  border-color: #7af7ff;
+  transform: translateY(-2px);
+  box-shadow: 0 0 28px rgba(0, 212, 255, 0.34), inset 0 0 18px rgba(122, 247, 255, 0.12);
+}
+
+.ai-float-trigger:focus-visible {
+  outline: 2px solid #7af7ff;
+  outline-offset: 4px;
+}
+
+.ai-float-trigger__halo {
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(0, 212, 255, 0.16);
+  clip-path: inherit;
+}
+
+.ai-float-trigger__icon {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  color: #7af7ff;
+}
+
+.ai-float-trigger__icon svg,
+.ai-icon-btn svg,
+.ai-send svg {
+  width: 100%;
+  height: 100%;
+}
+
+.ai-float-trigger__text {
+  position: relative;
+  z-index: 1;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-family: 'AlimamaShuHeiTi', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.ai-float-trigger__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #22d3a0;
+  box-shadow: 0 0 14px rgba(34, 211, 160, 0.85);
+}
+
+.ai-float-panel {
+  position: absolute;
+  right: 0;
+  bottom: 88px;
+  width: min(390px, calc(100vw - 32px));
+  height: min(690px, calc(100vh - 128px));
+  display: flex;
+  flex-direction: column;
+  border-color: rgba(122, 247, 255, 0.32);
+  background:
+    linear-gradient(180deg, rgba(6, 26, 47, 0.62), rgba(2, 8, 23, 0.5)),
+    rgba(3, 16, 31, 0.48);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42), 0 0 30px rgba(0, 212, 255, 0.16);
+  backdrop-filter: blur(18px);
+  overflow: hidden;
+  box-sizing: border-box;
+  animation: ai-panel-enter 180ms ease-out;
+}
+
+@keyframes ai-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ai-panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px 10px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.14);
+}
+
+.ai-panel-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.ai-panel-title__main {
+  color: #e8f4ff;
+  font-family: 'AlimamaShuHeiTi', 'Microsoft YaHei', sans-serif;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.ai-panel-title__sub {
+  margin-top: 4px;
+  color: #22d3a0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.ai-icon-btn {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  color: rgba(207, 250, 254, 0.86);
+  background: rgba(8, 47, 73, 0.26);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  cursor: pointer;
+  transition:
+    color 180ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease;
+}
+
+.ai-panel-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-icon-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.ai-new-chat {
+  width: auto;
+  min-width: 82px;
+  padding: 0 10px;
+  gap: 5px;
+  color: #dff9ff;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.ai-new-chat svg {
+  width: 15px;
+  height: 15px;
+}
+
+.ai-icon-btn:hover {
+  color: #7af7ff;
+  border-color: rgba(122, 247, 255, 0.72);
+  background: rgba(0, 212, 255, 0.1);
+}
+
+.ai-panel-body {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
+  padding: 10px;
   overflow: hidden;
-  box-sizing: border-box;
 }
 
-.ai-status {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-}
-
-.ai-status__text {
-  font-size: 12px;
-  color: #22d3a0;
-}
-
-/* ===== 聊天消息区域（flex:1, 独占剩余高度） ===== */
 .ai-chat-body {
   flex: 1;
   min-height: 0;
@@ -289,7 +599,7 @@ function renderText(text: string): string {
   gap: 10px;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 8px 6px 8px 8px;
+  padding: 2px 4px 2px 2px;
   box-sizing: border-box;
 }
 
@@ -303,77 +613,72 @@ function renderText(text: string): string {
   flex-direction: row-reverse;
 }
 
-/* 头像 */
 .ai-chat-avatar {
   flex: 0 0 30px;
   height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
-  font-weight: 700;
   border-radius: 50%;
   color: #051323;
   background: #00d4ff;
   box-shadow: 0 0 10px rgba(0, 212, 255, 0.6);
+  font-size: 11px;
+  font-weight: 800;
   user-select: none;
 }
 
 .ai-chat-avatar--user {
+  color: #e8f4ff;
   background: #7c5cff;
   box-shadow: 0 0 10px rgba(124, 92, 255, 0.6);
-  color: #e8f4ff;
 }
 
-/* 气泡 — 最大宽度 80%，强制换行 */
 .ai-chat-bubble {
-  max-width: 80%;
+  max-width: 82%;
   min-width: 0;
-  padding: 9px 12px;
-  background: rgba(4, 21, 39, 0.6);
+  padding: 9px 11px;
   border: 1px solid rgba(0, 212, 255, 0.16);
-  clip-path: polygon(
-    0 0, 100% 0, 100% calc(100% - 6px),
-    calc(100% - 6px) 100%, 0 100%
-  );
+  color: #e8f4ff;
+  background: rgba(4, 21, 39, 0.64);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
   box-sizing: border-box;
   overflow-wrap: break-word;
   word-break: break-word;
 }
 
 .ai-chat-bubble--user {
-  background: rgba(124, 92, 255, 0.12);
-  border-color: rgba(124, 92, 255, 0.3);
+  border-color: rgba(124, 92, 255, 0.32);
+  background: rgba(124, 92, 255, 0.14);
 }
 
 .ai-chat-bubble__text {
-  font-size: 14px;
-  line-height: 1.55;
   color: #e8f4ff;
+  font-size: 13px;
+  line-height: 1.55;
   overflow-wrap: break-word;
   word-break: break-word;
-  overflow: hidden;
+  text-wrap: pretty;
 }
 
 .ai-chat-bubble__text :deep(strong) {
   color: #7af7ff;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .ai-chat-bubble__time {
-  margin-top: 4px;
-  font-size: 10px;
+  margin-top: 5px;
   color: #5a7595;
-  font-family: 'Rajdhani', sans-serif;
+  font-family: 'Rajdhani', 'DINPro', monospace;
+  font-size: 10px;
 }
 
-/* 思考中动画 */
 .ai-chat-thinking {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
   padding: 6px 0;
-  flex: 0 0 auto;
 }
 
 .ai-chat-thinking__dot {
@@ -384,79 +689,154 @@ function renderText(text: string): string {
   animation: ai-dot-bounce 0.8s ease-in-out infinite;
 }
 
-.ai-chat-thinking__dot:nth-child(2) { animation-delay: 0.15s; }
-.ai-chat-thinking__dot:nth-child(3) { animation-delay: 0.3s; }
+.ai-chat-thinking__dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.ai-chat-thinking__dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
 
 @keyframes ai-dot-bounce {
-  0%, 80%, 100% { opacity: 0.25; transform: scale(0.7); }
-  40% { opacity: 1; transform: scale(1); }
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.7);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .ai-chat-thinking__text {
   margin-left: 4px;
+  color: #8da8c5;
   font-size: 12px;
-  color: #5a7595;
 }
 
-/* 快捷提问 — 紧凑排列 */
 .ai-quick {
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
   flex: 0 0 auto;
-  padding: 0 2px;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ai-quick__head {
+  color: #b8e6ff;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.ai-quick__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
 }
 
 .ai-quick__pill {
-  cursor: pointer;
-  font-size: 10px;
-  padding: 3px 8px;
-  transition: all 200ms ease;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   max-width: 100%;
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  color: rgba(232, 244, 255, 0.88);
+  background: rgba(2, 18, 33, 0.24);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  padding: 6px 10px;
+  text-overflow: ellipsis;
+  transition:
+    color 180ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease;
+  white-space: nowrap;
 }
 
-.ai-quick__pill:hover {
-  border-color: rgba(0, 212, 255, 0.5);
+.ai-quick__pill:hover:not(:disabled) {
   color: #7af7ff;
+  border-color: rgba(0, 212, 255, 0.5);
   background: rgba(0, 212, 255, 0.1);
 }
 
-/* 输入行 — 高度 40-45px，80%/20% 分配 */
+.ai-quick__pill:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .ai-input-row {
-  display: flex;
-  gap: 6px;
   flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 7px;
   height: 42px;
-  box-sizing: border-box;
 }
 
 .ai-input {
-  flex: 0 0 80%;
-  font-size: 13px;
-  padding: 0 12px;
+  width: 100%;
   height: 100%;
   box-sizing: border-box;
   overflow: hidden;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 .ai-send {
-  flex: 0 0 calc(20% - 6px);
-  height: 100%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  text-transform: none;
-  font-size: 13px;
-  white-space: nowrap;
+  gap: 5px;
+  min-width: 0;
+  height: 100%;
   box-sizing: border-box;
   padding: 0 8px;
+  font-size: 13px;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.ai-send svg {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
 }
 
 .ai-send:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  .ai-assistant-float {
+    right: 12px;
+    bottom: 12px;
+  }
+
+  .ai-float-trigger {
+    width: 64px;
+    min-height: 88px;
+  }
+
+  .ai-float-panel {
+    right: 0;
+    bottom: 82px;
+    width: calc(100vw - 24px);
+    height: min(640px, calc(100vh - 112px));
+  }
+
+  .ai-input-row {
+    grid-template-columns: minmax(0, 1fr) 78px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 </style>

@@ -18,6 +18,7 @@ from app.config import (
     MAX_ACTIVE_SESSIONS,
 )
 from app.errors import ApiError
+from app.ev_service import EVPriorityService
 from app.models import JsonDict
 from app.roadnet_parser import BUSINESS_PHASE_CODE_TO_INDEX, BUSINESS_PHASE_INDEXES, FIRST_BUSINESS_PHASE_INDEX, PHASE_CODES, RoadnetParser
 from app.scene_registry import SceneDefinition, SceneRegistry
@@ -64,6 +65,7 @@ class RealCityFlowEngine(SimulationEngine):
         self.road_index: dict[str, dict[str, JsonDict]] = {}
         self.phase_indexes: dict[str, dict[str, list[int]]] = {}
         self.lane_movement_maps: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
+        self.ev_service = EVPriorityService()
 
     def active_session_count(self) -> int:
         return len(self.sessions)
@@ -278,6 +280,16 @@ class RealCityFlowEngine(SimulationEngine):
             road_by_id = self.road_index[session.scene_id]
             if AUTO_SIGNAL_CYCLE:
                 self._advance_signal_phases(session, sim_time)
+            ev_events: list[dict] = []
+            ev_status: list[dict] = []
+            if self.ev_service.has_evs(session.sid):
+                ev_overrides, ev_events, ev_status = self.ev_service.step(session.sid, session.engine, sim_time)
+                for intersection_id, phase_index in ev_overrides.items():
+                    try:
+                        session.engine.set_tl_phase(intersection_id, phase_index - 1)
+                        session.current_phases[intersection_id] = phase_index
+                    except Exception:
+                        continue
             vehicles = self._vehicle_states(session, road_by_id)
             lane_states = self._lane_states(session, road_by_id)
             roads = self._road_states(session, vehicles, road_by_id)
@@ -297,6 +309,8 @@ class RealCityFlowEngine(SimulationEngine):
                 "intersections": intersections,
                 "signals": signals,
                 "metrics": metrics,
+                "evEvents": ev_events,
+                "evStatus": ev_status,
             }
 
     def _snapshot_interval_seconds(self, session: "CityFlowEngineSession") -> float:

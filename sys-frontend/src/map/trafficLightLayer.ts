@@ -14,6 +14,8 @@ export interface TrafficMarker {
   remove: () => void
   /** 更新灯色和倒计时 */
   update: (it: Intersection) => void
+  /** 重新定位（地理吸附完成后，把 Marker 挪到真实路口交叉点） */
+  setPosition: (lngLat: [number, number]) => void
 }
 
 /** 生成单个路口的 HTML（纯字符串，不依赖 Vue） */
@@ -64,6 +66,9 @@ export function createTrafficLightMarkers(
       remove: () => { marker.remove() },
       update: (updatedIt: Intersection) => {
         el.innerHTML = buildMarkerHTML(updatedIt)
+      },
+      setPosition: (lngLat: [number, number]) => {
+        marker.setLngLat(lngLat)
       },
     })
   }

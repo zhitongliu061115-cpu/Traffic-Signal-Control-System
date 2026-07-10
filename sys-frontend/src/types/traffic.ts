@@ -67,6 +67,8 @@ export interface Intersection {
   congestionIndex: number
   /** 信号机设备状态 */
   deviceStatus: DeviceStatus
+  /** 关联的道路 ID 列表（用于点击红绿灯时高亮对应道路） */
+  roadIds: string[]
 }
 
 /** 道路 / 路段 */
@@ -240,4 +242,134 @@ export const ALERT_LEVEL_LABELS: Record<AlertLevel, string> = {
   error: '严重',
   warning: '预警',
   info: '提示',
+}
+
+// ================================================================
+// 仿真数据类型（对接后端 WebSocket SimFrameData）
+// ================================================================
+
+/** 仿真会话状态 */
+export type SimulationStatus =
+  | 'booting'
+  | 'paused'
+  | 'running'
+  | 'finished'
+
+/** 单帧车辆状态（后端 VehicleStateDto） */
+export interface SimVehicleState {
+  id: string
+  roadId: string
+  lane: number
+  x: number
+  y: number
+  angle: number
+  speed: number
+}
+
+/** 单帧道路状态（后端 RoadStateDto） */
+export interface SimRoadState {
+  id: string
+  vehicleCount: number
+  queueCount: number
+  avgSpeed: number
+  level: 'free' | 'slow' | 'jammed' | 'unknown'
+}
+
+/** 单帧路口状态（后端 IntersectionStateDto） */
+export interface SimIntersectionState {
+  id: string
+  queueCount: number
+  avgWait: number
+  level: string
+}
+
+/** 单帧信号状态（后端 SignalStateDto） */
+export interface SimSignalState {
+  intersectionId: string
+  phaseIndex: number
+  phaseCode: string
+}
+
+/** 单帧聚合指标（后端 SimulationMetricsDto） */
+export interface SimMetrics {
+  vehicleCount: number
+  queueCount: number
+  avgSpeed: number
+  avgWait: number
+  throughput: number
+}
+
+/** 单帧仿真数据（后端 SimFrameData） */
+export interface SimFrameData {
+  simTime: number
+  vehicles: SimVehicleState[]
+  roads: SimRoadState[]
+  intersections: SimIntersectionState[]
+  signals: SimSignalState[]
+  metrics: SimMetrics
+}
+
+/** WebSocket 消息信封（后端 WsMessage<T>） */
+export interface WsMessage<T = SimFrameData> {
+  v: string
+  type: string
+  sid: string
+  seq: number
+  simTime: number
+  sentAt: string
+  data: T
+}
+
+/** 创建仿真请求 */
+export interface CreateSimulationRequest {
+  sceneId: string
+  speed?: number
+  controllerType?: string
+}
+
+/** 创建仿真响应 */
+export interface CreateSimulationResponse {
+  sid: string
+  sceneId: string
+  status: string
+  controllerType: string
+}
+
+/** 路网数据（后端 RoadnetResponse） */
+export interface SimRoadnetResponse {
+  sceneId: string
+  intersections: SimRoadnetIntersection[]
+  roads: SimRoadnetRoad[]
+  roadLinks: SimRoadLink[]
+  phases: SimPhase[]
+}
+
+export interface SimRoadnetIntersection {
+  id: string
+  x: number
+  y: number
+  virtual: boolean
+}
+
+export interface SimRoadnetRoad {
+  id: string
+  from: string
+  to: string
+  points: Array<{ x: number; y: number }>
+  laneCount: number
+}
+
+export interface SimRoadLink {
+  intersectionId: string
+  index: number
+  fromRoadId: string
+  toRoadId: string
+  type: 'go_straight' | 'turn_left' | 'turn_right'
+}
+
+export interface SimPhase {
+  intersectionId: string
+  phaseIndex: number
+  phaseCode: string
+  roadLinkIndexes: number[]
 }

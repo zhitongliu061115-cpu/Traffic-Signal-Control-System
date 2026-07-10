@@ -10,6 +10,8 @@ public record SimFrameData(
         Map<String, IntersectionLaneStateDto> laneStates,
         List<IntersectionStateDto> intersections,
         List<SignalStateDto> signals,
-        SimulationMetricsDto metrics
+        SimulationMetricsDto metrics,
+        List<EvEventDto> evEvents,
+        List<EvStatusDto> evStatus
 ) {
 }

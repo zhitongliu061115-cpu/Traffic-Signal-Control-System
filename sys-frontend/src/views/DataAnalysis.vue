@@ -1,10 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 
+import { fetchDataAnalysisBootstrap, type DataAnalysisBootstrapData } from '@/api/dataAnalysis'
+import AiAssistant from '@/components/AiAssistant.vue'
+import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import bgVideo from '@/assets/images/bg/bg-video.mp4'
 
 type Tone = 'amber' | 'emerald' | 'rose' | 'sky'
 type StatusTone = 'amber' | 'emerald' | 'rose' | 'slate'
+type NumberRange = readonly [number, number]
+
+interface TrafficStatusProfile {
+  delay: NumberRange
+  load: NumberRange
+  queue: NumberRange
+  saturation: NumberRange
+  speed: NumberRange
+}
 
 interface MonitoringMetric {
   detail: string
@@ -76,6 +88,7 @@ interface MonitoringRecord {
   building_type: string
   chilled_water_return_temp: number
   chilled_water_supply_temp: number
+  control_strategy: 'FixedTime' | 'MaxPressure' | 'RL' | 'Traffic-R1' | '应急绿波'
   device_id: string
   device_status: 'maintenance' | 'normal' | 'offline' | 'warning'
   electricity_kwh: number
@@ -144,17 +157,24 @@ const colors = {
   violet: '#7c5cff',
 }
 
+const framesPerMinute = 96
+
+function todayFrameCount(date = new Date()) {
+  const secondsSinceMidnight = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds()
+  return Math.floor((secondsSinceMidnight / 60) * framesPerMinute)
+}
+
 const now = ref(new Date())
 const syncSeconds = ref(2)
-const sampleCount = ref(1284)
-const sampleRate = ref(96)
+const sampleCount = ref(todayFrameCount(now.value))
+const sampleRate = ref(framesPerMinute)
 const hoveredDailyIndex = ref<number | null>(null)
 const hoveredHourlyIndex = ref<number | null>(null)
 const hoveredComposition = ref<string | null>(null)
 const hoveredHeatmap = ref<{ date?: string; hour?: string; mode: 'cell' | 'column' | 'row' } | null>(null)
 const sampledHeatmapKey = ref<string | null>(null)
 const scanIndex = ref(3)
-const sampledPointId = ref('BLDG-C-07-27')
+const sampledPointId = ref('intersection_3_4-27')
 const hoveredScatterTone = ref<Tone | null>(null)
 const hoveredScatterRiskChart = ref<string | null>(null)
 const hoveredScatterTrendChart = ref<string | null>(null)
@@ -176,128 +196,142 @@ let energyTimer: ReturnType<typeof setInterval> | null = null
 let healthTimer: ReturnType<typeof setInterval> | null = null
 let tableTimer: number | null = null
 let eventTimer: number | null = null
+let sampleFrameCarry = 0
 let tooltipHideTimer: number | null = null
 
 const metrics = ref<MonitoringMetric[]>([
   {
-    detail: '今日 00:00 起累计电耗，只随实时采样累加。',
-    label: '今日累计',
+    detail: '今日 00:00 起全路网累计通过车辆数，随实时帧持续累加。',
+    label: '今日累计通行量',
     tone: 'sky',
-    value: '6428 kWh',
+    value: '64,280 辆',
   },
   {
-    detail: '当前时刻楼宇人流活跃度估计值。',
-    label: '当前人流指数',
+    detail: '当前 12 个路口进口道平均排队长度，2 秒小幅浮动。',
+    label: '当前平均排队长度',
     tone: 'emerald',
-    value: '71.4',
+    value: '8.6 辆',
   },
   {
-    detail: 'BLDG-C-07 · 18:00 负荷峰值。',
-    label: '今日峰值负荷',
+    detail: '当前全路网车辆平均等待时间，晚高峰随拥堵上升。',
+    label: '当前平均等待时间',
     tone: 'amber',
-    value: '188.4 kWh',
+    value: '46 秒',
   },
   {
-    detail: '当前时段暖通系统电耗占比。',
-    label: 'HVAC 当前占比',
+    detail: '接入 AI 自适应控制策略的路口占比。',
+    label: '自适应控制覆盖率',
     tone: 'sky',
-    value: '43.6%',
+    value: '83.3%',
   },
   {
-    detail: '最新监测时间 2026-07-09 18:00。',
-    label: '今日预警',
+    detail: '今日已触发的拥堵与应急事件告警数。',
+    label: '今日拥堵/事件告警',
     tone: 'rose',
-    value: '3 条',
+    value: '4 条',
   },
 ])
 
 const statusDistribution = ref<StatusBucket[]>([
-  { count: 101, label: '正常', tone: 'emerald' },
-  { count: 194, label: '预警', tone: 'rose' },
-  { count: 2, label: '维护中', tone: 'amber' },
-  { count: 2, label: '离线', tone: 'slate' },
+  { count: 7, label: '畅通', tone: 'emerald' },
+  { count: 3, label: '缓行', tone: 'amber' },
+  { count: 2, label: '拥堵', tone: 'rose' },
+  { count: 0, label: '离线', tone: 'slate' },
 ])
 
-const dailySeries: DailyPoint[] = [
-  { date: '06-28', electricity: 469.2, hvac: 196.6, occupancy: 48.6, water: 62.4 },
-  { date: '06-29', electricity: 501.8, hvac: 210.9, occupancy: 53.2, water: 67.1 },
-  { date: '06-30', electricity: 486.6, hvac: 204.4, occupancy: 51.5, water: 64.5 },
-  { date: '07-01', electricity: 522.5, hvac: 229.2, occupancy: 58.1, water: 69.7 },
-  { date: '07-02', electricity: 553.4, hvac: 238.4, occupancy: 62.8, water: 72.4 },
-  { date: '07-03', electricity: 534.1, hvac: 226.7, occupancy: 59.4, water: 70.2 },
-  { date: '07-04', electricity: 497.6, hvac: 205.1, occupancy: 50.2, water: 63.8 },
-  { date: '07-05', electricity: 518.9, hvac: 218.5, occupancy: 56.7, water: 66.9 },
-  { date: '07-06', electricity: 575.2, hvac: 251.9, occupancy: 65.6, water: 75.3 },
-  { date: '07-07', electricity: 604.6, hvac: 267.4, occupancy: 69.4, water: 77.1 },
-  { date: '07-08', electricity: 624.3, hvac: 276.2, occupancy: 72.8, water: 79.8 },
-  { date: '07-09', electricity: 642.8, hvac: 280.1, occupancy: 71.4, water: 81.5 },
-]
+const dailySeries = reactive<DailyPoint[]>([
+  { date: '06-28', electricity: 42860, hvac: 0, occupancy: 28.6, water: 0 },
+  { date: '06-29', electricity: 46210, hvac: 0, occupancy: 31.2, water: 0 },
+  { date: '06-30', electricity: 48780, hvac: 0, occupancy: 35.8, water: 0 },
+  { date: '07-01', electricity: 53620, hvac: 0, occupancy: 38.5, water: 0 },
+  { date: '07-02', electricity: 58940, hvac: 0, occupancy: 44.6, water: 0 },
+  { date: '07-03', electricity: 56180, hvac: 0, occupancy: 42.8, water: 0 },
+  { date: '07-04', electricity: 50760, hvac: 0, occupancy: 36.4, water: 0 },
+  { date: '07-05', electricity: 55290, hvac: 0, occupancy: 40.9, water: 0 },
+  { date: '07-06', electricity: 64650, hvac: 0, occupancy: 51.2, water: 0 },
+  { date: '07-07', electricity: 70420, hvac: 0, occupancy: 56.7, water: 0 },
+  { date: '07-08', electricity: 74180, hvac: 0, occupancy: 61.8, water: 0 },
+  { date: '07-09', electricity: 64280, hvac: 0, occupancy: 46.8, water: 0 },
+])
 
 const hourlySeries = ref<HourlyPoint[]>([
-  { electricity: 118.4, hour: '00:00', hvac: 44.8, occupancy: 22.5, temperature: 24.6 },
-  { electricity: 152.7, hour: '06:00', hvac: 61.9, occupancy: 48.2, temperature: 25.1 },
-  { electricity: 176.5, hour: '12:00', hvac: 79.4, occupancy: 68.6, temperature: 26.3 },
-  { electricity: 188.4, hour: '18:00', hvac: 86.2, occupancy: 71.4, temperature: 27.1 },
+  { electricity: 320, hour: '00:00', hvac: 24, occupancy: 32, temperature: 5.4 },
+  { electricity: 980, hour: '06:00', hvac: 48, occupancy: 76, temperature: 17.8 },
+  { electricity: 1210, hour: '12:00', hvac: 52, occupancy: 84, temperature: 21.5 },
+  { electricity: 1580, hour: '18:00', hvac: 58, occupancy: 108, temperature: 33.6 },
 ])
 
 const buildingSummaries = ref<BuildingSummary[]>([
   {
-    averageOccupancy: 72.4,
-    buildingId: 'BLDG-C-07',
-    buildingType: 'lab',
-    efficiencyScore: 72,
-    electricity: 1688.4,
-    hvac: 739.8,
-    statusLabel: '预警优先',
-    warningCount: 4,
-    water: 188.3,
+    averageOccupancy: 112,
+    buildingId: 'intersection_3_2',
+    buildingType: 'arterial',
+    efficiencyScore: 48,
+    electricity: 91,
+    hvac: 36,
+    statusLabel: '拥堵优先',
+    warningCount: 34,
+    water: 4,
   },
   {
-    averageOccupancy: 66.8,
-    buildingId: 'BLDG-A-03',
-    buildingType: 'office',
-    efficiencyScore: 86,
-    electricity: 1516.2,
-    hvac: 602.6,
-    statusLabel: '运行稳定',
-    warningCount: 1,
-    water: 164.2,
+    averageOccupancy: 96,
+    buildingId: 'intersection_2_4',
+    buildingType: 'secondary',
+    efficiencyScore: 57,
+    electricity: 84,
+    hvac: 29,
+    statusLabel: '缓行压控',
+    warningCount: 27,
+    water: 2,
   },
   {
-    averageOccupancy: 59.7,
-    buildingId: 'BLDG-D-02',
-    buildingType: 'mixed-use',
-    efficiencyScore: 81,
-    electricity: 1427.7,
-    hvac: 621.5,
-    statusLabel: '维护观察',
-    warningCount: 2,
-    water: 151.1,
+    averageOccupancy: 89,
+    buildingId: 'intersection_1_4',
+    buildingType: 'arterial',
+    efficiencyScore: 63,
+    electricity: 76,
+    hvac: 23,
+    statusLabel: '信控协调',
+    warningCount: 22,
+    water: 1,
+  },
+  {
+    averageOccupancy: 82,
+    buildingId: 'intersection_2_2',
+    buildingType: 'branch',
+    efficiencyScore: 68,
+    electricity: 71,
+    hvac: 18,
+    statusLabel: '排队消散',
+    warningCount: 18,
+    water: 1,
   },
 ])
 
-const heatmap: HeatmapCell[] = dailySeries.slice(-7).flatMap((day, dayIndex) =>
+const heatmap = reactive<HeatmapCell[]>(dailySeries.slice(-7).flatMap((day, dayIndex) =>
   hourlySeries.value.map((slot, slotIndex) => {
+    const slotBase = [88, 142, 166, 218][slotIndex] ?? 120
+    const dayWave = (day.electricity - 40000) / 50000
     const electricity = Number(
-      (day.electricity * (0.16 + slotIndex * 0.055 + dayIndex * 0.01)).toFixed(1),
+      clamp(slotBase + dayWave * 34 + dayIndex * 3.8 + (slotIndex === 3 ? 14 : 0), 80, 250).toFixed(0),
     )
     return {
       date: day.date,
       electricity,
       hour: slot.hour,
-      intensity: Math.min(1, electricity / 170),
-      occupancy: Number((slot.occupancy + dayIndex * 2.2).toFixed(1)),
+      intensity: clamp((electricity - 80) / 170, 0, 1),
+      occupancy: Number(clamp(slot.occupancy + dayIndex * 1.9, 0, 120).toFixed(1)),
     }
   }),
-)
+))
 
 const composition = ref<CompositionItem[]>([
-  { color: '#3b82f6', label: '暖通系统', value: 2757.6 },
-  { color: '#22c55e', label: '照明系统', value: 1176.4 },
-  { color: '#f59e0b', label: '插座与设备', value: 931.9 },
-  { color: '#ef4444', label: '公共区域', value: 642.8 },
-  { color: '#8b5cf6', label: '实验与专用负荷', value: 482.1 },
-  { color: '#06b6d4', label: '其他损耗', value: 437.1 },
+  { color: '#3b82f6', label: '东西直行', value: 293760 },
+  { color: '#22c55e', label: '南北直行', value: 276480 },
+  { color: '#f59e0b', label: '东西左转', value: 120960 },
+  { color: '#ef4444', label: '南北左转', value: 120960 },
+  { color: '#8b5cf6', label: '应急优先', value: 8640 },
+  { color: '#06b6d4', label: '其他', value: 51840 },
 ])
 
 const scatterProfiles: Array<{
@@ -307,256 +341,273 @@ const scatterProfiles: Array<{
   id: string
   tone: Tone
 }> = [
-  { baseElectricity: 126, baseOccupancy: 48, baseTemperature: 24.6, id: 'BLDG-A-03', tone: 'sky' },
-  { baseElectricity: 132, baseOccupancy: 50, baseTemperature: 24.8, id: 'BLDG-A-05', tone: 'sky' },
-  { baseElectricity: 118, baseOccupancy: 44, baseTemperature: 24.2, id: 'BLDG-A-08', tone: 'sky' },
-  { baseElectricity: 114, baseOccupancy: 42, baseTemperature: 24.1, id: 'BLDG-B-01', tone: 'emerald' },
-  { baseElectricity: 121, baseOccupancy: 45, baseTemperature: 24.4, id: 'BLDG-B-04', tone: 'emerald' },
-  { baseElectricity: 108, baseOccupancy: 39, baseTemperature: 23.8, id: 'BLDG-B-09', tone: 'emerald' },
-  { baseElectricity: 149, baseOccupancy: 56, baseTemperature: 23.9, id: 'BLDG-C-07', tone: 'amber' },
-  { baseElectricity: 156, baseOccupancy: 58, baseTemperature: 24.3, id: 'BLDG-C-11', tone: 'amber' },
-  { baseElectricity: 142, baseOccupancy: 52, baseTemperature: 24.0, id: 'BLDG-C-15', tone: 'amber' },
-  { baseElectricity: 136, baseOccupancy: 52, baseTemperature: 25.0, id: 'BLDG-D-02', tone: 'rose' },
-  { baseElectricity: 151, baseOccupancy: 57, baseTemperature: 25.4, id: 'BLDG-D-06', tone: 'rose' },
-  { baseElectricity: 145, baseOccupancy: 54, baseTemperature: 25.2, id: 'BLDG-D-09', tone: 'rose' },
+  { baseElectricity: 5.8, baseOccupancy: 260, baseTemperature: 18, id: 'intersection_1_1', tone: 'sky' },
+  { baseElectricity: 7.2, baseOccupancy: 340, baseTemperature: 20, id: 'intersection_1_2', tone: 'sky' },
+  { baseElectricity: 6.5, baseOccupancy: 420, baseTemperature: 22, id: 'intersection_1_3', tone: 'sky' },
+  { baseElectricity: 8.4, baseOccupancy: 520, baseTemperature: 24, id: 'intersection_2_1', tone: 'emerald' },
+  { baseElectricity: 10.2, baseOccupancy: 680, baseTemperature: 27, id: 'intersection_2_2', tone: 'emerald' },
+  { baseElectricity: 9.5, baseOccupancy: 760, baseTemperature: 29, id: 'intersection_2_3', tone: 'emerald' },
+  { baseElectricity: 13.6, baseOccupancy: 900, baseTemperature: 34, id: 'intersection_1_4', tone: 'amber' },
+  { baseElectricity: 16.8, baseOccupancy: 1040, baseTemperature: 39, id: 'intersection_2_4', tone: 'amber' },
+  { baseElectricity: 15.1, baseOccupancy: 980, baseTemperature: 37, id: 'intersection_3_1', tone: 'amber' },
+  { baseElectricity: 22.4, baseOccupancy: 1220, baseTemperature: 48, id: 'intersection_3_2', tone: 'rose' },
+  { baseElectricity: 24.8, baseOccupancy: 1320, baseTemperature: 52, id: 'intersection_3_3', tone: 'rose' },
+  { baseElectricity: 26.1, baseOccupancy: 1450, baseTemperature: 56, id: 'intersection_3_4', tone: 'rose' },
 ]
 
 const scatterHourOffsets = [
   { electricity: 0, hour: '00:00', occupancy: 0, temperature: 0 },
-  { electricity: 22, hour: '06:00', occupancy: 12, temperature: 0.7 },
-  { electricity: 42, hour: '12:00', occupancy: 22, temperature: 1.5 },
-  { electricity: 52, hour: '18:00', occupancy: 26, temperature: 2.1 },
+  { electricity: 5.4, hour: '06:00', occupancy: 220, temperature: 9 },
+  { electricity: 8.6, hour: '12:00', occupancy: 360, temperature: 14 },
+  { electricity: 12.8, hour: '18:00', occupancy: 520, temperature: 21 },
 ] as const
 
-const scatterPoints: ScatterPoint[] = scatterProfiles.flatMap((profile, profileIndex) =>
+const scatterPoints = reactive<ScatterPoint[]>(scatterProfiles.flatMap((profile, profileIndex) =>
   scatterHourOffsets.map((slot, slotIndex) => {
     const sampleIndex = profileIndex * scatterHourOffsets.length + slotIndex + 1
-    const drift = ((profileIndex % 3) - 1) * 4 + slotIndex * 1.7
-    const riskBoost = profile.tone === 'rose' ? 12 : profile.tone === 'amber' ? 8 : 0
+    const drift = ((profileIndex % 3) - 1) * 1.4 + slotIndex * 0.6
+    const riskBoost = profile.tone === 'rose' ? 4.6 : profile.tone === 'amber' ? 2.4 : 0
 
     return {
       buildingId: profile.id,
-      electricity: Number((profile.baseElectricity + slot.electricity + drift + riskBoost).toFixed(1)),
+      electricity: Number(clamp(profile.baseElectricity + slot.electricity + drift + riskBoost, 0, 40).toFixed(1)),
       hour: slot.hour,
       id: `${profile.id}-${String(sampleIndex).padStart(2, '0')}`,
-      occupancy: Number((profile.baseOccupancy + slot.occupancy + (profileIndex % 4) * 1.4).toFixed(1)),
-      temperature: Number((profile.baseTemperature + slot.temperature + (profileIndex % 5) * 0.08).toFixed(1)),
+      occupancy: Number(clamp(profile.baseOccupancy + slot.occupancy + (profileIndex % 4) * 24, 200, 1800).toFixed(0)),
+      temperature: Number(clamp(profile.baseTemperature + slot.temperature + (profileIndex % 5) * 1.2, 10, 90).toFixed(1)),
       tone: profile.tone,
     }
   }),
-)
+))
 
 const records = ref<MonitoringRecord[]>([
   {
-    building_id: 'BLDG-C-07',
-    building_type: 'lab',
-    chilled_water_return_temp: 12.4,
-    chilled_water_supply_temp: 7.5,
-    device_id: 'BLDG-C-07-DEV-18',
+    building_id: '路口 3-2',
+    building_type: 'intersection_3_2',
+    chilled_water_return_temp: 34,
+    chilled_water_supply_temp: 108,
+    control_strategy: 'Traffic-R1',
+    device_id: '东西直行',
     device_status: 'warning',
-    electricity_kwh: 188.4,
-    env_humidity: 46,
-    env_temperature: 27.4,
-    hvac_kwh: 86.2,
+    electricity_kwh: 1430,
+    env_humidity: 108,
+    env_temperature: 12.4,
+    hvac_kwh: 34,
     id: 1042,
     monitor_time: '2026-07-09 18:00',
-    occupancy_density: 76,
-    water_m3: 19.3,
+    occupancy_density: 62,
+    water_m3: 78,
   },
   {
-    building_id: 'BLDG-A-03',
-    building_type: 'office',
-    chilled_water_return_temp: 11.8,
-    chilled_water_supply_temp: 7.1,
-    device_id: 'BLDG-A-03-DEV-21',
-    device_status: 'normal',
-    electricity_kwh: 171.2,
-    env_humidity: 49,
-    env_temperature: 27.2,
-    hvac_kwh: 72.4,
+    building_id: '路口 2-4',
+    building_type: 'intersection_2_4',
+    chilled_water_return_temp: 26,
+    chilled_water_supply_temp: 86,
+    control_strategy: 'MaxPressure',
+    device_id: '南北直行',
+    device_status: 'maintenance',
+    electricity_kwh: 1210,
+    env_humidity: 86,
+    env_temperature: 21.6,
+    hvac_kwh: 18,
     id: 1041,
     monitor_time: '2026-07-09 18:00',
-    occupancy_density: 74,
-    water_m3: 17.5,
+    occupancy_density: 45,
+    water_m3: 42,
   },
   {
-    building_id: 'BLDG-D-02',
-    building_type: 'mixed-use',
-    chilled_water_return_temp: 12.1,
-    chilled_water_supply_temp: 7.0,
-    device_id: 'BLDG-D-02-DEV-09',
+    building_id: '路口 1-4',
+    building_type: 'intersection_1_4',
+    chilled_water_return_temp: 29,
+    chilled_water_supply_temp: 91,
+    control_strategy: 'RL',
+    device_id: '东西左转',
     device_status: 'maintenance',
-    electricity_kwh: 174.0,
-    env_humidity: 51,
-    env_temperature: 27.0,
-    hvac_kwh: 74.1,
+    electricity_kwh: 1080,
+    env_humidity: 91,
+    env_temperature: 18.9,
+    hvac_kwh: 24,
     id: 1040,
     monitor_time: '2026-07-09 18:00',
-    occupancy_density: 70,
-    water_m3: 16.1,
+    occupancy_density: 39,
+    water_m3: 55,
   },
   {
-    building_id: 'BLDG-B-01',
-    building_type: 'teaching',
-    chilled_water_return_temp: 11.2,
-    chilled_water_supply_temp: 6.7,
-    device_id: 'BLDG-B-01-DEV-14',
+    building_id: '路口 2-2',
+    building_type: 'intersection_2_2',
+    chilled_water_return_temp: 12,
+    chilled_water_supply_temp: 64,
+    control_strategy: 'FixedTime',
+    device_id: '南北左转',
     device_status: 'normal',
-    electricity_kwh: 151.3,
-    env_humidity: 53,
-    env_temperature: 26.6,
-    hvac_kwh: 58.8,
+    electricity_kwh: 760,
+    env_humidity: 64,
+    env_temperature: 38.6,
+    hvac_kwh: 9,
     id: 1039,
     monitor_time: '2026-07-09 18:00',
-    occupancy_density: 64,
-    water_m3: 14.2,
+    occupancy_density: 28,
+    water_m3: 26,
   },
   {
-    building_id: 'BLDG-C-07',
-    building_type: 'lab',
-    chilled_water_return_temp: 12.0,
-    chilled_water_supply_temp: 7.4,
-    device_id: 'BLDG-C-07-DEV-11',
+    building_id: '路口 3-3',
+    building_type: 'intersection_3_3',
+    chilled_water_return_temp: 31,
+    chilled_water_supply_temp: 103,
+    control_strategy: 'Traffic-R1',
+    device_id: '东西直行',
     device_status: 'warning',
-    electricity_kwh: 184.3,
-    env_humidity: 45,
-    env_temperature: 27.0,
-    hvac_kwh: 82.7,
+    electricity_kwh: 1370,
+    env_humidity: 103,
+    env_temperature: 13.8,
+    hvac_kwh: 31,
     id: 1038,
     monitor_time: '2026-07-09 12:00',
-    occupancy_density: 75,
-    water_m3: 18.9,
+    occupancy_density: 59,
+    water_m3: 72,
   },
   {
-    building_id: 'BLDG-A-03',
-    building_type: 'office',
-    chilled_water_return_temp: 11.6,
-    chilled_water_supply_temp: 7.0,
-    device_id: 'BLDG-A-03-DEV-08',
+    building_id: '路口 1-2',
+    building_type: 'intersection_1_2',
+    chilled_water_return_temp: 8,
+    chilled_water_supply_temp: 58,
+    control_strategy: 'MaxPressure',
+    device_id: '南北直行',
     device_status: 'normal',
-    electricity_kwh: 162.5,
-    env_humidity: 48,
-    env_temperature: 26.1,
-    hvac_kwh: 69.3,
+    electricity_kwh: 620,
+    env_humidity: 58,
+    env_temperature: 42.1,
+    hvac_kwh: 6,
     id: 1037,
     monitor_time: '2026-07-09 12:00',
-    occupancy_density: 71,
-    water_m3: 16.8,
+    occupancy_density: 22,
+    water_m3: 20,
   },
   {
-    building_id: 'BLDG-D-02',
-    building_type: 'mixed-use',
-    chilled_water_return_temp: 12.3,
-    chilled_water_supply_temp: 7.2,
-    device_id: 'BLDG-D-02-DEV-16',
+    building_id: '路口 2-3',
+    building_type: 'intersection_2_3',
+    chilled_water_return_temp: 28,
+    chilled_water_supply_temp: 98,
+    control_strategy: 'RL',
+    device_id: '东西左转',
     device_status: 'warning',
-    electricity_kwh: 169.4,
-    env_humidity: 52,
-    env_temperature: 26.5,
-    hvac_kwh: 76.9,
+    electricity_kwh: 1030,
+    env_humidity: 98,
+    env_temperature: 16.2,
+    hvac_kwh: 28,
     id: 1036,
     monitor_time: '2026-07-09 12:00',
-    occupancy_density: 68,
-    water_m3: 15.4,
+    occupancy_density: 48,
+    water_m3: 66,
   },
   {
-    building_id: 'BLDG-B-01',
-    building_type: 'teaching',
-    chilled_water_return_temp: 11.4,
-    chilled_water_supply_temp: 6.9,
-    device_id: 'BLDG-B-01-DEV-06',
+    building_id: '路口 1-1',
+    building_type: 'intersection_1_1',
+    chilled_water_return_temp: 4,
+    chilled_water_supply_temp: 42,
+    control_strategy: 'FixedTime',
+    device_id: '南北左转',
     device_status: 'normal',
-    electricity_kwh: 148.1,
-    env_humidity: 54,
-    env_temperature: 25.6,
-    hvac_kwh: 55.2,
+    electricity_kwh: 420,
+    env_humidity: 42,
+    env_temperature: 50.8,
+    hvac_kwh: 4,
     id: 1035,
     monitor_time: '2026-07-09 12:00',
-    occupancy_density: 63,
-    water_m3: 13.7,
+    occupancy_density: 16,
+    water_m3: 14,
   },
   {
-    building_id: 'BLDG-C-07',
-    building_type: 'lab',
-    chilled_water_return_temp: 12.6,
-    chilled_water_supply_temp: 7.6,
-    device_id: 'BLDG-C-07-DEV-07',
+    building_id: '路口 3-4',
+    building_type: 'intersection_3_4',
+    chilled_water_return_temp: 28,
+    chilled_water_supply_temp: 98,
+    control_strategy: '应急绿波',
+    device_id: '东西直行',
     device_status: 'warning',
-    electricity_kwh: 171.4,
-    env_humidity: 47,
-    env_temperature: 25.9,
-    hvac_kwh: 78.4,
+    electricity_kwh: 1290,
+    env_humidity: 98,
+    env_temperature: 16.2,
+    hvac_kwh: 28,
     id: 1034,
     monitor_time: '2026-07-09 06:00',
-    occupancy_density: 64,
-    water_m3: 17.2,
+    occupancy_density: 54,
+    water_m3: 66,
   },
   {
-    building_id: 'BLDG-A-03',
-    building_type: 'office',
-    chilled_water_return_temp: 11.5,
-    chilled_water_supply_temp: 6.8,
-    device_id: 'BLDG-A-03-DEV-19',
+    building_id: '路口 1-3',
+    building_type: 'intersection_1_3',
+    chilled_water_return_temp: 7,
+    chilled_water_supply_temp: 52,
+    control_strategy: 'MaxPressure',
+    device_id: '南北直行',
     device_status: 'normal',
-    electricity_kwh: 146.2,
-    env_humidity: 50,
-    env_temperature: 25.4,
-    hvac_kwh: 61.8,
+    electricity_kwh: 560,
+    env_humidity: 52,
+    env_temperature: 45.2,
+    hvac_kwh: 5,
     id: 1033,
     monitor_time: '2026-07-09 06:00',
-    occupancy_density: 61,
-    water_m3: 15.6,
+    occupancy_density: 20,
+    water_m3: 18,
   },
   {
-    building_id: 'BLDG-D-02',
-    building_type: 'mixed-use',
-    chilled_water_return_temp: 12.1,
-    chilled_water_supply_temp: 7.1,
-    device_id: 'BLDG-D-02-DEV-23',
+    building_id: '路口 3-1',
+    building_type: 'intersection_3_1',
+    chilled_water_return_temp: 18,
+    chilled_water_supply_temp: 78,
+    control_strategy: 'RL',
+    device_id: '东西左转',
     device_status: 'maintenance',
-    electricity_kwh: 155.2,
-    env_humidity: 51,
-    env_temperature: 25.8,
-    hvac_kwh: 64.7,
+    electricity_kwh: 920,
+    env_humidity: 78,
+    env_temperature: 30.6,
+    hvac_kwh: 16,
     id: 1032,
     monitor_time: '2026-07-09 06:00',
-    occupancy_density: 59,
-    water_m3: 14.9,
+    occupancy_density: 33,
+    water_m3: 39,
   },
   {
-    building_id: 'BLDG-B-01',
-    building_type: 'teaching',
-    chilled_water_return_temp: 11.0,
-    chilled_water_supply_temp: 6.6,
-    device_id: 'BLDG-B-01-DEV-02',
+    building_id: '路口 2-1',
+    building_type: 'intersection_2_1',
+    chilled_water_return_temp: 6,
+    chilled_water_supply_temp: 48,
+    control_strategy: 'FixedTime',
+    device_id: '南北左转',
     device_status: 'normal',
-    electricity_kwh: 132.4,
-    env_humidity: 55,
-    env_temperature: 24.8,
-    hvac_kwh: 52.1,
+    electricity_kwh: 510,
+    env_humidity: 48,
+    env_temperature: 47.4,
+    hvac_kwh: 5,
     id: 1031,
     monitor_time: '2026-07-09 06:00',
-    occupancy_density: 55,
-    water_m3: 12.8,
+    occupancy_density: 18,
+    water_m3: 16,
   },
 ])
 
-const dateText = computed(() =>
-  new Intl.DateTimeFormat('zh-CN', {
-    day: '2-digit',
-    month: '2-digit',
-    weekday: 'short',
-  }).format(now.value),
-)
+function replaceReactiveArray<T>(target: T[], source: T[]) {
+  target.splice(0, target.length, ...source)
+}
 
-const timeText = computed(() =>
-  new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit',
-    hour12: false,
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(now.value),
-)
+function applyBootstrapData(data: DataAnalysisBootstrapData) {
+  sampleCount.value = data.sampleCount
+  sampleRate.value = data.sampleRate
+  healthScore.value = data.healthScore
+  sampledPointId.value = data.sampledPointId
+  metrics.value = data.metrics
+  statusDistribution.value = data.statusDistribution
+  replaceReactiveArray(dailySeries, data.dailySeries)
+  hourlySeries.value = data.hourlySeries
+  buildingSummaries.value = data.buildingSummaries
+  replaceReactiveArray(heatmap, data.heatmap)
+  composition.value = data.composition
+  replaceReactiveArray(scatterPoints, data.scatterPoints)
+  records.value = data.records
+  toasts.value = data.toasts
+  syncSeconds.value = 0
+}
 
 const statusTotal = computed(() => statusDistribution.value.reduce((sum, item) => sum + item.count, 0))
 const warningCount = computed(
@@ -568,13 +619,13 @@ const normalCount = computed(
 const maintenanceCount = computed(
   () => statusDistribution.value.find((item) => item.tone === 'amber')?.count ?? 0,
 )
-const riskCount = computed(
-  () =>
-    (statusDistribution.value.find((item) => item.tone === 'rose')?.count ?? 0) +
-    (statusDistribution.value.find((item) => item.tone === 'slate')?.count ?? 0),
+const offlineCount = computed(
+  () => statusDistribution.value.find((item) => item.tone === 'slate')?.count ?? 0,
 )
+const riskCount = computed(() => warningCount.value)
+const emergencyHandlingCount = computed(() => Math.min(2, Math.max(0, warningCount.value - 1)))
 
-const healthScore = ref(96)
+const healthScore = ref(82)
 const healthGaugeStyle = computed(() => ({
   backgroundImage: `conic-gradient(${colors.cyan} 0deg ${healthScore.value * 3.6}deg, rgba(0,212,255,0.08) ${healthScore.value * 3.6}deg 360deg)`,
 }))
@@ -586,7 +637,7 @@ const quietPoint = computed(() =>
   hourlySeries.value.reduce((best, point) => (point.electricity < best.electricity ? point : best)),
 )
 const busiestPoint = computed(() =>
-  hourlySeries.value.reduce((best, point) => (point.occupancy > best.occupancy ? point : best)),
+  hourlySeries.value.reduce((best, point) => (point.temperature > best.temperature ? point : best)),
 )
 
 const heatmapDates = computed(() => [...new Set(heatmap.map((item) => item.date))])
@@ -677,37 +728,49 @@ const hourlyChart = computed(() => {
 const scatterCharts = computed(() => [
   makeScatterChart({
     correlation: 0.82,
-    title: '能耗与人流关系',
+    title: '排队长度与到达流量关系',
     xKey: 'occupancy',
-    xLabel: '人流指数',
-  }),
-  makeScatterChart({
-    correlation: 0.68,
-    title: '能耗与温度关系',
-    xKey: 'temperature',
-    xLabel: '温度 °C',
+    xLabel: '到达流量 辆/h',
   }),
 ])
 
 const visibleScatterLegend = [
-  { color: colors.cyan, label: '办公楼', tone: 'sky' as Tone },
-  { color: colors.emerald, label: '教学楼', tone: 'emerald' as Tone },
-  { color: colors.amber, label: '实验楼', tone: 'amber' as Tone },
-  { color: colors.rose, label: '风险点', tone: 'rose' as Tone },
+  { color: colors.cyan, label: '主干路口', tone: 'sky' as Tone },
+  { color: colors.emerald, label: '次干路口', tone: 'emerald' as Tone },
+  { color: colors.amber, label: '支路口', tone: 'amber' as Tone },
+  { color: colors.rose, label: '拥堵点', tone: 'rose' as Tone },
 ]
 
 const detailHeaders = [
-  { colClass: 'col-building', label: '楼栋', meaning: '楼栋唯一编号' },
-  { colClass: 'col-time', label: '时间', meaning: '监测采样时间' },
-  { colClass: 'col-num', label: '电耗', meaning: '当前时段电耗，单位 kWh' },
-  { colClass: 'col-num', label: '暖通', meaning: 'HVAC 系统电耗，单位 kWh' },
-  { colClass: 'col-num', label: '用水', meaning: '当前时段用水量，单位 m³' },
-  { colClass: 'col-num', label: '温度', meaning: '环境温度，单位 °C' },
-  { colClass: 'col-num', label: '湿度', meaning: '环境湿度，单位 %' },
-  { colClass: 'col-num', label: '人流', meaning: '人员活跃指数' },
-  { colClass: 'col-device', label: '设备', meaning: '关联采集设备 ID' },
-  { colClass: 'col-status', label: '状态', meaning: '设备运行状态' },
+  { colClass: 'col-building', label: '路口', meaning: '路口展示名与内部 ID' },
+  { colClass: 'col-time', label: '时间', meaning: '路口逐帧监测时间' },
+  { colClass: 'col-num', label: '流入量', meaning: '当前帧流入车辆数，单位 辆' },
+  { colClass: 'col-num', label: '排队长度', meaning: '当前平均排队长度，单位 辆' },
+  { colClass: 'col-num', label: '平均延误', meaning: '当前平均延误，单位 秒' },
+  { colClass: 'col-num', label: '平均车速', meaning: '路口进口道平均车速，单位 km/h' },
+  { colClass: 'col-device', label: '当前相位', meaning: '当前放行相位' },
+  { colClass: 'col-device', label: '控制策略', meaning: '当前路口信控策略' },
+  { colClass: 'col-status', label: '状态', meaning: '路口运行状态' },
 ] as const
+
+const strategyMetrics = [
+  { baseline: 18, label: '平均排队长度', maxPressure: 12.4, trafficR1: 9.7, unit: '辆', lowerBetter: true },
+  { baseline: 1260, label: '累计排队车辆数', maxPressure: 880, trafficR1: 690, unit: '辆', lowerBetter: true },
+  { baseline: 52, label: '平均等待时间', maxPressure: 38, trafficR1: 31, unit: '秒', lowerBetter: true },
+  { baseline: 238, label: '平均旅行时间', maxPressure: 209, trafficR1: 196, unit: '秒', lowerBetter: true },
+  { baseline: 7200, label: '通行量', maxPressure: 7900, trafficR1: 8350, unit: '辆/h', lowerBetter: false },
+]
+
+const strategySeries = [
+  { color: colors.slate, key: 'baseline', label: 'FixedTime' },
+  { color: colors.amber, key: 'maxPressure', label: 'MaxPressure' },
+  { color: colors.cyan, key: 'trafficR1', label: 'Traffic-R1' },
+] as const
+
+const queueImprovement = computed(() => {
+  const queueMetric = strategyMetrics[0]!
+  return Math.round(((queueMetric.trafficR1 - queueMetric.baseline) / queueMetric.baseline) * 100)
+})
 
 function seedMetricTrends() {
   metricTrendPoints.value = Object.fromEntries(
@@ -816,54 +879,95 @@ function currentSlotIndex() {
   return 3
 }
 
+function trafficStatusProfile(status: MonitoringRecord['device_status']): TrafficStatusProfile {
+  if (status === 'warning') {
+    return {
+      delay: [58, 90],
+      load: [1.08, 1.2],
+      queue: [24, 40],
+      saturation: [95, 118],
+      speed: [8, 20],
+    }
+  }
+  if (status === 'maintenance') {
+    return {
+      delay: [32, 58],
+      load: [0.86, 1.04],
+      queue: [12, 23],
+      saturation: [72, 92],
+      speed: [18, 38],
+    }
+  }
+  return {
+    delay: [10, 30],
+    load: [0.58, 0.9],
+    queue: [2, 10],
+    saturation: [38, 72],
+    speed: [38, 60],
+  }
+}
+
 function createLiveMonitoringRecord(id: number, warning = false): MonitoringRecord {
   const buildingPool = [
-    { id: 'BLDG-A-03', status: 'normal' as const, type: 'office' },
-    { id: 'BLDG-B-01', status: 'normal' as const, type: 'teaching' },
-    { id: 'BLDG-C-07', status: warning ? ('warning' as const) : ('normal' as const), type: 'lab' },
-    { id: 'BLDG-D-02', status: warning ? ('maintenance' as const) : ('normal' as const), type: 'mixed-use' },
+    { id: 'intersection_1_1', name: '路口 1-1', status: 'normal' as const },
+    { id: 'intersection_1_3', name: '路口 1-3', status: 'normal' as const },
+    { id: 'intersection_2_2', name: '路口 2-2', status: 'maintenance' as const },
+    { id: 'intersection_2_4', name: '路口 2-4', status: warning ? ('warning' as const) : ('normal' as const) },
+    { id: 'intersection_3_2', name: '路口 3-2', status: warning ? ('warning' as const) : ('maintenance' as const) },
   ]
   const building = buildingPool[randomInt(0, buildingPool.length - 1)]!
   const slot = hourlySeries.value[currentSlotIndex()]!
-  const loadFactor = warning ? randomBetween(1.12, 1.28) : randomBetween(0.86, 1.08)
-  const deviceNo = randomInt(8, 31)
+  const status = warning ? ('warning' as const) : building.status
+  const profile = trafficStatusProfile(status)
+  const loadFactor = randomBetween(profile.load[0], profile.load[1])
+  const phasePool = ['东西直行', '南北直行', '东西左转', '南北左转'] as const
+  const strategyPool = ['FixedTime', 'MaxPressure', 'RL', 'Traffic-R1', '应急绿波'] as const
+  const queue = randomBetween(profile.queue[0], profile.queue[1])
+  const delay = randomBetween(profile.delay[0], profile.delay[1])
+  const saturation = randomBetween(profile.saturation[0], profile.saturation[1])
+  const speed = randomBetween(profile.speed[0], profile.speed[1])
   const monitorTime = `${now.value.getFullYear()}-${String(now.value.getMonth() + 1).padStart(2, '0')}-${String(now.value.getDate()).padStart(2, '0')} ${slot.hour}`
 
   return {
-    building_id: building.id,
-    building_type: building.type,
-    chilled_water_return_temp: Number(randomBetween(11.2, 12.8).toFixed(1)),
-    chilled_water_supply_temp: Number(randomBetween(6.6, 7.8).toFixed(1)),
-    device_id: `${building.id}-DEV-${String(deviceNo).padStart(2, '0')}`,
-    device_status: building.status,
-    electricity_kwh: Number((slot.electricity * loadFactor).toFixed(1)),
-    env_humidity: Number(randomBetween(45, 56).toFixed(0)),
-    env_temperature: Number((slot.temperature + randomBetween(-0.7, 0.8)).toFixed(1)),
-    hvac_kwh: Number((slot.hvac * loadFactor).toFixed(1)),
+    building_id: building.name,
+    building_type: building.id,
+    chilled_water_return_temp: Number(queue.toFixed(1)),
+    chilled_water_supply_temp: Number(saturation.toFixed(1)),
+    control_strategy: strategyPool[randomInt(0, strategyPool.length - 1)]!,
+    device_id: phasePool[randomInt(0, phasePool.length - 1)]!,
+    device_status: status,
+    electricity_kwh: Number(clamp(slot.electricity * loadFactor, 200, 1500).toFixed(0)),
+    env_humidity: Number(saturation.toFixed(0)),
+    env_temperature: Number(speed.toFixed(1)),
+    hvac_kwh: Number(queue.toFixed(1)),
     id,
     monitor_time: monitorTime,
-    occupancy_density: Number((slot.occupancy + randomBetween(-4, 4)).toFixed(1)),
-    water_m3: Number(randomBetween(13, 21).toFixed(1)),
+    occupancy_density: Number(clamp(saturation * 0.58, 10, 90).toFixed(1)),
+    water_m3: Number(delay.toFixed(1)),
   }
 }
 
 function insertLiveRecord(warning = false) {
   const newRecord = createLiveMonitoringRecord(Date.now(), warning)
   records.value = [newRecord, ...records.value].slice(0, 12)
-  sampleCount.value += 1
-  sampleRate.value = randomInt(24, warning ? 42 : 36)
   syncSeconds.value = 0
 
   if (warning) {
-    const nextWarning = getMetricNumber('今日预警') + 1
-    updateMetricNumber('今日预警', nextWarning, {
+    const nextWarning = getMetricNumber('今日拥堵/事件告警') + 1
+    updateMetricNumber('今日拥堵/事件告警', nextWarning, {
       decimals: 0,
-      detail: `${newRecord.building_id} 触发暖通能耗异常`,
+      detail: `${newRecord.building_id} 触发拥堵事件告警`,
       suffix: ' 条',
     })
-    statusDistribution.value = statusDistribution.value.map((bucket) =>
-      bucket.tone === 'rose' ? { ...bucket, count: bucket.count + 1 } : bucket,
-    )
+    let shifted = false
+    statusDistribution.value = statusDistribution.value.map((bucket) => {
+      if (bucket.tone === 'rose') return { ...bucket, count: Math.min(12, bucket.count + 1) }
+      if (!shifted && bucket.tone === 'emerald' && bucket.count > 0) {
+        shifted = true
+        return { ...bucket, count: bucket.count - 1 }
+      }
+      return bucket
+    })
   }
 }
 
@@ -880,25 +984,25 @@ function scheduleRandomEvent() {
     if (eventType === 1) {
       insertLiveRecord(true)
       pushToast({
-        body: `BLDG-C-07 电耗超阈值 ${randomInt(12, 28)}%`,
-        title: '新预警提示',
+        body: `路口 3-2 排队长度超阈值 ${randomInt(12, 28)}%`,
+        title: '新拥堵告警',
         tone: 'rose',
       })
     } else if (eventType === 2) {
       pushToast({
-        body: `共扫描 ${statusTotal.value} 个监测点`,
+        body: `共扫描 ${statusTotal.value} 个路口`,
         title: '系统扫描完成',
         tone: 'emerald',
       })
     } else if (eventType === 3) {
       pushToast({
-        body: `BLDG-${['A-03', 'B-01', 'C-07', 'D-02'][randomInt(0, 3)]} 完成状态巡检`,
-        title: '设备状态切换',
+        body: `${['路口 1-2', '路口 2-3', '路口 3-2', '路口 3-4'][randomInt(0, 3)]} 完成相位巡检`,
+        title: '路口状态刷新',
         tone: 'emerald',
       })
     } else {
       pushToast({
-        body: '热力矩阵与关系图完成一次采集脉冲',
+        body: '热力矩阵与关系图完成一次路网采集脉冲',
         title: '采集周期完成',
         tone: 'cyan',
       })
@@ -920,77 +1024,77 @@ function metricTooltip(metric: MonitoringMetric): DashboardTooltipContent {
   const parsed = parseMetricValue(metric.value)
   const value = parsed.numeric
 
-  if (metric.label.includes('累计') || metric.label.includes('耗电') || metric.label.includes('电量')) {
+  if (metric.label.includes('通行量')) {
     return {
       rows: [
-        { label: '今日', value: compactKwh(value, 0) },
-        { label: '昨日', value: compactKwh(value * 0.96, 0) },
-        { label: '本周累计', value: compactKwh(value * 5.8, 0) },
+        { label: '今日', value: compactVehicles(value, 0) },
+        { label: '昨日', value: compactVehicles(value * 0.96, 0) },
+        { label: '本周累计', value: compactVehicles(value * 5.8, 0) },
         { label: '同比变化', tone: 'cyan', value: '+6.8%' },
       ],
-      title: '今日累计明细',
+      title: '今日累计通行量明细',
     }
   }
 
-  if (metric.label.includes('人流')) {
+  if (metric.label.includes('排队')) {
     return {
       rows: [
-        { label: '当前', value: value.toFixed(1) },
-        { label: '今日峰值', value: (value * 1.23).toFixed(1) },
-        { label: '今日均值', value: (value * 0.94).toFixed(1) },
-        { label: '峰值时段', value: '12:00-14:00' },
+        { label: '当前均值', value: `${value.toFixed(1)} 辆` },
+        { label: '畅通阈值', tone: 'emerald', value: '< 8 辆' },
+        { label: '拥堵阈值', tone: 'rose', value: '> 18 辆' },
+        { label: '峰值时段', value: '18:00-20:00' },
       ],
-      title: '人流指数详情',
+      title: '平均排队长度详情',
     }
   }
 
-  if (metric.label.includes('峰值')) {
+  if (metric.label.includes('等待')) {
     return {
       rows: [
-        { label: '峰值时刻', value: metric.detail.split(' · ')[1] ?? '今日当前时段' },
-        { label: '峰值楼栋', value: 'BLDG-C-07' },
-        { label: '峰值设备 ID', value: 'BLDG-C-07-DEV-15' },
+        { label: '当前均值', value: `${Math.round(value)} 秒` },
+        { label: '午平峰均值', value: `${Math.max(15, Math.round(value * 0.78))} 秒` },
+        { label: '晚高峰预测', tone: 'amber', value: `${Math.round(value * 1.24)} 秒` },
       ],
-      title: '峰值负荷明细',
+      title: '平均等待时间详情',
     }
   }
 
-  if (metric.label.includes('HVAC')) {
+  if (metric.label.includes('覆盖率')) {
     return {
       rows: [
-        { label: 'HVAC 实耗', value: compactKwh(18_627, 0) },
-        { label: '总耗电量', value: compactKwh(35_420, 0) },
-        { label: '同期对比', tone: 'amber', value: '+3.1%' },
+        { label: '接入路口', value: `${Math.round((value / 100) * statusTotal.value)} 个` },
+        { label: '路口总数', value: `${statusTotal.value} 个` },
+        { label: '主策略', tone: 'cyan', value: 'Traffic-R1 / MaxPressure' },
       ],
-      title: 'HVAC 占电比',
+      title: '自适应控制覆盖率',
     }
   }
 
   return {
     rows: [
-      { label: '今日预警数', tone: 'rose', value: `${Math.round(value)} 条` },
+      { label: '今日告警数', tone: 'rose', value: `${Math.round(value)} 条` },
       { label: '已处理', tone: 'emerald', value: `${Math.max(0, Math.round(value * 0.72))} 条` },
       { label: '待处理', tone: 'amber', value: `${Math.max(0, Math.round(value * 0.28))} 条` },
-      { label: '最近预警', value: '暖通能耗超阈值 15%' },
+      { label: '最近事件', value: '路口 3-2 排队长度超阈值' },
     ],
-    title: '今日预警详情',
+    title: '今日拥堵/事件告警详情',
   }
 }
 
 function healthGaugeTooltip(score: number): DashboardTooltipContent {
   return {
     rows: [
-      { label: '运行稳定性', value: `${Math.round(score * 0.32)} 分` },
-      { label: '能效表现', value: `${Math.round(score * 0.28)} 分` },
-      { label: '故障率', value: `${Math.round(score * 0.2)} 分` },
-      { label: '维护及时性', value: `${Math.round(score * 0.2)} 分` },
+      { label: '畅通路口贡献', value: `${Math.round(score * 0.38)} 分` },
+      { label: '排队控制贡献', value: `${Math.round(score * 0.28)} 分` },
+      { label: '拥堵扣分', value: `${Math.max(0, warningCount.value * 6)} 分` },
+      { label: '离线扣分', value: `${Math.max(0, offlineCount.value * 4)} 分` },
       {
         label: '评级',
         tone: score >= 85 ? 'emerald' : score >= 72 ? 'cyan' : 'amber',
         value: score >= 85 ? '优秀' : score >= 72 ? '良好' : '一般',
       },
     ],
-    title: '运行健康评分构成',
+    title: '路网运行健康评分构成',
   }
 }
 
@@ -1002,23 +1106,23 @@ function statusBucketTooltip(
   const relatedBuildings = buildings
     .filter((building) =>
       bucket.tone === 'emerald'
-        ? building.warningCount === 0
+        ? building.warningCount < 20
         : bucket.tone === 'rose'
-          ? building.warningCount > 0
+          ? building.warningCount >= 24
           : true,
     )
     .slice(0, 4)
-    .map((building) => building.buildingId)
+    .map((building) => intersectionName(building.buildingId))
 
   return {
     rows: [
-      { label: '楼栋列表', value: relatedBuildings.join(' / ') || '暂无' },
-      { label: '数量', value: `${bucket.count} 条` },
+      { label: '路口列表', value: relatedBuildings.join(' / ') || '暂无' },
+      { label: '数量', value: `${bucket.count} 个` },
       { label: '占比', value: `${bucketRatio.toFixed(1)}%` },
       {
         label: '最近变化',
         tone: bucket.tone === 'rose' ? 'amber' : 'cyan',
-        value: bucket.tone === 'rose' ? '+2 条' : '-1 条',
+        value: bucket.tone === 'rose' ? '+1 个' : '-1 个',
       },
     ],
     title: `${bucket.label}状态分布`,
@@ -1026,13 +1130,13 @@ function statusBucketTooltip(
 }
 
 function ratioTooltip(label: string, value: string, bucketCount: number, total: number): DashboardTooltipContent {
-  const numeratorLabel = label === '风险占比' ? '预警 + 离线' : label.replace('占比', '')
+  const numeratorLabel = label.replace('占比', '')
 
   return {
     rows: [
-      { label: '计算公式', value: `${label} = ${numeratorLabel} / 监测总量` },
-      { label: '涉及记录', value: `${bucketCount} 条` },
-      { label: '监测总量', value: `${total} 条` },
+      { label: '计算公式', value: `${label} = ${numeratorLabel} / 路口总数` },
+      { label: '涉及路口', value: `${bucketCount} 个` },
+      { label: '路口总数', value: `${total} 个` },
       { label, value },
     ],
     title: `${label}计算口径`,
@@ -1053,16 +1157,16 @@ function dailyTooltip(point: DailyPoint | undefined, previous: DailyPoint | unde
   return {
     rows: [
       { label: '日期', value: point.date },
-      { label: '电耗', value: compactKwh(point.electricity) },
-      { label: '当日人流指数', value: point.occupancy.toFixed(1) },
+      { label: '通行量', value: compactVehicles(point.electricity, 0) },
+      { label: '平均延误', value: `${point.occupancy.toFixed(1)} 秒/辆` },
       {
         label: '环比前一日',
         tone: change >= 0 ? 'cyan' : 'amber',
         value: `${change >= 0 ? '+' : ''}${change.toFixed(1)}%`,
       },
-      { label: '峰值时段', value: point.occupancy > 78 ? '12:00-14:00' : '18:00-20:00' },
+      { label: '峰值时段', value: point.occupancy > 58 ? '18:00-20:00' : '07:00-09:00' },
     ],
-    title: '每日走势详情',
+    title: '每日通行量与延误详情',
   }
 }
 
@@ -1078,11 +1182,11 @@ function hourlyTooltip(point: HourlyPoint | undefined, index: number): Dashboard
   return {
     rows: [
       { label: '时段范围', value: `${point.hour}-${nextHour}` },
-      { label: '平均负荷', value: compactKwh(point.electricity) },
-      { label: '峰值楼栋', value: point.electricity > 165 ? 'BLDG-C-07' : 'BLDG-A-03' },
-      { label: '人流均值', value: point.occupancy.toFixed(1) },
+      { label: '平均流量', value: compactFlow(point.electricity, 0) },
+      { label: '平均饱和度', value: `${point.occupancy.toFixed(0)}%` },
+      { label: '平均排队', value: `${point.temperature.toFixed(1)} 辆` },
     ],
-    title: '时段负荷详情',
+    title: '时段流量与排队详情',
   }
 }
 
@@ -1099,75 +1203,71 @@ function heatmapCellTooltip(cell: HeatmapCell | undefined): DashboardTooltipCont
   return {
     rows: [
       { label: '日期时段', value: `${cell.date} ${cell.hour}` },
-      { label: '能耗值', value: compactKwh(cell.electricity) },
+      { label: '排队车辆数', value: `${cell.electricity.toFixed(0)} 辆` },
       {
-        label: '较昨日同时段',
+        label: '环比',
         tone: cell.electricity >= yesterday ? 'amber' : 'emerald',
         value: `${(((cell.electricity - yesterday) / yesterday) * 100).toFixed(1)}%`,
       },
       {
-        label: '较上周同时段',
+        label: '同比',
         value: `${(((cell.electricity - lastWeek) / lastWeek) * 100).toFixed(1)}%`,
       },
       {
-        label: '负荷等级',
-        value: cell.intensity > 0.82 ? '高' : cell.intensity > 0.62 ? '中' : '低',
+        label: '拥堵等级',
+        value: congestionLevel(cell.intensity),
       },
-      { label: '主要贡献楼栋', value: cell.intensity > 0.82 ? 'BLDG-C-07' : 'BLDG-A-03' },
+      { label: '主要拥堵路口', value: cell.intensity > 0.82 ? 'intersection_3_2' : 'intersection_2_4' },
     ],
-    title: '热力单元详情',
+    title: '路网时空排队热力详情',
   }
 }
 
 function riskRowTooltip(summary: BuildingSummary, rank: number): DashboardTooltipContent {
   return {
     rows: [
-      { label: '楼栋全称', value: `${summary.buildingId} ${buildingTypeReadable(summary.buildingType)}` },
-      { label: '当前效率值', value: `${summary.efficiencyScore}` },
+      { label: '路口', value: `${intersectionName(summary.buildingId)} / ${summary.buildingId}` },
+      { label: '通行效率', value: `${summary.efficiencyScore}` },
       {
-        label: '风险等级',
+        label: '拥堵等级',
         tone: summary.warningCount > 10 ? 'rose' : 'amber',
-        value: summary.warningCount > 10 ? '高' : '中',
+        value: summary.warningCount > 24 ? '拥堵' : '缓行',
       },
-      { label: '最近预警', value: '最近 24 小时 暖通能耗超阈值' },
-      { label: '关联设备数', value: `${22 + rank * 3} 台` },
-      { label: '待处理告警', value: `${Math.max(1, Math.round(summary.warningCount / 3))} 条` },
-      { label: '建议动作', value: '复核冷站策略与末端阀门' },
+      { label: '当前排队', value: `${summary.warningCount} 辆` },
+      { label: '道路等级', value: buildingTypeReadable(summary.buildingType) },
+      { label: '未处置事件', value: `${Math.max(1, Math.round(summary.water))} 条` },
+      { label: '建议动作', value: '切换 MaxPressure 并延长主相位绿灯' },
     ],
-    title: `${summary.buildingId} 风险详情`,
+    title: `${intersectionName(summary.buildingId)} 拥堵详情`,
   }
 }
 
 function compositionTooltip(item: CompositionItem, itemRatio: number): DashboardTooltipContent {
   return {
     rows: [
-      { label: '分类名称', value: item.label },
-      { label: '数值', value: compactKwh(item.value, 0) },
+      { label: '相位名称', value: item.label },
+      { label: '累计绿灯时长', value: `${formatNumber(item.value, 0)} 秒` },
       { label: '占比', value: `${itemRatio.toFixed(1)}%` },
       {
         label: '同比变化',
         tone: itemRatio > 35 ? 'amber' : 'cyan',
         value: itemRatio > 35 ? '+4.2%' : '+1.6%',
       },
-      { label: 'Top 3 楼栋', value: 'BLDG-C-07 / BLDG-A-03 / BLDG-D-02' },
+      { label: '应用范围', value: '12 个路口信号相位' },
     ],
-    title: '能耗构成详情',
+    title: '通行构成详情',
   }
 }
 
 function scatterTooltip(point: ScatterPoint, xLabel: string): DashboardTooltipContent {
-  const useTemperature = xLabel.includes('温度') || xLabel.includes('°C')
   return {
     rows: [
       { label: '类型', value: scatterTypeLabel(point.tone) },
-      { label: '能耗', value: compactKwh(point.electricity) },
+      { label: '平均排队', value: `${point.electricity.toFixed(1)} 辆` },
+      { label: xLabel, value: compactFlow(point.occupancy, 0) },
+      { label: '路口与时段', value: `${intersectionName(point.buildingId)} ${point.hour}` },
       {
-        label: useTemperature ? '温度' : '人流指数',
-        value: useTemperature ? `${point.temperature.toFixed(1)}°C` : point.occupancy.toFixed(1),
-      },
-      { label: '楼栋与时间', value: `${point.buildingId} ${point.hour}` },
-      {
-        label: '风险点',
+        label: '拥堵点',
         tone: point.tone === 'rose' || point.tone === 'amber' ? 'rose' : 'emerald',
         value: point.tone === 'rose' || point.tone === 'amber' ? '是' : '否',
       },
@@ -1179,16 +1279,17 @@ function scatterTooltip(point: ScatterPoint, xLabel: string): DashboardTooltipCo
 function tableRowTooltip(record: MonitoringRecord): DashboardTooltipContent {
   return {
     rows: [
-      { label: '楼栋详情', value: `${record.building_id} ${buildingTypeReadable(record.building_type)}` },
-      { label: '对比基线', value: `电耗 ${compactKwh(record.electricity_kwh * 0.88)}` },
+      { label: '路口详情', value: `${record.building_id} / ${record.building_type}` },
+      { label: '流入量基线', value: compactVehicles(record.electricity_kwh * 0.88, 0) },
       {
-        label: '预警规则',
-        value: record.device_status === 'warning' ? '暖通能耗超阈值 15%' : '未触发规则',
+        label: '拥堵规则',
+        value: record.device_status === 'warning' ? '排队长度或延误超阈值' : '未触发规则',
       },
-      { label: '关联设备', value: record.device_id },
+      { label: '当前相位', value: record.device_id },
+      { label: '控制策略', value: record.control_strategy },
       { label: '24小时趋势', value: '▁▂▃▅▆▅▇' },
     ],
-    title: '监测明细',
+    title: '路口监测明细',
   }
 }
 
@@ -1211,70 +1312,48 @@ function detailMetricCells(record: MonitoringRecord): Array<{
 }> {
   return [
     {
-      decimals: 1,
-      label: '电耗',
+      decimals: 0,
+      label: '流入量',
       rows: [
-        { label: '阈值范围', value: '70-180 kWh' },
-        { label: '当前异常', tone: record.electricity_kwh > 180 ? 'rose' : 'emerald', value: record.electricity_kwh > 180 ? '是' : '否' },
-        { label: '历史均值', value: compactKwh(record.electricity_kwh * 0.88) },
+        { label: '参考范围', value: '200-1500 辆' },
+        { label: '高峰状态', tone: record.electricity_kwh > 1200 ? 'amber' : 'emerald', value: record.electricity_kwh > 1200 ? '是' : '否' },
+        { label: '历史均值', value: compactVehicles(record.electricity_kwh * 0.88, 0) },
       ],
-      suffix: '',
+      suffix: ' 辆',
       value: record.electricity_kwh,
     },
     {
       decimals: 1,
-      label: '暖通',
+      label: '排队长度',
       rows: [
-        { label: '阈值范围', value: '25-95 kWh' },
-        { label: '当前异常', tone: record.hvac_kwh > 95 ? 'rose' : 'emerald', value: record.hvac_kwh > 95 ? '是' : '否' },
-        { label: '历史均值', value: compactKwh(record.hvac_kwh * 0.9) },
+        { label: '参考范围', value: '0-40 辆' },
+        { label: '拥堵状态', tone: record.hvac_kwh > 24 ? 'rose' : 'emerald', value: record.hvac_kwh > 24 ? '是' : '否' },
+        { label: '历史均值', value: `${formatNumber(record.hvac_kwh * 0.9)} 辆` },
       ],
-      suffix: '',
+      suffix: ' 辆',
       value: record.hvac_kwh,
     },
     {
       decimals: 1,
-      label: '用水',
+      label: '平均延误',
       rows: [
-        { label: '阈值范围', value: '5-28 m³' },
-        { label: '当前异常', tone: record.water_m3 > 28 ? 'rose' : 'emerald', value: record.water_m3 > 28 ? '是' : '否' },
-        { label: '历史均值', value: `${formatNumber(record.water_m3 * 0.92)} m³` },
+        { label: '参考范围', value: '10-90 秒' },
+        { label: '高延误', tone: record.water_m3 > 60 ? 'rose' : 'emerald', value: record.water_m3 > 60 ? '是' : '否' },
+        { label: '历史均值', value: `${formatNumber(record.water_m3 * 0.92)} 秒` },
       ],
-      suffix: '',
+      suffix: ' 秒',
       value: record.water_m3,
     },
     {
       decimals: 1,
-      label: '温度',
+      label: '平均车速',
       rows: [
-        { label: '阈值范围', value: '22-28°C' },
-        { label: '当前异常', tone: record.env_temperature > 28 ? 'rose' : 'emerald', value: record.env_temperature > 28 ? '是' : '否' },
-        { label: '历史均值', value: `${formatNumber(record.env_temperature * 0.96)}°C` },
+        { label: '参考范围', value: '5-60 km/h' },
+        { label: '低速状态', tone: record.env_temperature < 15 ? 'rose' : 'emerald', value: record.env_temperature < 15 ? '是' : '否' },
+        { label: '历史均值', value: `${formatNumber(record.env_temperature * 1.04)} km/h` },
       ],
-      suffix: '°C',
+      suffix: ' km/h',
       value: record.env_temperature,
-    },
-    {
-      decimals: 1,
-      label: '湿度',
-      rows: [
-        { label: '阈值范围', value: '40-65%' },
-        { label: '当前异常', tone: record.env_humidity > 65 ? 'rose' : 'emerald', value: record.env_humidity > 65 ? '是' : '否' },
-        { label: '历史均值', value: `${formatNumber(record.env_humidity * 0.96)}%` },
-      ],
-      suffix: '%',
-      value: record.env_humidity,
-    },
-    {
-      decimals: 1,
-      label: '人流',
-      rows: [
-        { label: '阈值范围', value: '0-90' },
-        { label: '当前异常', tone: record.occupancy_density > 90 ? 'rose' : 'emerald', value: record.occupancy_density > 90 ? '是' : '否' },
-        { label: '历史均值', value: formatNumber(record.occupancy_density * 0.88) },
-      ],
-      suffix: '',
-      value: record.occupancy_density,
     },
   ]
 }
@@ -1344,17 +1423,20 @@ function handleTooltipHide(event: PointerEvent) {
 }
 
 onMounted(() => {
-  seedMetricTrends()
-  pushToast({
-    body: `当前采样速率 ${sampleRate.value} 条/分钟，已接入 ${sampleCount.value} 条样本。`,
-    title: '监测流已接入',
-    tone: 'emerald',
-  })
-  pushToast({
-    body: 'BLDG-C-07 近 24 小时负荷持续偏高。',
-    title: '暖通能耗异常',
-    tone: 'rose',
-  })
+  void fetchDataAnalysisBootstrap()
+    .then((data) => {
+      applyBootstrapData(data)
+    })
+    .catch(() => {
+      pushToast({
+        body: '暂时无法读取数据库，已保留页面内置演示数据。',
+        title: '数据库连接异常',
+        tone: 'rose',
+      })
+    })
+    .finally(() => {
+      seedMetricTrends()
+    })
 
   clockTimer = setInterval(() => {
     now.value = new Date()
@@ -1362,21 +1444,30 @@ onMounted(() => {
 
   syncTimer = setInterval(() => {
     syncSeconds.value += 1
+    sampleFrameCarry += sampleRate.value / 60
+    const framesToAdd = Math.floor(sampleFrameCarry)
+    if (framesToAdd > 0) {
+      sampleCount.value += framesToAdd
+      sampleFrameCarry -= framesToAdd
+    }
   }, 1000)
 
   liveMetricTimer = setInterval(() => {
-    const nextOccupancy = clamp(getMetricNumber('当前人流指数') + randomBetween(-1.8, 2.2), 42, 86)
-    updateMetricNumber('当前人流指数', nextOccupancy, {
+    const nextQueue = clamp(getMetricNumber('当前平均排队长度') + randomBetween(-1.2, 1.4), 3, 18)
+    updateMetricNumber('当前平均排队长度', nextQueue, {
       decimals: 1,
-      detail: '当前时刻楼宇人流活跃度估计值，2 秒小幅浮动。',
+      detail: '当前 12 个路口进口道平均排队长度，2 秒小幅浮动。',
+      suffix: ' 辆',
     })
     const current = records.value[0]
     if (current) {
+      const profile = trafficStatusProfile(current.device_status)
       records.value = [
         {
           ...current,
-          env_temperature: Number((current.env_temperature + randomBetween(-0.2, 0.25)).toFixed(1)),
-          occupancy_density: Number(clamp(current.occupancy_density + randomBetween(-1.4, 1.6), 30, 92).toFixed(1)),
+          env_temperature: Number(clamp(current.env_temperature + randomBetween(-1.1, 1.3), profile.speed[0], profile.speed[1]).toFixed(1)),
+          hvac_kwh: Number(clamp(current.hvac_kwh + randomBetween(-1.4, 1.6), profile.queue[0], profile.queue[1]).toFixed(1)),
+          water_m3: Number(clamp(current.water_m3 + randomBetween(-2.2, 2.8), profile.delay[0], profile.delay[1]).toFixed(1)),
         },
         ...records.value.slice(1),
       ]
@@ -1404,16 +1495,17 @@ onMounted(() => {
             electricity: Number((point.electricity * (1 + randomBetween(-0.03, 0.03))).toFixed(1)),
             hvac: Number((point.hvac * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
             occupancy: Number((point.occupancy * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
+            temperature: Number(clamp(point.temperature + randomBetween(-1.2, 1.4), 3, 40).toFixed(1)),
           }
         : point,
     )
     const slot = hourlySeries.value[index]!
-    updateMetricNumber('今日峰值负荷', Math.max(getMetricNumber('今日峰值负荷'), slot.electricity * randomBetween(1.05, 1.18)), {
-      decimals: 1,
-      detail: `${slot.hour} 当前时段峰值检查`,
-      suffix: ' kWh',
+    updateMetricNumber('当前平均等待时间', clamp(slot.temperature * randomBetween(1.5, 2.2), 15, 120), {
+      decimals: 0,
+      detail: `${slot.hour} 当前时段等待时间估算`,
+      suffix: ' 秒',
     })
-    updateMetricNumber('HVAC 当前占比', clamp(getMetricNumber('HVAC 当前占比') + randomBetween(-1.2, 1.2), 30, 58), {
+    updateMetricNumber('自适应控制覆盖率', clamp(getMetricNumber('自适应控制覆盖率') + randomBetween(-0.4, 0.5), 0, 100), {
       decimals: 1,
       suffix: '%',
     })
@@ -1421,19 +1513,20 @@ onMounted(() => {
   }, 8000)
 
   energyTimer = setInterval(() => {
-    const increment = randomBetween(5, 30)
-    const nextEnergy = getMetricNumber('今日累计') + increment
-    updateMetricNumber('今日累计', nextEnergy, {
+    const increment = randomBetween(90, 280)
+    const signalSecondsIncrement = 120
+    const nextTraffic = getMetricNumber('今日累计通行量') + increment
+    updateMetricNumber('今日累计通行量', nextTraffic, {
       decimals: 0,
-      suffix: ' kWh',
+      suffix: ' 辆',
     })
     composition.value = composition.value.map((item) => ({
       ...item,
-      value: Number((item.value + increment * (item.value / Math.max(compositionTotal.value, 1))).toFixed(1)),
+      value: Number((item.value + signalSecondsIncrement * (item.value / Math.max(compositionTotal.value, 1))).toFixed(1)),
     }))
     pushToast({
-      body: `今日累计 +${increment.toFixed(0)} kWh`,
-      title: '累计电耗更新',
+      body: `今日累计通行量 +${increment.toFixed(0)} 辆`,
+      title: '通行量更新',
       tone: 'cyan',
     })
     syncSeconds.value = 0
@@ -1497,12 +1590,21 @@ function formatNumber(value: number, decimals = 1) {
   })
 }
 
+function compactVehicles(value: number, decimals = 0) {
+  return `${formatNumber(value, decimals)} 辆`
+}
+
+function compactFlow(value: number, decimals = 0) {
+  return `${formatNumber(value, decimals)} 辆/h`
+}
+
 function compactKwh(value: number, decimals = 1) {
-  return `${formatNumber(value, decimals)} kWh`
+  return compactVehicles(value, decimals)
 }
 
 function parseMetricValue(value: string) {
-  const match = value.match(/^(-?\d+(?:\.\d+)?)(.*)$/)
+  const normalized = value.replace(/,/g, '')
+  const match = normalized.match(/^(-?\d+(?:\.\d+)?)(.*)$/)
   if (!match) return { decimals: 0, numeric: 0, suffix: value }
   const numericPart = match[1] ?? '0'
 
@@ -1528,32 +1630,42 @@ function statusToneColor(tone: StatusTone) {
 }
 
 function statusText(status: MonitoringRecord['device_status']) {
-  if (status === 'warning') return '预警'
-  if (status === 'maintenance') return '维护'
+  if (status === 'warning') return '拥堵'
+  if (status === 'maintenance') return '缓行'
   if (status === 'offline') return '离线'
-  return '正常'
+  return '畅通'
 }
 
 function buildingTypeReadable(type: string) {
-  if (type === 'lab') return '实验楼'
-  if (type === 'mixed-use') return '综合楼'
-  if (type === 'office') return '办公楼'
-  if (type === 'teaching') return '教学楼'
+  if (type === 'arterial') return '干线'
+  if (type === 'secondary') return '次干'
+  if (type === 'branch') return '支路'
   return type
 }
 
 function buildingTypeText(type: string) {
-  if (type === 'office') return '办公'
-  if (type === 'teaching') return '教学'
-  if (type === 'lab') return '实验'
-  return '综合'
+  if (type === 'arterial') return '干线'
+  if (type === 'secondary') return '次干'
+  if (type === 'branch') return '支路'
+  return type
 }
 
 function scatterTypeLabel(tone: Tone) {
-  if (tone === 'amber') return '实验'
-  if (tone === 'emerald') return '教学'
-  if (tone === 'rose') return '预警'
-  return '办公'
+  if (tone === 'amber') return '支路口'
+  if (tone === 'emerald') return '次干路口'
+  if (tone === 'rose') return '拥堵点'
+  return '主干路口'
+}
+
+function intersectionName(id: string) {
+  const match = id.match(/^intersection_(\d+)_(\d+)$/)
+  return match ? `路口 ${match[1]}-${match[2]}` : id
+}
+
+function congestionLevel(intensity: number) {
+  if (intensity > 0.82) return '拥堵'
+  if (intensity > 0.62) return '缓行'
+  return '畅通'
 }
 
 function axisExtent(values: number[], fallbackMin = 0, fallbackMax = 1) {
@@ -1697,7 +1809,7 @@ function heatmapCellState(date: string, hour: string) {
 
 function heatmapStyle(cell: HeatmapCell | undefined) {
   const intensity = cell?.intensity ?? 0
-  const hue = intensity > 0.82 ? '255,184,0' : intensity > 0.66 ? '34,211,160' : '0,212,255'
+  const hue = intensity > 0.82 ? '255,77,109' : intensity > 0.62 ? '255,184,0' : '34,211,160'
   const alpha = clamp(0.16 + intensity * 0.58, 0.16, 0.74)
   return {
     '--cell-fill': `linear-gradient(135deg, rgba(${hue},${alpha}) 0%, rgba(${hue},${alpha * 0.46}) 42%, rgba(3,21,38,0.18) 100%)`,
@@ -1715,19 +1827,19 @@ function describeCorrelation(value: number) {
 }
 
 function scatterRiskSamples(chart: ReturnType<typeof makeScatterChart>) {
-  return chart.points.filter((point) => point.electricity > 170 && (point.xValue > 70 || point.tone === 'rose')).length
+  return chart.points.filter((point) => point.electricity > 24 && (point.xValue > 1200 || point.tone === 'rose')).length
 }
 
 function scatterPointDimmed(point: ScatterChartPoint, chartTitle: string) {
   if (hoveredScatterTone.value !== null && hoveredScatterTone.value !== point.tone) return true
   if (hoveredScatterRiskChart.value !== chartTitle) return false
-  return !(point.electricity > 170 && (point.xValue > 70 || point.tone === 'rose'))
+  return !(point.electricity > 24 && (point.xValue > 1200 || point.tone === 'rose'))
 }
 
 function scatterPointHighlighted(point: ScatterChartPoint, chartTitle: string) {
   if (hoveredScatterTone.value === point.tone) return true
   if (hoveredScatterRiskChart.value !== chartTitle) return false
-  return point.electricity > 170 && (point.xValue > 70 || point.tone === 'rose')
+  return point.electricity > 24 && (point.xValue > 1200 || point.tone === 'rose')
 }
 
 function buildScatterTrendLine(
@@ -1791,7 +1903,7 @@ function makeScatterChart({
   return {
     correlation,
     height,
-    id: title.includes('温度') ? 'temperature' : 'occupancy',
+    id: 'arrival-flow',
     padding,
     points,
     title,
@@ -1799,9 +1911,9 @@ function makeScatterChart({
     width,
     xExtent,
     xLabel,
-    xTicks: [...buildAxisTicks(xExtent.min, xExtent.max, 6)].reverse(),
+    xTicks: buildAxisTicks(xExtent.min, xExtent.max, 6),
     yExtent,
-    yLabel: '能耗 kWh',
+    yLabel: '平均排队 辆',
     yTicks: buildAxisTicks(yExtent.min, yExtent.max, 6),
   }
 }
@@ -1846,140 +1958,7 @@ function ratio(value: number, total: number) {
     </div>
     <div class="cockpit-atmosphere" />
 
-    <header class="data-header">
-      <nav class="cyber-nav-shell" aria-label="Workspace navigation">
-        <RouterLink class="cyber-tab" to="/">能耗查询</RouterLink>
-        <RouterLink class="cyber-tab cyber-tab-active" to="/data-analysis">数据分析</RouterLink>
-        <button class="cyber-tab" type="button">智慧运维</button>
-      </nav>
-
-      <div class="title-plate">
-        <svg aria-hidden="true" preserveAspectRatio="none" viewBox="0 0 620 58">
-          <defs>
-            <linearGradient id="dataTitleStrokeVue" x1="0" x2="1" y1="0" y2="0">
-              <stop offset="0%" stop-color="#034d7a" stop-opacity="0" />
-              <stop offset="16%" stop-color="#00d4ff" stop-opacity="0.76" />
-              <stop offset="50%" stop-color="#7af7ff" stop-opacity="0.95" />
-              <stop offset="84%" stop-color="#00d4ff" stop-opacity="0.76" />
-              <stop offset="100%" stop-color="#034d7a" stop-opacity="0" />
-            </linearGradient>
-            <linearGradient id="dataTitleFillVue" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stop-color="#0a2540" stop-opacity="0.68" />
-              <stop offset="100%" stop-color="#020817" stop-opacity="0.08" />
-            </linearGradient>
-          </defs>
-          <path
-            d="M48 6H572L606 29L572 52H48L14 29L48 6Z"
-            fill="url(#dataTitleFillVue)"
-            stroke="url(#dataTitleStrokeVue)"
-            stroke-width="1.8"
-          />
-          <path d="M118 14H502M118 44H502" stroke="url(#dataTitleStrokeVue)" stroke-linecap="round" stroke-width="1.4" />
-          <path d="M54 14H96M524 14H566M54 44H96M524 44H566" stroke="#7af7ff" stroke-linecap="round" stroke-width="2.2" />
-          <path d="M78 7L52 29L78 51M542 7L568 29L542 51" fill="none" opacity="0.55" stroke="#00d4ff" stroke-width="1.2" />
-        </svg>
-        <div class="title-plate-text">建筑能耗管理与运维系统</div>
-      </div>
-
-      <div class="data-header-status">
-        <div
-          class="data-status-cell data-status-online"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '系统运行时长', value: '18 天 06:42' },
-                { label: '在线设备数', value: '286 / 292' },
-                { label: 'CPU / 内存', value: '38% / 61%' },
-                { label: '最近心跳', value: `${syncSeconds} 秒前` },
-              ],
-              title: '系统在线状态',
-            })
-          "
-        >
-          <span class="data-status-dot" />
-          <div>
-            <div class="data-status-kicker">系统在线</div>
-            <div class="data-status-value text-emerald">健康运行</div>
-          </div>
-        </div>
-        <span class="data-status-divider" />
-        <div
-          class="data-status-cell text-right"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '服务器时间', value: timeText },
-                { label: '时区', value: 'Asia/Shanghai' },
-                { label: 'NTP 同步', value: '正常' },
-              ],
-              title: '时间同步状态',
-            })
-          "
-        >
-          <div>
-            <div class="data-status-kicker">{{ dateText }}</div>
-            <div class="status-time">{{ timeText }}</div>
-          </div>
-        </div>
-        <span class="data-status-divider" />
-        <div
-          class="data-status-cell data-status-weather"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '天气', value: '多云' },
-                { label: '室外温度', value: '26°C' },
-                { label: '体感温度', value: '27°C' },
-                { label: '数据来源', value: '本地气象站' },
-              ],
-              title: '室外天气',
-            })
-          "
-        >
-          <span class="weather-glyph" aria-hidden="true" />
-          <div>
-            <div class="data-status-kicker">多云</div>
-            <div class="data-status-value text-cyan">26°C</div>
-          </div>
-        </div>
-        <button
-          class="data-status-icon-btn data-status-bell"
-          type="button"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '活动告警', tone: 'rose', value: `${warningCount} 条` },
-                { label: '待处理问题', value: '1 个' },
-                { label: '最近事件', value: toasts[0]?.title ?? '暂无' },
-              ],
-              title: '通知中心',
-            })
-          "
-        >
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M12 3.5a5.5 5.5 0 0 0-5.5 5.5v3.4L5 15v1h14v-1l-1.5-2.6V9A5.5 5.5 0 0 0 12 3.5Zm-2.2 14a2.3 2.3 0 0 0 4.4 0h-4.4Z" fill="currentColor" />
-          </svg>
-        </button>
-        <button
-          class="data-status-icon-btn data-status-gear"
-          type="button"
-          v-bind="
-            tooltipAttrs({
-              rows: [
-                { label: '刷新策略', value: '实时 / 当前时段 / 累计分层' },
-                { label: '动效模式', value: 'CSS HUD' },
-                { label: '数据源', value: 'mock 实时模型' },
-              ],
-              title: '页面设置',
-            })
-          "
-        >
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M19.4 13.5a7.8 7.8 0 0 0 0-3l2-1.5-2-3.4-2.4 1a7.3 7.3 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.6A7.3 7.3 0 0 0 7 6.6l-2.4-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 3l-2 1.5 2 3.4 2.4-1a7.3 7.3 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a7.3 7.3 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.5ZM12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z" fill="currentColor" />
-          </svg>
-        </button>
-      </div>
-    </header>
+    <SystemWorkbenchHeader active-page="analytics" />
 
     <section
       class="realtime-sync-widget"
@@ -1988,7 +1967,7 @@ function ratio(value: number, total: number) {
           rows: [
             { label: '最近刷新', value: `${syncSeconds} 秒前` },
             { label: '采样总数', value: `${sampleCount}` },
-            { label: '采样速率', value: `${sampleRate} 条/分钟` },
+            { label: '采样速率', value: `${sampleRate} 帧/分钟` },
           ],
           title: '实时同步状态',
         })
@@ -2099,7 +2078,7 @@ function ratio(value: number, total: number) {
                 <span class="hud-glyph">
                   <svg viewBox="0 0 40 40"><path d="M12 22a8 8 0 1 1 16 0M20 22 25 15.5M14.5 25.5h11" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.2" /></svg>
                 </span>
-                <h2>运行健康评分</h2>
+                <h2>路网运行健康评分</h2>
                 <span class="titlebar-deco"><i /><i /><i /></span>
               </div>
             </header>
@@ -2151,42 +2130,42 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '正常记录', value: `${normalCount} 条` },
+                      { label: '畅通路口', value: `${normalCount} 个` },
                       { label: '占比', value: `${ratio(normalCount, statusTotal).toFixed(1)}%` },
                     ],
-                    title: '正常记录',
+                    title: '畅通路口数',
                   })
                 "
               >
-                <span>正常记录</span>
+                <span>畅通路口数</span>
                 <b class="text-emerald">{{ normalCount }}</b>
               </div>
               <div
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '预警记录', tone: 'rose', value: `${warningCount} 条` },
-                      { label: '待处理', tone: 'amber', value: `${Math.max(1, Math.round(warningCount * 0.28))} 条` },
+                      { label: '拥堵路口', tone: 'rose', value: `${warningCount} 个` },
+                      { label: '待处置事件', tone: 'amber', value: `${Math.max(1, Math.round(warningCount * 0.28))} 条` },
                     ],
-                    title: '预警记录',
+                    title: '拥堵路口数',
                   })
                 "
               >
-                <span>预警记录</span>
+                <span>拥堵路口数</span>
                 <b class="text-rose">{{ warningCount }}</b>
               </div>
               <div
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '监测总量', value: `${statusTotal} 条` },
-                      { label: '在线口径', value: '正常 / 预警 / 维护 / 离线' },
+                      { label: '路口总数', value: `${statusTotal} 个` },
+                      { label: '在线口径', value: '畅通 / 缓行 / 拥堵 / 离线' },
                     ],
-                    title: '监测总量',
+                    title: '路口总数',
                   })
                 "
               >
-                <span>监测总量</span>
+                <span>路口总数</span>
                 <b>{{ statusTotal }}</b>
               </div>
             </div>
@@ -2197,7 +2176,7 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs(
                     ratioTooltip(
-                      '风险占比',
+                      '拥堵占比',
                       `${ratio(riskCount, statusTotal).toFixed(1)}%`,
                       riskCount,
                       statusTotal,
@@ -2205,7 +2184,7 @@ function ratio(value: number, total: number) {
                   )
                 "
               >
-                <span>风险占比</span>
+                <span>拥堵占比</span>
                 <b class="text-rose">{{ ratio(riskCount, statusTotal).toFixed(1) }}%</b>
               </div>
               <div
@@ -2213,7 +2192,7 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs(
                     ratioTooltip(
-                      '稳定占比',
+                      '畅通占比',
                       `${ratio(normalCount, statusTotal).toFixed(1)}%`,
                       normalCount,
                       statusTotal,
@@ -2221,7 +2200,7 @@ function ratio(value: number, total: number) {
                   )
                 "
               >
-                <span>稳定占比</span>
+                <span>畅通占比</span>
                 <b class="text-emerald">{{ ratio(normalCount, statusTotal).toFixed(1) }}%</b>
               </div>
               <div
@@ -2229,16 +2208,16 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs(
                     ratioTooltip(
-                      '维护占比',
-                      `${ratio(maintenanceCount, statusTotal).toFixed(1)}%`,
-                      maintenanceCount,
+                      '离线占比',
+                      `${ratio(offlineCount, statusTotal).toFixed(1)}%`,
+                      offlineCount,
                       statusTotal,
                     ),
                   )
                 "
               >
-                <span>维护占比</span>
-                <b class="text-amber">{{ ratio(maintenanceCount, statusTotal).toFixed(1) }}%</b>
+                <span>离线占比</span>
+                <b class="text-amber">{{ ratio(offlineCount, statusTotal).toFixed(1) }}%</b>
               </div>
             </div>
           </article>
@@ -2250,7 +2229,7 @@ function ratio(value: number, total: number) {
                 <span class="hud-glyph text-amber">
                   <svg viewBox="0 0 40 40"><path d="M20.5 9 13 22h5l-.5 9L27 17h-5.6l-.9-8Z" fill="currentColor" opacity="0.74" /></svg>
                 </span>
-                <h2>峰值设备快照</h2>
+                <h2>峰值路口快照</h2>
                 <span class="titlebar-deco"><i /><i /><i /></span>
               </div>
             </header>
@@ -2259,62 +2238,62 @@ function ratio(value: number, total: number) {
               v-bind="
                 tooltipAttrs({
                   rows: [
-                    { label: '峰值楼栋', value: 'BLDG-C-07' },
-                    { label: '峰值设备 ID', value: 'BLDG-C-07-DEV-18' },
+                    { label: '峰值路口', value: '路口 3-2' },
+                    { label: '路口 ID', value: 'intersection_3_2' },
                     { label: '记录时间', value: peakPoint.hour },
-                    { label: '峰值能耗', tone: 'amber', value: compactKwh(peakPoint.electricity) },
+                    { label: '峰值流量', tone: 'amber', value: compactFlow(peakPoint.electricity, 0) },
                   ],
-                  title: '峰值设备快照',
+                  title: '峰值路口快照',
                 })
               "
             >
-              <span>BLDG-C-07</span>
-              <b class="peak-device-id">BLDG-C-07-DEV-18</b>
+              <span>路口 3-2</span>
+              <b class="peak-device-id">intersection_3_2</b>
               <div class="peak-grid">
                 <div
                   class="peak-device-metric"
                   v-bind="
                     tooltipAttrs({
                       rows: [
-                        { label: '当前峰值', tone: 'amber', value: compactKwh(peakPoint.electricity) },
-                        { label: '参考阈值', value: '180 kWh' },
+                        { label: '当前峰值', tone: 'amber', value: compactFlow(peakPoint.electricity, 0) },
+                        { label: '参考阈值', value: '1800 辆/h' },
                       ],
-                      title: '峰值能耗',
+                      title: '峰值流量',
                     })
                   "
                 >
-                  <span>峰值能耗</span>
-                  <b>{{ compactKwh(peakPoint.electricity) }}</b>
+                  <span>峰值流量</span>
+                  <b>{{ compactFlow(peakPoint.electricity, 0) }}</b>
                 </div>
                 <div
                   class="peak-device-metric"
                   v-bind="
                     tooltipAttrs({
                       rows: [
-                        { label: '当前温度', value: `${peakPoint.temperature.toFixed(1)} °C` },
-                        { label: '舒适区间', value: '22-28 °C' },
+                        { label: '当前饱和度', value: `${peakPoint.occupancy.toFixed(0)}%` },
+                        { label: '拥堵阈值', value: '90%' },
                       ],
-                      title: '环境温度',
+                      title: '峰值饱和度',
                     })
                   "
                 >
-                  <span>环境温度</span>
-                  <b>{{ peakPoint.temperature.toFixed(1) }} °C</b>
+                  <span>峰值饱和度</span>
+                  <b>{{ peakPoint.occupancy.toFixed(0) }}%</b>
                 </div>
                 <div
                   class="peak-device-metric"
                   v-bind="
                     tooltipAttrs({
                       rows: [
-                        { label: '人流指数', value: peakPoint.occupancy.toFixed(1) },
-                        { label: '人流峰值', value: busiestPoint.occupancy.toFixed(1) },
+                        { label: '平均排队', value: `${peakPoint.temperature.toFixed(1)} 辆` },
+                        { label: '排队峰值', value: `${busiestPoint.temperature.toFixed(1)} 辆` },
                       ],
-                      title: '人流指数',
+                      title: '平均排队',
                     })
                   "
                 >
-                  <span>人流指数</span>
-                  <b>{{ peakPoint.occupancy.toFixed(1) }}</b>
+                  <span>平均排队</span>
+                  <b>{{ peakPoint.temperature.toFixed(1) }} 辆</b>
                 </div>
                 <div
                   class="peak-device-metric"
@@ -2341,10 +2320,10 @@ function ratio(value: number, total: number) {
                 v-bind="tooltipAttrs(tableRowTooltip(record))"
               >
                 <div>
-                  <b>{{ record.device_id }}</b>
-                  <span>{{ record.building_id }} · {{ statusText(record.device_status) }}</span>
+                  <b>{{ record.building_id }}</b>
+                  <span>{{ record.building_type }} · {{ statusText(record.device_status) }}</span>
                 </div>
-                <strong>{{ record.electricity_kwh.toFixed(1) }}</strong>
+                <strong>{{ record.hvac_kwh.toFixed(0) }} 辆</strong>
               </div>
             </div>
           </article>
@@ -2356,7 +2335,7 @@ function ratio(value: number, total: number) {
                 <span class="hud-glyph text-rose">
                   <svg viewBox="0 0 40 40"><path d="M20 10.5 29 27H11l9-16.5ZM20 16.5v5.5M20 25.8v.2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.2" /></svg>
                 </span>
-                <h2>风险分层</h2>
+                <h2>拥堵路口分层</h2>
                 <span class="titlebar-deco"><i /><i /><i /></span>
               </div>
             </header>
@@ -2366,14 +2345,14 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '预警记录', tone: 'rose', value: `${warningCount} 条` },
+                      { label: '拥堵路口数', tone: 'rose', value: `${warningCount} 个` },
                       { label: '趋势', tone: 'amber', value: '今日累计只增不减' },
                     ],
-                    title: '预警记录',
+                    title: '拥堵路口数',
                   })
                 "
               >
-                <span>预警记录</span>
+                <span>拥堵路口数</span>
                 <b class="text-rose">{{ warningCount }}</b>
               </div>
               <div
@@ -2381,15 +2360,15 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '维护中', value: `${maintenanceCount} 条` },
-                      { label: '建议动作', value: '排队复核设备巡检状态' },
+                      { label: '应急处置中', value: `${emergencyHandlingCount} 条` },
+                      { label: '建议动作', value: '核查应急优先路线与相位切换' },
                     ],
-                    title: '维护中记录',
+                    title: '应急处置中',
                   })
                 "
               >
-                <span>维护中</span>
-                <b class="text-amber">{{ maintenanceCount }}</b>
+                <span>应急处置中</span>
+                <b class="text-amber">{{ emergencyHandlingCount }}</b>
               </div>
             </div>
             <div class="risk-list">
@@ -2404,16 +2383,16 @@ function ratio(value: number, total: number) {
                   <div>
                     <span class="risk-rank">{{ index + 1 }}</span>
                     <div>
-                      <b>{{ summary.buildingId }}</b>
-                      <small>效率 {{ summary.efficiencyScore }} · {{ buildingTypeText(summary.buildingType) }}</small>
+                      <b>{{ intersectionName(summary.buildingId) }}</b>
+                      <small>通行效率 {{ summary.efficiencyScore }} · {{ buildingTypeText(summary.buildingType) }}</small>
                     </div>
                   </div>
-                  <strong>{{ summary.warningCount }}</strong>
+                  <strong>{{ summary.warningCount }} 辆</strong>
                 </div>
                 <div class="risk-progress">
                   <div
                     class="risk-row-progress"
-                    :style="{ width: `${clamp(summary.warningCount * 22, 16, 100)}%` }"
+                    :style="{ width: `${summary.efficiencyScore}%` }"
                   />
                 </div>
               </div>
@@ -2429,13 +2408,13 @@ function ratio(value: number, total: number) {
                 <span class="hud-glyph">
                   <svg viewBox="0 0 40 40"><path d="M11 25 16 20l4 3 8-9M27 14h-5M27 14v5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.4" /></svg>
                 </span>
-                <h2>每日能耗与人流走势</h2>
+                <h2>每日通行量与延误走势</h2>
                 <span class="titlebar-deco"><i /><i /><i /></span>
               </div>
             </header>
             <div class="pill-row">
-              <span class="hud-pill">电耗柱状</span>
-              <span class="hud-pill hud-pill-emerald">人流折线</span>
+              <span class="hud-pill">通行量柱状</span>
+              <span class="hud-pill hud-pill-emerald">延误折线</span>
               <span class="hud-pill hud-pill-neutral">12 天窗口</span>
             </div>
             <div class="tech-chart-frame">
@@ -2457,8 +2436,8 @@ function ratio(value: number, total: number) {
                 </g>
                 <line stroke="rgba(122,247,255,0.4)" :x1="dailyChart.padding" :x2="dailyChart.padding" :y1="dailyChart.padding" :y2="dailyChart.height - dailyChart.padding" />
                 <line stroke="rgba(122,247,255,0.4)" :x1="dailyChart.padding" :x2="dailyChart.width - dailyChart.padding" :y1="dailyChart.height - dailyChart.padding" :y2="dailyChart.height - dailyChart.padding" />
-                <text class="axis-title" :x="dailyChart.padding" :y="dailyChart.padding - 18">用电量 kWh</text>
-                <text class="axis-title" text-anchor="end" :x="dailyChart.width - dailyChart.padding" :y="dailyChart.padding - 18">人流指数</text>
+                <text class="axis-title" :x="dailyChart.padding" :y="dailyChart.padding - 18">通行量 辆</text>
+                <text class="axis-title" text-anchor="end" :x="dailyChart.width - dailyChart.padding" :y="dailyChart.padding - 18">平均延误 秒/辆</text>
                 <text v-for="(point, index) in dailySeries" :key="point.date" class="axis-text" text-anchor="middle" :x="axisX(index, dailySeries.length, dailyChart.width, dailyChart.padding)" :y="dailyChart.height - dailyChart.padding + 23">{{ point.date }}</text>
                 <g
                   v-for="(bar, index) in dailyChart.bars"
@@ -2512,7 +2491,7 @@ function ratio(value: number, total: number) {
                 @pointerleave="hoveredDailyIndex = null"
               >
                 <span>{{ point.date }}</span>
-                <b>{{ point.electricity.toFixed(1) }} kWh</b>
+                <b>{{ point.electricity.toFixed(0) }} 辆</b>
               </div>
             </div>
           </article>
@@ -2526,7 +2505,7 @@ function ratio(value: number, total: number) {
                     <rect v-for="row in 3" :key="`hm-${row}`" fill="currentColor" height="5.2" opacity="0.45" rx="0.6" width="5.2" :x="10 + row * 6.8" :y="12 + row * 5" />
                   </svg>
                 </span>
-                <h2>负荷热力分布</h2>
+                <h2>路网时空排队热力</h2>
                 <span class="titlebar-deco"><i /><i /><i /></span>
               </div>
             </header>
@@ -2537,13 +2516,13 @@ function ratio(value: number, total: number) {
                   tooltipAttrs({
                     rows: [
                       { label: '计算口径', value: '近 7 天 × 4 时段均值' },
-                      { label: '均值负荷', value: compactKwh(averageHeatmapElectricity) },
+                      { label: '均值排队', value: `${averageHeatmapElectricity.toFixed(1)} 辆` },
                     ],
-                    title: '均值负荷',
+                    title: '均值排队',
                   })
                 "
               >
-                <span>均值负荷</span>
+                <span>均值排队</span>
                 <b>{{ averageHeatmapElectricity.toFixed(1) }}</b>
               </div>
               <div
@@ -2557,8 +2536,8 @@ function ratio(value: number, total: number) {
                 class="heatmap-metric-card"
                 v-bind="tooltipAttrs(heatmapCellTooltip(peakHeatmapCell))"
               >
-                <span>峰值电耗</span>
-                <b>{{ peakHeatmapCell.electricity.toFixed(0) }} kWh</b>
+                <span>峰值排队</span>
+                <b>{{ peakHeatmapCell.electricity.toFixed(0) }} 辆</b>
               </div>
             </div>
             <div class="tech-chart-frame heatmap-frame">
@@ -2572,9 +2551,9 @@ function ratio(value: number, total: number) {
                     v-bind="
                       tooltipAttrs({
                         rows: [
-                          { label: '7 天均值', value: compactKwh(heatmapColumnStats(hour).average) },
-                          { label: '最高日', value: `${heatmapColumnStats(hour).maxCell?.date ?? '-'} ${compactKwh(heatmapColumnStats(hour).maxCell?.electricity ?? 0)}` },
-                          { label: '最低日', value: `${heatmapColumnStats(hour).minCell?.date ?? '-'} ${compactKwh(heatmapColumnStats(hour).minCell?.electricity ?? 0)}` },
+                          { label: '7 天均值', value: `${heatmapColumnStats(hour).average.toFixed(1)} 辆` },
+                          { label: '最高日', value: `${heatmapColumnStats(hour).maxCell?.date ?? '-'} ${heatmapColumnStats(hour).maxCell?.electricity ?? 0} 辆` },
+                          { label: '最低日', value: `${heatmapColumnStats(hour).minCell?.date ?? '-'} ${heatmapColumnStats(hour).minCell?.electricity ?? 0} 辆` },
                         ],
                         title: `${hour} 列统计`,
                       })
@@ -2593,8 +2572,8 @@ function ratio(value: number, total: number) {
                     v-bind="
                       tooltipAttrs({
                         rows: [
-                          { label: '当日总能耗', value: compactKwh(heatmapRowStats(date).total) },
-                          { label: '峰值时段', value: `${heatmapRowStats(date).maxCell?.hour ?? '-'} ${compactKwh(heatmapRowStats(date).maxCell?.electricity ?? 0)}` },
+                          { label: '当日累计排队车辆', value: `${heatmapRowStats(date).total.toFixed(0)} 辆` },
+                          { label: '峰值时段', value: `${heatmapRowStats(date).maxCell?.hour ?? '-'} ${heatmapRowStats(date).maxCell?.electricity ?? 0} 辆` },
                         ],
                         title: `${date} 行统计`,
                       })
@@ -2620,7 +2599,10 @@ function ratio(value: number, total: number) {
                       type="button"
                       v-bind="tooltipAttrs(heatmapCellTooltip(heatmapCell(date, hour)))"
                       @pointerenter="hoveredHeatmap = { date, hour, mode: 'cell' }"
+                      @pointerover="hoveredHeatmap = { date, hour, mode: 'cell' }"
                       @pointerleave="hoveredHeatmap = null"
+                      @focus="hoveredHeatmap = { date, hour, mode: 'cell' }"
+                      @blur="hoveredHeatmap = null"
                     >
                       <span>{{ Math.round((heatmapCell(date, hour)?.intensity ?? 0) * 100) }}</span>
                       <b>{{ heatmapCell(date, hour)?.electricity.toFixed(0) }}</b>
@@ -2630,9 +2612,9 @@ function ratio(value: number, total: number) {
                 </div>
               </div>
               <div class="heatmap-scale-row">
-                <span>低负荷</span>
+                <span>畅通</span>
                 <i class="heatmap-scale" />
-                <span>高负荷</span>
+                <span>拥堵</span>
               </div>
             </div>
           </article>
@@ -2646,27 +2628,27 @@ function ratio(value: number, total: number) {
                 <span class="hud-glyph">
                   <svg viewBox="0 0 40 40"><path d="M12 25h16M14 25V15M20 25V11M26 25v-7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3" /></svg>
                 </span>
-                <h2>时段负荷关系</h2>
+                <h2>时段流量与排队关系</h2>
                 <span class="titlebar-deco"><i /><i /><i /></span>
               </div>
             </header>
             <div class="hourly-summary-grid">
-              <div class="hourly-summary-card" v-bind="tooltipAttrs(hourlyTooltip(peakPoint, hourlySeries.findIndex((item) => item.hour === peakPoint.hour)))"><span>电耗高峰</span><b>{{ peakPoint.hour }}</b></div>
+              <div class="hourly-summary-card" v-bind="tooltipAttrs(hourlyTooltip(peakPoint, hourlySeries.findIndex((item) => item.hour === peakPoint.hour)))"><span>流量高峰时段</span><b>{{ peakPoint.hour }}</b></div>
               <div class="hourly-summary-card" v-bind="tooltipAttrs(hourlyTooltip(quietPoint, hourlySeries.findIndex((item) => item.hour === quietPoint.hour)))"><span>低谷时段</span><b>{{ quietPoint.hour }}</b></div>
               <div
                 class="hourly-summary-card"
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '高峰负荷', value: compactKwh(peakPoint.electricity) },
-                      { label: '低谷负荷', value: compactKwh(quietPoint.electricity) },
-                      { label: '峰谷差值', tone: 'amber', value: compactKwh(peakPoint.electricity - quietPoint.electricity) },
+                      { label: '高峰流量', value: compactFlow(peakPoint.electricity, 0) },
+                      { label: '低谷流量', value: compactFlow(quietPoint.electricity, 0) },
+                      { label: '峰谷差值', tone: 'amber', value: compactVehicles(peakPoint.electricity - quietPoint.electricity, 0) },
                     ],
                     title: '峰谷差值',
                   })
                 "
               ><span>峰谷差值</span><b class="text-amber">{{ (peakPoint.electricity - quietPoint.electricity).toFixed(0) }}</b></div>
-              <div class="hourly-summary-card" v-bind="tooltipAttrs(hourlyTooltip(busiestPoint, hourlySeries.findIndex((item) => item.hour === busiestPoint.hour)))"><span>人流峰值</span><b class="text-cyan">{{ busiestPoint.occupancy.toFixed(0) }}</b></div>
+              <div class="hourly-summary-card" v-bind="tooltipAttrs(hourlyTooltip(busiestPoint, hourlySeries.findIndex((item) => item.hour === busiestPoint.hour)))"><span>排队峰值</span><b class="text-cyan">{{ busiestPoint.temperature.toFixed(0) }}</b></div>
             </div>
             <div class="tech-chart-frame hourly-frame">
               <svg class="chart-svg" :viewBox="`0 0 ${hourlyChart.width} ${hourlyChart.height}`">
@@ -2729,7 +2711,7 @@ function ratio(value: number, total: number) {
               >
                 <span>{{ point.hour }}</span>
                 <b>{{ point.electricity.toFixed(1) }}</b>
-                <small>kWh</small>
+                <small>辆/h</small>
               </div>
             </div>
           </article>
@@ -2741,7 +2723,7 @@ function ratio(value: number, total: number) {
                 <span class="hud-glyph">
                   <svg viewBox="0 0 40 40"><circle cx="20" cy="20" fill="none" r="8.4" stroke="currentColor" stroke-width="2.2" /><path d="M20 11.6v8.4l7.2 4.1" fill="none" stroke="currentColor" stroke-width="2.4" /></svg>
                 </span>
-                <h2>能耗构成占比</h2>
+                <h2>通行构成占比</h2>
                 <span class="titlebar-deco"><i /><i /><i /></span>
               </div>
             </header>
@@ -2829,16 +2811,16 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '统计周期', value: '本月累计' },
+                      { label: '统计周期', value: '今日累计' },
                       { label: '同比', tone: 'cyan', value: '+5.2%' },
                       { label: '环比', tone: 'amber', value: '+1.8%' },
                     ],
-                    title: '本月总量基准',
+                    title: '今日累计绿灯时长',
                   })
                 "
               >
-                <b>{{ (hoveredComposition ? (composition.find((item) => item.label === hoveredComposition)?.value ?? compositionTotal) : compositionTotal).toFixed(0) }}</b>
-                <span>{{ hoveredComposition ?? '本月累计' }}</span>
+                <b>{{ formatNumber(hoveredComposition ? (composition.find((item) => item.label === hoveredComposition)?.value ?? compositionTotal) : compositionTotal, 0) }}</b>
+                <span>{{ hoveredComposition ?? '今日累计' }}</span>
               </div>
             </div>
             <div class="composition-grid">
@@ -2853,7 +2835,7 @@ function ratio(value: number, total: number) {
               >
                 <div class="composition-value-line">
                   <span><i :style="{ backgroundColor: item.color, color: item.color }" />{{ item.label }}</span>
-                  <b>{{ item.value.toFixed(0) }}</b>
+                  <b>{{ formatNumber(item.value, 0) }}</b>
                 </div>
                 <div class="composition-bar-line">
                   <div><em :style="{ width: `${(item.value / compositionMaxValue) * 100}%`, backgroundColor: item.color, color: item.color }" /></div>
@@ -2928,14 +2910,14 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '统计口径', value: '预警/实验高负荷采样点' },
-                      { label: '风险点数', tone: 'rose', value: `${chart.points.filter((item) => item.tone === 'amber' || item.tone === 'rose').length} 个` },
+                      { label: '统计口径', value: '高流量高排队采样点' },
+                      { label: '拥堵点数', tone: 'rose', value: `${chart.points.filter((item) => item.tone === 'amber' || item.tone === 'rose').length} 个` },
                     ],
-                    title: '风险点统计',
+                    title: '拥堵点统计',
                   })
                 "
               >
-                风险点 {{ chart.points.filter((item) => item.tone === 'amber' || item.tone === 'rose').length }}
+                拥堵点 {{ chart.points.filter((item) => item.tone === 'amber' || item.tone === 'rose').length }}
               </span>
             </div>
             <div
@@ -3012,11 +2994,11 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '定义', value: '高能耗且高人流/高温区' },
+                      { label: '定义', value: '高到达流量且高排队区' },
                       { label: '区内样本数', value: `${scatterRiskSamples(chart)}` },
-                      { label: '风险点占比', tone: 'amber', value: `${((scatterRiskSamples(chart) / Math.max(chart.points.length, 1)) * 100).toFixed(1)}%` },
+                      { label: '拥堵点占比', tone: 'amber', value: `${((scatterRiskSamples(chart) / Math.max(chart.points.length, 1)) * 100).toFixed(1)}%` },
                     ],
-                    title: '高风险区域',
+                    title: '高拥堵区域',
                   })
                 "
                 @pointerenter="hoveredScatterRiskChart = chart.title"
@@ -3135,13 +3117,91 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '风险点', tone: 'rose', value: `${chart.points.filter((item) => item.tone === 'rose').length}` },
-                      { label: '判断规则', value: '异常楼栋 / 高负荷采样点' },
+                      { label: '拥堵点', tone: 'rose', value: `${chart.points.filter((item) => item.tone === 'rose').length}` },
+                      { label: '判断规则', value: '高流量 / 高排队采样点' },
                     ],
-                    title: '风险点统计',
+                    title: '拥堵点统计',
                   })
                 "
-              ><span>风险点</span><b class="text-rose">{{ chart.points.filter((item) => item.tone === 'rose').length }}</b></div>
+              ><span>拥堵点</span><b class="text-rose">{{ chart.points.filter((item) => item.tone === 'rose').length }}</b></div>
+            </div>
+          </div>
+        </article>
+        <article class="hud-drawn-card data-analysis-card-frame panel-card">
+          <header class="hud-panel-titlebar">
+            <div class="titlebar-inner">
+              <span class="hud-title-mark" />
+              <span class="hud-glyph">
+                <svg viewBox="0 0 40 40"><path d="M12 26h16M14 26V14M20 26V10M26 26v-8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.6" /></svg>
+              </span>
+              <h2>AI 控制前后效果对比</h2>
+              <span class="titlebar-deco"><i /><i /><i /></span>
+            </div>
+          </header>
+          <div class="scatter-topline">
+            <div class="pill-row">
+              <span class="hud-pill">相较基线改善率</span>
+              <span class="hud-pill hud-pill-emerald">平均排队 {{ queueImprovement }}%</span>
+              <span class="hud-pill hud-pill-neutral">FixedTime / MaxPressure / Traffic-R1</span>
+            </div>
+            <div
+              class="correlation-value"
+              v-bind="
+                tooltipAttrs({
+                  rows: [
+                    { label: '平均排队改善', value: `${queueImprovement}%` },
+                    { label: '评价口径', value: '排队、等待、旅行时间越低越好；通行量越高越好' },
+                  ],
+                  title: '策略改善率',
+                })
+              "
+            >
+              <span>排队改善</span>
+              <b>{{ queueImprovement }}%</b>
+            </div>
+          </div>
+          <div class="tech-chart-frame strategy-frame">
+            <div class="strategy-legend">
+              <span v-for="series in strategySeries" :key="series.key">
+                <i :style="{ backgroundColor: series.color, color: series.color }" />{{ series.label }}
+              </span>
+            </div>
+            <div class="strategy-column-chart">
+              <div v-for="metric in strategyMetrics" :key="metric.label" class="strategy-column-group">
+                <div class="strategy-column-scale">
+                  <span>上限 {{ formatNumber(Math.max(metric.baseline, metric.maxPressure, metric.trafficR1), metric.label === '平均排队长度' ? 1 : 0) }}</span>
+                </div>
+                <div class="strategy-column-bars">
+                  <div
+                    v-for="series in strategySeries"
+                    :key="`${metric.label}-${series.key}`"
+                    class="strategy-column-bar"
+                    :style="{ color: series.color }"
+                    v-bind="
+                      tooltipAttrs({
+                        rows: [
+                          { label: '策略', value: series.label },
+                          { label: '指标', value: metric.label },
+                          { label: '数值', value: `${formatNumber(metric[series.key], metric.label === '平均排队长度' ? 1 : 0)} ${metric.unit}` },
+                        ],
+                        title: 'AI 控制效果对比',
+                      })
+                    "
+                  >
+                    <b :style="{ color: series.color }">{{ formatNumber(metric[series.key], metric.label === '平均排队长度' ? 1 : 0) }}</b>
+                    <span
+                      :style="{
+                        height: `${(metric[series.key] / Math.max(metric.baseline, metric.maxPressure, metric.trafficR1)) * 100}%`,
+                        backgroundColor: series.color,
+                      }"
+                    />
+                  </div>
+                </div>
+                <div class="strategy-column-label">
+                  <span>{{ metric.label }}</span>
+                  <small>{{ metric.unit }}</small>
+                </div>
+              </div>
             </div>
           </div>
         </article>
@@ -3154,14 +3214,14 @@ function ratio(value: number, total: number) {
             <span class="hud-glyph">
               <svg viewBox="0 0 40 40"><path d="M13 11.5h14v17H13zM16 16h8M16 20h8M16 24h5" fill="none" stroke="currentColor" stroke-width="2" /></svg>
             </span>
-            <h2>近期监测明细</h2>
+            <h2>近期路口监测明细</h2>
             <span class="titlebar-deco"><i /><i /><i /></span>
           </div>
         </header>
         <div class="detail-toolbar">
           <div><span class="table-live-dot" />实时采样</div>
           <div class="detail-live-counter">
-            今日已采集 <b>{{ sampleCount }}</b> 条 · 当前速率 <b>{{ sampleRate }}</b> 条/分钟
+            今日已采集 <b>{{ sampleCount }}</b> 帧 · 当前速率 <b>{{ sampleRate }}</b> 帧/分钟
           </div>
         </div>
         <div class="detail-table-wrap">
@@ -3194,10 +3254,10 @@ function ratio(value: number, total: number) {
                   v-bind="
                     tooltipAttrs({
                       rows: [
-                        { label: '楼栋编号', value: record.building_id },
-                        { label: '楼栋类型', value: buildingTypeReadable(record.building_type) },
+                        { label: '路口名称', value: record.building_id },
+                        { label: '路口 ID', value: record.building_type },
                       ],
-                      title: '楼栋信息',
+                      title: '路口信息',
                     })
                   "
                 >
@@ -3236,15 +3296,28 @@ function ratio(value: number, total: number) {
                   v-bind="
                     tooltipAttrs({
                       rows: [
-                        { label: '设备 ID', value: record.device_id },
-                        { label: '楼栋前缀', value: record.building_id },
+                        { label: '当前相位', value: record.device_id },
+                        { label: '路口 ID', value: record.building_type },
                         { label: '状态', value: statusText(record.device_status) },
                       ],
-                      title: '关联设备',
+                      title: '当前相位',
                     })
                   "
                 >
                   {{ record.device_id }}
+                </td>
+                <td
+                  v-bind="
+                    tooltipAttrs({
+                      rows: [
+                        { label: '控制策略', value: record.control_strategy },
+                        { label: '路口 ID', value: record.building_type },
+                      ],
+                      title: '控制策略',
+                    })
+                  "
+                >
+                  {{ record.control_strategy }}
                 </td>
                 <td>
                   <span
@@ -3255,8 +3328,8 @@ function ratio(value: number, total: number) {
                         rows: [
                           { label: '状态详情', value: statusText(record.device_status) },
                           { label: '持续时长', value: record.device_status === 'normal' ? '18 分钟' : '42 分钟' },
-                          { label: '责任人', value: record.device_status === 'warning' ? '运维一组' : '值班人员' },
-                          { label: '处理建议', value: record.device_status === 'warning' ? '创建工单并复核阈值' : '持续监测' },
+                          { label: '责任人', value: record.device_status === 'warning' ? '信控值班组' : '值班人员' },
+                          { label: '处理建议', value: record.device_status === 'warning' ? '切换自适应策略并复核相位' : '持续监测' },
                         ],
                         title: '状态说明',
                       })
@@ -3279,11 +3352,11 @@ function ratio(value: number, total: number) {
         tooltipAttrs({
           actions: ['立即处理', '忽略'],
           rows: [
-            { label: '问题类型', value: '暖通能耗异常' },
-            { label: '涉及楼栋', value: 'BLDG-C-07' },
+            { label: '问题类型', value: '路口排队异常' },
+            { label: '涉及路口', value: '路口 3-2 / intersection_3_2' },
             { label: '触发时间', value: '最近 24 小时' },
             { label: '严重等级', tone: 'rose', value: '高' },
-            { label: '建议动作', value: '检查冷站策略与阀门开度' },
+            { label: '建议动作', value: '切换 MaxPressure 并延长主相位绿灯' },
           ],
           title: '未处理问题详情',
         })
@@ -3292,6 +3365,8 @@ function ratio(value: number, total: number) {
       <span class="issue-pill-badge">1</span>
       <span>Issue</span>
     </button>
+
+    <AiAssistant />
 
     <div
       v-if="tooltipContent"
@@ -3498,8 +3573,12 @@ function ratio(value: number, total: number) {
   color: #f0fbff;
   font-family: var(--font-title);
   font-size: clamp(20px, 1.8vw, 30px);
-  letter-spacing: 0.08em;
-  text-shadow: 0 0 8px rgba(122, 247, 255, 0.68), 0 0 22px rgba(0, 212, 255, 0.34);
+  font-weight: 400;
+  font-synthesis: none;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  text-shadow: 0 0 4px rgba(122, 247, 255, 0.46), 0 0 10px rgba(0, 212, 255, 0.22);
+  -webkit-font-smoothing: antialiased;
 }
 
 .data-header-status {
@@ -4481,12 +4560,15 @@ function ratio(value: number, total: number) {
 
 .heatmap-cell {
   position: relative;
+  z-index: 1;
   display: flex;
   min-height: 44px;
   flex-direction: column;
   justify-content: space-between;
   border: 1px solid rgba(0, 212, 255, 0.24);
   color: rgba(240, 251, 255, 0.86);
+  cursor: crosshair;
+  isolation: isolate;
   padding: 9px;
   text-align: left;
   transform-origin: center;
@@ -4497,6 +4579,7 @@ function ratio(value: number, total: number) {
     content: '';
     position: absolute;
     inset: 0;
+    pointer-events: none;
     opacity: 0.9;
     background: var(--cell-fill);
   }
@@ -4505,28 +4588,38 @@ function ratio(value: number, total: number) {
     position: absolute;
     inset: auto 6px 6px 6px;
     height: 4px;
+    pointer-events: none;
     background: rgba(8, 47, 73, 0.76);
     box-shadow: inset var(--cell-meter) 0 0 var(--cell-tone);
   }
 
   span {
     position: relative;
+    pointer-events: none;
     font-size: 13px;
     font-weight: 800;
   }
 
   b {
     position: relative;
+    pointer-events: none;
     align-self: flex-end;
     font-family: var(--font-num);
     font-size: 18px;
   }
 
+  &:hover,
+  &:focus-visible,
   &[data-hovered='true'] {
-    z-index: 2;
+    z-index: 4;
     transform: scale(1.08);
     border-color: rgba(0, 212, 255, 0.9);
     box-shadow: 0 0 18px rgba(0, 212, 255, 0.38), inset 0 0 10px rgba(122, 247, 255, 0.18);
+  }
+
+  &:focus-visible {
+    outline: 1px solid rgba(122, 247, 255, 0.9);
+    outline-offset: 2px;
   }
 
   &[data-peak='true'] {
@@ -4545,6 +4638,12 @@ function ratio(value: number, total: number) {
   &[data-sampled='true'] {
     filter: brightness(1.35) saturate(1.3);
     box-shadow: 0 0 18px rgba(0, 212, 255, 0.36), inset 0 0 18px rgba(122, 247, 255, 0.22);
+  }
+
+  &:hover,
+  &:focus-visible {
+    opacity: 1;
+    filter: brightness(1.2) saturate(1.18);
   }
 }
 
@@ -4715,13 +4814,6 @@ function ratio(value: number, total: number) {
     font-family: var(--font-num);
   }
 
-  div {
-    height: 6px;
-    margin-top: 7px;
-    overflow: hidden;
-    background: rgba(8, 47, 73, 0.8);
-  }
-
   em {
     display: block;
     height: 100%;
@@ -4751,6 +4843,8 @@ function ratio(value: number, total: number) {
     height: 6px;
     margin-top: 0;
     flex: 1 1 auto;
+    overflow: hidden;
+    background: rgba(8, 47, 73, 0.8);
   }
 
   strong {
@@ -4942,6 +5036,195 @@ function ratio(value: number, total: number) {
   backdrop-filter: blur(8px);
 }
 
+.strategy-frame {
+  margin-top: 10px;
+  padding: 16px 18px 18px;
+}
+
+.strategy-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: rgba(207, 250, 254, 0.82);
+  font-size: 13px;
+  font-weight: 800;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  i {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    box-shadow: 0 0 10px currentColor;
+  }
+}
+
+.strategy-column-chart {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 18px;
+  align-items: end;
+  min-height: 304px;
+  margin-top: 16px;
+  padding: 4px 4px 2px;
+}
+
+.strategy-column-group {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 18px 224px auto;
+  gap: 8px;
+}
+
+.strategy-column-scale {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  color: rgba(207, 250, 254, 0.42);
+  font-family: var(--font-num);
+  font-size: 11px;
+  line-height: 1;
+
+  span {
+    overflow: hidden;
+    color: rgba(207, 250, 254, 0.68);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.strategy-column-bars {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  gap: clamp(10px, 1.2vw, 18px);
+  align-items: end;
+  min-height: 0;
+  border-bottom: 1px solid rgba(122, 247, 255, 0.34);
+  padding: 22px 8px 0;
+  background:
+    linear-gradient(90deg, transparent, rgba(122, 247, 255, 0.08) 50%, transparent),
+    repeating-linear-gradient(180deg, rgba(122, 247, 255, 0.1) 0 1px, transparent 1px 44px);
+
+  &::before {
+    position: absolute;
+    inset: 22px 8px 0;
+    pointer-events: none;
+    content: '';
+    border-inline: 1px solid rgba(122, 247, 255, 0.1);
+    background: linear-gradient(180deg, rgba(4, 21, 39, 0.48), rgba(4, 21, 39, 0.08));
+  }
+
+  &::after {
+    position: absolute;
+    right: 8px;
+    bottom: 0;
+    left: 8px;
+    height: 1px;
+    pointer-events: none;
+    content: '';
+    background: linear-gradient(90deg, transparent, rgba(122, 247, 255, 0.8), transparent);
+    box-shadow: 0 0 12px rgba(0, 212, 255, 0.32);
+  }
+}
+
+.strategy-column-bar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 16px;
+  min-width: 12px;
+  max-width: 18px;
+  height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+
+  b {
+    position: relative;
+    min-width: 38px;
+    color: rgba(240, 251, 255, 0.88);
+    font-family: var(--font-num);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+    text-shadow: 0 0 10px currentColor;
+    white-space: nowrap;
+  }
+
+  span {
+    position: relative;
+    display: block;
+    width: 100%;
+    min-height: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 2px 2px 0 0;
+    box-shadow: 0 0 10px currentColor;
+    transition: height 220ms ease, filter 180ms ease, box-shadow 180ms ease;
+
+    &::before {
+      position: absolute;
+      inset: 0 45% 0 18%;
+      pointer-events: none;
+      content: '';
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.58), transparent 28%);
+      mix-blend-mode: screen;
+      opacity: 0.72;
+    }
+
+    &::after {
+      position: absolute;
+      top: -4px;
+      right: -3px;
+      left: -3px;
+      height: 1px;
+      pointer-events: none;
+      content: '';
+      background: currentColor;
+      box-shadow: 0 0 10px currentColor;
+      opacity: 0.82;
+    }
+  }
+
+  &:hover span {
+    filter: brightness(1.2) saturate(1.15);
+    box-shadow: 0 0 18px currentColor;
+  }
+}
+
+.strategy-column-label {
+  min-width: 0;
+  text-align: center;
+
+  span,
+  small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    color: rgba(240, 251, 255, 0.9);
+    font-size: 13px;
+    font-weight: 900;
+  }
+
+  small {
+    margin-top: 4px;
+    color: rgba(207, 250, 254, 0.58);
+    font-family: var(--font-num);
+    font-size: 12px;
+  }
+}
+
 .detail-panel {
   min-height: 520px;
 }
@@ -5101,23 +5384,23 @@ td {
 }
 
 .col-building {
-  width: 12%;
+  width: 10%;
 }
 
 .col-time {
-  width: 15%;
+  width: 14%;
 }
 
 .col-num {
-  width: 7%;
+  width: 9%;
 }
 
 .col-device {
-  width: 20%;
+  width: 13%;
 }
 
 .col-status {
-  width: 9%;
+  width: 8%;
 }
 
 .realtime-sync-widget {
@@ -5426,6 +5709,14 @@ td {
   .heatmap-metrics,
   .hourly-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .strategy-column-chart {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .strategy-column-group {
+    grid-template-rows: 16px 180px auto;
   }
 
   .health-layout {

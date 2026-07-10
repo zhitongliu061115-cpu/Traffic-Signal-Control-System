@@ -612,10 +612,10 @@ const waveProgress = computed(() => {
 /* 一键激活大按钮 */
 .ep-activate-big {
   width: 100%;
-  padding: 14px;
-  flex-direction: column;
+  padding: 8px 12px;
+  flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   text-transform: none;
   letter-spacing: 0.04em;
   color: #ff4d6d;
@@ -629,21 +629,17 @@ const waveProgress = computed(() => {
 }
 
 .ep-activate-big__icon {
-  font-size: 28px;
+  font-size: 22px;
 }
 
 .ep-activate-big__text {
-  text-align: center;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
 }
 
 .ep-activate-big__sub {
-  margin-top: 2px;
   font-size: 10px;
-  font-weight: 400;
   color: rgba(255, 77, 109, 0.6);
-  letter-spacing: 0.04em;
 }
 
 /* 按钮组 */

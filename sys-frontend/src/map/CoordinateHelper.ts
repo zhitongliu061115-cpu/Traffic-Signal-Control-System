@@ -32,7 +32,7 @@ export interface RoadPathTransform {
 const roadCache = new Map<string, RoadPathTransform>()
 
 /** 从道路 path 字段（或 from→to 直线降级）生成多段路径变换 */
-export function getRoadPathTransform(
+function getRoadPathTransform(
   r: Road,
   intersections: Intersection[],
 ): RoadPathTransform | null {
@@ -121,8 +121,7 @@ export function vehiclePathPosition(
   return new THREE.Vector3(last.end.x, last.end.y, last.end.z)
 }
 
-/** 清除缓存 */
-/** 清除缓存（道路 path 数据变化时调用） */
+/** 清除缓存（道路 path 数据变化后调用） */
 export function clearRoadCache(): void {
   roadCache.clear()
 }
