@@ -4,16 +4,17 @@
 
 ## 当前阶段目标
 
-今天只做 CityFlow 可视化仿真链路，不接入 RL、Max-Pressure 或应急绿波控制。
+当前阶段已经从单纯可视化联调推进到“可视化仿真 + 策略调度验证”。系统需要支持 `fixed-time`、`max-pressure`、`traffic-r` 三类控制器，并且前端动画必须只根据 CityFlow 返回的真实帧渲染。
 
 核心约束：
 
 1. 前端只连接 Spring Boot 主后端。
 2. 前端不得直接连接 Python CityFlow 服务。
 3. Spring Boot 通过 HTTP 调用 Python CityFlow 服务。
-4. Python 服务读取 `roadnet` / `flow` 并返回仿真帧。
-5. 实时帧由 Spring Boot 通过 WebSocket 推送给前端。
-6. `sim.frame` 是前端实时渲染车辆动画的唯一实时数据来源。
+4. Python 服务读取 `roadnet` / `flow`，在真实 CityFlow 模式下后台连续推进仿真并缓存快照。
+5. Spring Boot 负责策略调度，并将统一 `ControlDecision` 通过 `/actions` 下发给 Python CityFlow。
+6. 实时帧由 Spring Boot 通过 WebSocket 推送给前端。
+7. `sim.frame` 是前端实时渲染车辆、信号灯和指标的唯一可信数据来源。
 
 ## 静态路网调用链
 
@@ -48,7 +49,16 @@ Spring Boot SimulationFrameScheduler
 Python CityFlow 服务
   |
   | GET /cityflow/simulations/{sid}/frame
-  | 推进一步仿真并返回当前帧
+  | 返回后台推进后的最新缓存快照
+  v
+Spring Boot SimulationService
+  |
+  | StrategyDispatchService 低频生成策略决策
+  | 异步 POST /cityflow/simulations/{sid}/actions
+  v
+Python CityFlow set_tl_phase
+  |
+  | 后续 frame 中体现真实信号相位
   v
 Spring Boot SimulationService
   |
@@ -63,9 +73,12 @@ SimulationWebSocketHandler
 
 ## Python 服务当前状态
 
-`sim-python` 当前处于 `mock` 引擎模式：它会读取真实 roadnet/flow 文件，但车辆位置、信号相位、道路状态和指标是用于可视化联调的确定性模拟结果，不等价于真实 CityFlow Engine 输出。
+`sim-python` 支持 `mock` 和 `cityflow` 两种模式。当前正式联调以 `SIM_ENGINE_MODE=cityflow` 为准，CityFlow 已部署到阿里云并由 Spring Boot 默认访问。真实模式下：
 
-真实 CityFlow Engine 接入点已经预留。接入前必须确认本机 CityFlow 包版本、Engine 初始化 config、推进 API、车辆位置 API、信号相位 API。
+- `/start` 后 Python 后台 worker 连续执行 CityFlow step 并缓存 latest frame。
+- `/frame` 返回缓存快照，不再同步推进一步。
+- `/actions` 接收 Spring Boot 下发的统一 `ControlDecision`，转换为 CityFlow phase id 后调用 `set_tl_phase`。
+- `/cityflow/**` 接口在公网部署时必须携带 `X-CityFlow-Token`，并使用 `X-CityFlow-Client` 做团队成员会话隔离。
 
 ## 接口清单
 
@@ -87,7 +100,20 @@ SimulationWebSocketHandler
 | GET | `/health` | 健康检查、引擎模式、场景列表 |
 | GET | `/cityflow/scenes/{sceneId}/roadnet` | 获取静态路网 |
 | POST | `/cityflow/simulations` | 创建 Python 仿真会话 |
-| GET | `/cityflow/simulations/{sid}/frame` | 推进一步并获取当前帧 |
+| GET | `/cityflow/simulations/{sid}/frame` | 获取最新缓存帧 |
+| POST | `/cityflow/simulations/{sid}/actions` | 下发策略相位决策 |
+| POST | `/cityflow/simulations/{sid}/start` | 启动 Python 后台推进 |
+| POST | `/cityflow/simulations/{sid}/pause` | 暂停 Python 后台推进 |
+| POST | `/cityflow/simulations/{sid}/stop` | 停止并销毁 Python 会话 |
+
+### Spring Boot 访问 Traffic-R
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/health` | 模型服务健康检查 |
+| POST | `/predict-batch` | 一个决策周期内批量输出所有路口相位 |
+
+Traffic-R 只由 Spring Boot 调用。正式仿真调度使用 `/predict-batch`，不再逐路口调用 `/predict`。
 
 ## 禁止调用方式
 
@@ -101,11 +127,12 @@ Controller -> 直接写复杂业务逻辑
 Controller -> 直接调用 Python HTTP
 strategy -> 直接推送 WebSocket
 agent -> 绕过后端安全校验下发控制指令
+frontend -> 根据 Traffic-R 响应直接伪造信号灯状态
 ```
 
 ## 阶段验收标准
 
-进入 RL、Max-Pressure 或应急控制前，必须先满足：
+当前阶段验收至少满足：
 
 1. 前端能通过 Spring Boot 获取静态路网。
 2. Spring Boot 能通过 `CityFlowClient` 获取 Python 返回的 roadnet。
@@ -113,3 +140,6 @@ agent -> 绕过后端安全校验下发控制指令
 4. Spring Boot 能定时调用 Python frame 接口。
 5. Spring Boot 能通过 WebSocket 推送 `sim.frame`。
 6. 前端能根据 `sim.frame` 实时更新车辆动画。
+7. 前端信号灯只使用 `sim.frame.data.signals`，不使用模型输出直接改灯。
+8. `fixed-time`、`max-pressure`、`traffic-r` 都通过统一 `ControlDecision` 下发到 Python `/actions`。
+9. Traffic-R 调度使用 `/predict-batch`，并在无效/超时后按规则 fallback 到 Max-Pressure。

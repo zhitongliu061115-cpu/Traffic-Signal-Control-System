@@ -45,8 +45,10 @@ body {
 }
 
 .brand,
+.strategy-panel,
 .controls,
 .metrics,
+.cityflow-apply-panel,
 .legend {
   background: rgba(18, 23, 28, 0.82);
   border: 1px solid rgba(200, 216, 230, 0.16);
@@ -90,6 +92,42 @@ body {
   pointer-events: auto;
 }
 
+.strategy-panel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  pointer-events: auto;
+}
+
+.strategy-panel label {
+  color: #aab8c5;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.strategy-panel select {
+  height: 36px;
+  min-width: 96px;
+  max-width: 150px;
+  border: 1px solid rgba(200, 216, 230, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #edf3f8;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+  padding: 0 9px;
+}
+
+.strategy-panel select option {
+  background: #151b21;
+  color: #edf3f8;
+}
+
+.strategy-panel button,
 .controls button {
   min-width: 72px;
   height: 36px;
@@ -104,11 +142,14 @@ body {
   cursor: pointer;
 }
 
+.strategy-panel button:hover:not(:disabled),
 .controls button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.14);
   border-color: rgba(200, 216, 230, 0.36);
 }
 
+.strategy-panel button:disabled,
+.strategy-panel select:disabled,
 .controls button:disabled {
   color: #697987;
   cursor: not-allowed;
@@ -173,6 +214,34 @@ body {
   letter-spacing: 0;
 }
 
+.cityflow-apply-panel {
+  position: absolute;
+  top: 104px;
+  left: 18px;
+  z-index: 2;
+  width: min(640px, calc(100vw - 36px));
+  padding: 12px 14px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.cityflow-apply-panel div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-right: 18px;
+}
+
+.cityflow-apply-panel span {
+  color: #aab8c5;
+  font-size: 12px;
+}
+
+.cityflow-apply-panel strong {
+  color: #edf3f8;
+  font-size: 14px;
+}
+
 .legend {
   position: absolute;
   left: 18px;
@@ -230,6 +299,16 @@ body {
   .hud {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .strategy-panel,
+  .controls {
+    justify-content: space-between;
+  }
+
+  .cityflow-apply-panel {
+    top: auto;
+    bottom: 76px;
   }
 
   .metrics {

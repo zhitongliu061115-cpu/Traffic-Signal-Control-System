@@ -58,8 +58,9 @@ class CityFlowAdapterTest(unittest.TestCase):
         self.assertEqual(session["sid"], result["sid"])
         self.assertEqual(1, len(result["applied"]))
         self.assertEqual("intersection_1_1", result["applied"][0]["intersectionId"])
-        self.assertEqual(2, result["applied"][0]["phaseIndex"])
-        self.assertEqual(1, result["applied"][0]["cityflowPhaseId"])
+        self.assertEqual("NTST", result["applied"][0]["phaseCode"])
+        self.assertEqual(3, result["applied"][0]["phaseIndex"])
+        self.assertEqual(2, result["applied"][0]["cityflowPhaseId"])
         self.assertEqual("applied", result["applied"][0]["status"])
 
     def test_apply_control_actions_rejects_invalid_phase(self):
@@ -115,6 +116,23 @@ class CityFlowAdapterTest(unittest.TestCase):
 
         self.assertEqual(400, context.exception.status)
         self.assertEqual("INVALID_REQUEST", context.exception.code)
+
+    def test_sessions_are_isolated_by_owner(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        alice_old = adapter.create_simulation("jinan_3x4", 1.0, owner_id="alice")
+        bob = adapter.create_simulation("jinan_3x4", 1.0, owner_id="bob")
+        alice_new = adapter.create_simulation("jinan_3x4", 1.0, owner_id="alice")
+
+        with self.assertRaises(ApiError) as context:
+            adapter.next_frame(alice_old["sid"], owner_id="alice")
+        self.assertEqual(404, context.exception.status)
+
+        self.assertEqual(1, adapter.next_frame(bob["sid"], owner_id="bob")["seq"])
+        self.assertEqual(1, adapter.next_frame(alice_new["sid"], owner_id="alice")["seq"])
+
+        with self.assertRaises(ApiError) as owner_context:
+            adapter.next_frame(bob["sid"], owner_id="alice")
+        self.assertEqual(403, owner_context.exception.status)
 
     def test_same_session_frame_sequence_is_thread_safe(self):
         adapter = CityFlowAdapter(DATA_DIR)

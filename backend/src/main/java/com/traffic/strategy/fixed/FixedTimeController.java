@@ -20,7 +20,7 @@ public class FixedTimeController implements TrafficSignalController {
             return new ControlDecision(
                     request.intersectionId(),
                     controllerType(),
-                    1,
+                    2,
                     "ETWT",
                     10,
                     1.0,
