@@ -18,6 +18,9 @@ declare namespace AMap {
     add(overlay: unknown): void
     remove(overlay: unknown): void
     on(event: string, handler: (...args: any[]) => void): void
+    getContainer(): HTMLElement
+    getZoom(): number
+    lngLatToContainer(lngLat: [number, number]): { x: number; y: number }
   }
 
   class Pixel {
