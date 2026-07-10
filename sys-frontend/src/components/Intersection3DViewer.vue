@@ -237,33 +237,23 @@ function buildFallback(): void {
       console.log("[3D] scene.glb loaded")
       loading.value = false
 
-      // 在 GLB 红绿灯模型上附着倒计时 Sprite
+      // 在 Blender 标记的 tl_label_* 空物体上挂倒计时 Sprite
       const tlSprites: Sprite[] = []
-      const tlDirs: string[] = []
-      // 四角期望位置（约 ±26, 0, ±26）
-      const corners: [number, number, number, string][] = [
-        [-26, 0, -26, 'EW'], [26, 0, -26, 'EW'],
-        [-26, 0, 26, 'NS'], [26, 0, 26, 'NS'],
-      ]
+      const tlLabels = ['tl_label_0', 'tl_label_1', 'tl_label_2', 'tl_label_3']
       gltf.scene.traverse((child) => {
-        const c = child as THREE.Object3D
-        for (const [cx, _cy, cz, dir] of corners) {
-          if (Math.abs(c.position.x - cx) < 5 && Math.abs(c.position.z - cz) < 5 && c.position.y > 15) {
-            const canvas = document.createElement('canvas')
-            canvas.width = 64; canvas.height = 48
-            const ctx = canvas.getContext('2d')!
-            const tex = new CanvasTexture(canvas)
-            tex.minFilter = LinearFilter
-            const sprite = new Sprite(new SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }))
-            sprite.position.set(0, 8, 0) // 模型上方 8 单位
-            sprite.scale.set(6, 4, 1)
-            sprite.userData = { canvas, ctx, dir }
-            c.add(sprite) // 挂为子节点，自动跟随
-            tlSprites.push(sprite)
-            tlDirs.push(String(dir))
-            console.log('[3D] sprite attached to', (c as any).name || 'unnamed', 'at', c.position.toArray(), 'dir:', dir)
-            break
-          }
+        const name = (child as any).name || ''
+        const idx = tlLabels.findIndex(l => name.includes(l))
+        if (idx >= 0) {
+          const canvas = document.createElement('canvas')
+          canvas.width = 64; canvas.height = 48
+          const ctx = canvas.getContext('2d')!
+          const tex = new CanvasTexture(canvas)
+          tex.minFilter = LinearFilter
+          const sprite = new Sprite(new SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }))
+          sprite.scale.set(6, 4, 1)
+          sprite.userData = { canvas, ctx, idx: tlLabels.findIndex(l => name.includes(l)) }
+          child.add(sprite)
+          tlSprites.push(sprite)
         }
       })
 
@@ -273,25 +263,21 @@ function buildFallback(): void {
         const isEW = it.currentPhase.startsWith('eastwest')
         const rem = Math.round(it.greenRemain)
         const allRed = it.currentPhase === 'all_red' || it.deviceStatus !== 'online'
+        // SW/SE=东西向, NW/NE=南北向
+        const ewSet = new Set([0, 1])
         for (const s of tlSprites) {
-          const dir = s.userData.dir as string
-          const active = dir === (isEW ? 'EW' : 'NS')
-          const color = allRed ? '#FF4D6D' : active ? '#22D3A0' : '#FF4D6D'
+          const idx = s.userData.idx as number
+          const isActiveDir = ewSet.has(idx) ? isEW : !isEW
+          const color = allRed ? '#FF4D6D' : isActiveDir ? '#22D3A0' : '#FF4D6D'
           const c = s.userData.canvas as HTMLCanvasElement
           const ctx = c.getContext('2d')!
           ctx.clearRect(0, 0, c.width, c.height)
-          // 背景圆
           ctx.fillStyle = color
           ctx.beginPath(); ctx.arc(32, 24, 16, 0, Math.PI * 2); ctx.fill()
-          // 倒计时数字
           ctx.fillStyle = '#fff'
           ctx.font = 'bold 16px Rajdhani, sans-serif'
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
           ctx.fillText(String(rem), 32, 22)
-          // 方向文字
-          ctx.fillStyle = '#e8f4ff'
-          ctx.font = '10px sans-serif'
-          ctx.fillText(dir, 32, 42)
           ;(s.material as SpriteMaterial).map!.needsUpdate = true
         }
       }
@@ -339,10 +325,11 @@ function onKeyDown(e: KeyboardEvent) {
   if (e.key === 'Escape') handleClose()
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('keydown', onKeyDown)
   vehicleAnimator = new IntersectionVehicleAnimator(props.intersectionId ?? '')
-  vehicleAnimator.preload()
+  await vehicleAnimator.preload()
+  console.log('[Vehicle] preload done, templates:', vehicleAnimator['templates']?.size ?? 0)
   if (!viewerBox.value) return
   const w = viewerBox.value.clientWidth
   const h = viewerBox.value.clientHeight
