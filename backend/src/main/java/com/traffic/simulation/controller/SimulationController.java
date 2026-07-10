@@ -1,9 +1,8 @@
-﻿package com.traffic.simulation.controller;
+package com.traffic.simulation.controller;
 
 import com.traffic.common.response.ApiResponse;
 import com.traffic.simulation.dto.CreateSimulationRequest;
 import com.traffic.simulation.dto.CreateSimulationResponse;
-import com.traffic.simulation.dto.EvDispatchRequest;
 import com.traffic.simulation.service.SimulationService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -11,8 +10,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/simulations")
@@ -45,12 +42,5 @@ public class SimulationController {
     public ApiResponse<Void> stop(@PathVariable String sid) {
         simulationService.stop(sid);
         return ApiResponse.ok(null);
-    }
-
-    @PostMapping("/{sid}/dispatch")
-    public ApiResponse<Map<String, Object>> dispatchEv(
-            @PathVariable String sid,
-            @Valid @RequestBody EvDispatchRequest request) {
-        return ApiResponse.ok(simulationService.dispatchEv(sid, request));
     }
 }
