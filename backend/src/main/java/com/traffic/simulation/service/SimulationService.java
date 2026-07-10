@@ -6,6 +6,7 @@ import com.traffic.common.util.TimeUtils;
 import com.traffic.simulation.dto.CityFlowCreateSimulationRequest;
 import com.traffic.simulation.dto.CreateSimulationRequest;
 import com.traffic.simulation.dto.CreateSimulationResponse;
+import com.traffic.simulation.dto.EvDispatchRequest;
 import com.traffic.simulation.dto.SimFrameData;
 import com.traffic.simulation.dto.WsMessage;
 import com.traffic.simulation.session.SimulationRuntimeSession;
@@ -83,6 +84,32 @@ public class SimulationService {
         forwardLifecycleToCityFlow("stop", sid);
         session.setState(SimulationSessionState.FINISHED);
     }
+
+    public Map<String, Object> dispatchEv(String sid, EvDispatchRequest request) {
+        SimulationRuntimeSession session = findSession(sid);
+        if (session.getState() != SimulationSessionState.RUNNING) {
+            throw new BusinessException("simulation session is not running: " + sid);
+        }
+        Map<String, Object> params = new LinkedHashMap<>();
+        if (request.evId() != null && !request.evId().isBlank()) {
+            params.put("evId", request.evId());
+        }
+        if (request.evType() != null && !request.evType().isBlank()) {
+            params.put("evType", request.evType());
+        }
+        if (request.priority() != null) {
+            params.put("priority", request.priority());
+        }
+        params.put("startIntersection", request.startIntersection());
+        params.put("endIntersection", request.endIntersection());
+        try {
+            return cityFlowClient.dispatchEV(sid, params);
+        } catch (RuntimeException ex) {
+            log.warn("failed to dispatch EV to CityFlow. sid={}, error={}", sid, ex.getMessage());
+            throw new BusinessException("EV dispatch failed: " + ex.getMessage());
+        }
+    }
+
 
     public void publishNextFrame(SimulationRuntimeSession session) {
         if (session.getState() != SimulationSessionState.RUNNING) {
