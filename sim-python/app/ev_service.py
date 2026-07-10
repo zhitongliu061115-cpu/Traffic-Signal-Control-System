@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ev_service.py - EV Priority Service Layer
 # =========================================
 # Full EV priority pipeline:
-#   dispatch → push_vehicle → step (detect+conflict+signal+events+status)
+#   dispatch 闂?push_vehicle 闂?step (detect+conflict+signal+events+status)
 # Called by engine.py during simulation steps and by server.py via dispatch.
 
 from dataclasses import dataclass, field
@@ -58,6 +58,7 @@ class EVPriorityService:
         self.lwr_model = LWRQueueModel(LWRParams())
         self.strategy = SignalStrategy(self.lwr_model)
         self.conflict_resolver = ConflictResolver()
+        self._active_overrides: Dict[str, Dict[str, int]] = {}  # sid -> {inter_id: phase}
         self.logger = EVLogger()
         self.ev_sessions: Dict[str, Dict[str, EVSession]] = {}
         self.road_index: Dict[str, Dict[str, Any]] = {}
@@ -82,19 +83,25 @@ class EVPriorityService:
             tl = idata.get("trafficLight", {})
             phases = tl.get("lightphases", [])
             pc[iid] = len(phases)
-            approach_map: Dict[str, List[int]] = {}
             road_links = idata.get("roadLinks", [])
-            for rl in road_links:
-                sr = rl.get("startRoad", "")
-                if sr and sr not in approach_map:
-                    approach_map[sr] = []
+            # approach_map: startRoad -> [phase_indices]  (road-level, for fallback)
+            approach_map: Dict[str, List[int]] = {}
+            # turn_map: (startRoad, endRoad) -> [phase_indices]  (turn-level, precise)
+            turn_map: Dict[tuple, List[int]] = {}
             for pi, lp in enumerate(phases):
                 for rli in lp.get("availableRoadLinks", []):
                     if rli < len(road_links):
-                        sr = road_links[rli].get("startRoad", "")
-                        if sr and pi not in approach_map.get(sr, []):
-                            approach_map.setdefault(sr, []).append(pi)
-            ap[iid] = approach_map
+                        rl_data = road_links[rli]
+                        sr = rl_data.get("startRoad", "")
+                        er = rl_data.get("endRoad", "")
+                        if sr:
+                            if pi not in approach_map.get(sr, []):
+                                approach_map.setdefault(sr, []).append(pi)
+                        if sr and er:
+                            key = (sr, er)
+                            if pi not in turn_map.get(key, []):
+                                turn_map.setdefault(key, []).append(pi)
+            ap[iid] = {"by_road": approach_map, "by_turn": turn_map}
         self.phase_counts[sid] = pc
         self.approach_phases[sid] = ap
 
@@ -169,7 +176,15 @@ class EVPriorityService:
             "maxSpeed": max_speed,
         }
         try:
-            engine.push_vehicle(veh_info, road_route)
+            before_ids = set()
+            try:
+                before_ids = set(engine.get_vehicles())
+            except Exception:
+                pass
+            push_result = engine.push_vehicle(veh_info, road_route)
+            engine.next_step()  # Let CityFlow process the push
+            print(f'[dispatch] push_vehicle returned: {push_result} type={type(push_result).__name__}', flush=True)
+            print(f'[dispatch] after next_step vehicle_count={engine.get_vehicle_count()}', flush=True)
         except Exception as ex:
             raise ApiError(
                 status=500, code="CITYFLOW_PUSH_FAILED",
@@ -178,7 +193,7 @@ class EVPriorityService:
             ) from ex
 
         # Find the vehicle ID CityFlow assigned
-        cf_vehicle_id = self._find_pushed_vehicle(engine, road_route[0])
+        cf_vehicle_id = str(push_result) if push_result else self._find_pushed_vehicle(engine, road_route[0], before_ids)
 
         self.ev_sessions[sid][ev_id] = EVSession(
             ev_id=ev_id,
@@ -234,7 +249,7 @@ class EVPriorityService:
 
             vehicle_info = self._get_vehicle_info(engine, ev_session)
             if not vehicle_info:
-                # EV may have finished its route → mark complete
+                # EV may have finished its route 闂?mark complete
                 if ev_session.cf_vehicle_id:
                     # Check if vehicle still exists
                     pass
@@ -250,6 +265,7 @@ class EVPriorityService:
                 {"road": current_road, "distance": distance, "speed": speed},
                 sim_time,
                 road_length=road_length,
+                is_detected_ev=True,
             )
             if not detection:
                 continue
@@ -274,7 +290,7 @@ class EVPriorityService:
             })
 
         if not detections:
-            return {}, [], self._build_ev_status(sid, sim_time)
+            return dict(self._active_overrides.get(sid, {})), [], self._build_ev_status(sid, sim_time)
 
         # ---- Phase 2: conflict resolution per intersection ----
         by_intersection: Dict[str, List[dict]] = {}
@@ -313,11 +329,11 @@ class EVPriorityService:
                     ev_session.passed_intersections.add(inter_id)
 
                     approach_dir = get_approach_direction(d["current_road"])
-                    approach_road = self._find_approach_road(
+                    approach_road, next_road = self._find_approach_road(
                         ev_session, inter_id, road_by_id)
                     pri_green = self._get_pri_green_phases(
-                        inter_id, approach_road, approach_phases, phase_counts)
-
+                        inter_id, approach_road, next_road, approach_phases, phase_counts)
+                    pri_green = [p + 1 for p in pri_green]  # convert to 1-based
                     try:
                         cityflow_phase = engine.get_tl_phase(inter_id)
                     except Exception:
@@ -387,7 +403,36 @@ class EVPriorityService:
                         detail=f"blocked by {winner.ev_id}" if winner else "",
                     )
 
-        return signal_overrides, ev_events, self._build_ev_status(sid, sim_time)
+        # Persist overrides: keep overriding until EV passes the intersection
+        if sid not in self._active_overrides:
+            self._active_overrides[sid] = {}
+        self._active_overrides[sid].update(signal_overrides)
+
+        # Clear overrides for intersections the EV has already passed
+        for ev_id, ev in self.ev_sessions.get(sid, {}).items():
+            if ev.completed or not ev.cf_vehicle_id:
+                continue
+            try:
+                info = engine.get_vehicle_info(ev.cf_vehicle_id)
+                if info:
+                    cur_road = str(info.get('road', ''))
+                    # Find current road index in route_roads
+                    for idx, rid in enumerate(ev.route_roads):
+                        if rid == cur_road:
+                            # EV has passed intersections 0..idx
+                            # (intersection idx+1 is the next one)
+                            passed = set(ev.route[:idx + 1])
+                            stale = [iid for iid in self._active_overrides.get(sid, {})
+                                     if iid in passed]
+                            for iid in stale:
+                                del self._active_overrides[sid][iid]
+                            break
+            except Exception:
+                pass
+
+        # Merge new + persisted overrides
+        result = dict(self._active_overrides.get(sid, {}))
+        return result, ev_events, self._build_ev_status(sid, sim_time)
 
     # ================================================================
     #  Status
@@ -417,8 +462,24 @@ class EVPriorityService:
     #  Internal helpers
     # ================================================================
 
-    def _find_pushed_vehicle(self, engine: Any, start_road: str) -> str:
+    def _find_pushed_vehicle(self, engine: Any, start_road: str,
+                             before_ids: set = None) -> str:
         """Find the CityFlow vehicle ID of the just-pushed EV."""
+        # Approach 1: set difference AND filter by start_road
+        if before_ids is not None:
+            try:
+                current = set(engine.get_vehicles())
+                new = current - before_ids
+                for vid in new:
+                    try:
+                        info = engine.get_vehicle_info(str(vid))
+                        if info and str(info.get('road', '')) == start_road:
+                            return str(vid)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # Approach 2: iterate by index
         try:
             count = engine.get_vehicle_count()
             for i in range(count):
@@ -448,21 +509,42 @@ class EVPriorityService:
         return cfg.ROAD_LENGTH
 
     def _find_approach_road(self, ev: EVSession, inter_id: str,
-                            road_by_id: dict) -> Optional[str]:
-        for rid in ev.route_roads:
+                            road_by_id: dict):
+        """Return (approach_road, next_road) for the given intersection.
+        Uses roadnet data: approach_road is the road whose endIntersection == inter_id.
+        next_road is the subsequent road in the EV route."""
+        for i, rid in enumerate(ev.route_roads):
             if rid in road_by_id:
                 rd = road_by_id[rid]
                 if rd.get("endIntersection") == inter_id:
-                    return rid
-        return None
+                    next_road = ev.route_roads[i + 1] if i + 1 < len(ev.route_roads) else None
+                    return rid, next_road
+        return None, None
 
     def _get_pri_green_phases(self, inter_id: str, approach_road: Optional[str],
+                               next_road: Optional[str],
                                approach_phases: dict, phase_counts: dict) -> List[int]:
-        if approach_road and inter_id in approach_phases:
-            phases = approach_phases[inter_id].get(approach_road, [])
-            if phases:
-                return phases
-        return list(range(phase_counts.get(inter_id, 4)))
+        """Get correct priority green phases for EV at this intersection.
+        Priority 1: turn-level mapping (approach_road, next_road) -> most precise.
+        Priority 2: road-level mapping (approach_road) -> fallback.
+        Priority 3: all phases."""
+        if inter_id in approach_phases:
+            ap_data = approach_phases[inter_id]
+            # Priority 1: turn-level (tuple key)
+            if approach_road and next_road:
+                turn_map = ap_data.get("by_turn", {})
+                key = (approach_road, next_road)
+                phases = turn_map.get(key, [])
+                if phases:
+                    return phases
+            # Priority 2: road-level
+            if approach_road:
+                road_map = ap_data.get("by_road", {})
+                phases = road_map.get(approach_road, [])
+                if phases:
+                    return phases
+        # Fallback: all phases
+        return list(range(1, phase_counts.get(inter_id, 4) + 1))
 
     def _intersections_to_roads(self, sid: str, path: List[str]) -> List[str]:
         roads = []
