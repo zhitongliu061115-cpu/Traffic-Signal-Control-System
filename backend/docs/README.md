@@ -8,6 +8,7 @@
 - `BACKEND_ARCHITECTURE.md`：后端包结构、依赖方向、模块职责和扩展规则。
 - `CALL_CHAIN.md`：当前阶段固定调用链，明确前端、Spring Boot、Python CityFlow 服务和 WebSocket 的边界。
 - `DATABASE_CONNECTION.md`：PostgreSQL 连接方式、环境变量和现有数据库兼容说明。
+- `DATABASE_STRUCTURE.md`：当前项目数据库表结构、字段、逻辑关系和运行时访问表说明。
 - `TECHNICAL_DESIGN.md`：后端技术设计、数据流、数据库原则和当前阶段开发顺序。
 - `DEPLOYMENT.md`：本地联调、云端部署、服务地址配置和部署风险说明。
 - `RISK_TODO.md`：后端风险、半成品、漏洞和 TODO 清单。
@@ -18,15 +19,17 @@
 2. 再读 `BACKEND_ARCHITECTURE.md`，理解每个包的职责。
 3. 开发接口前读 `API_GUIDELINES.md`。
 4. 连接本地 PostgreSQL 前读 `DATABASE_CONNECTION.md`。
-5. 修改数据库、数据流或技术方案前读 `TECHNICAL_DESIGN.md`。
-6. 部署或联调环境变化前读 `DEPLOYMENT.md`。
-7. 开始新任务或接手他人代码前读 `RISK_TODO.md`，确认已有风险和未完成事项。
+5. 梳理或修改表结构前读 `DATABASE_STRUCTURE.md`。
+6. 修改数据库、数据流或技术方案前读 `TECHNICAL_DESIGN.md`。
+7. 部署或联调环境变化前读 `DEPLOYMENT.md`。
+8. 开始新任务或接手他人代码前读 `RISK_TODO.md`，确认已有风险和未完成事项。
 
 ## 维护规则
 
 - 后端接口变化：同步更新 `API_GUIDELINES.md`。
 - 后端包结构变化：同步更新 `BACKEND_ARCHITECTURE.md`。
 - 调用链变化：同步更新 `CALL_CHAIN.md`。
+- 数据库表结构变化：同步更新 `DATABASE_STRUCTURE.md`。
 - 数据库或技术方案变化：同步更新 `TECHNICAL_DESIGN.md`。
 - 部署方式、服务地址或运行环境变化：同步更新 `DEPLOYMENT.md`。
 - 发现半成品、不完善实现、潜在漏洞或可能误导团队的代码：必须同步更新 `RISK_TODO.md`。

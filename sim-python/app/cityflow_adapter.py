@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import math
@@ -71,7 +71,8 @@ class CityFlowAdapter:
         """Get roadnet dict for a session (real engine only)."""
         if self.real_engine is not None:
             scene_id = self.real_engine.sessions[sid].scene_id
-            return self._parser(scene_id).raw()
+            self._load_scene(scene_id)
+            return self.parsers[scene_id].raw
         return {}
 
     def _session_scene(self, sid: str) -> str:
@@ -85,12 +86,20 @@ class CityFlowAdapter:
     def dispatch(self, sid: str, params: JsonDict) -> JsonDict:
         """Dispatch an emergency vehicle with coordinate-based routing."""
         if self.real_engine is not None:
-            return self.real_engine.ev_service.dispatch(
-                sid=sid,
-                scene_id=self._session_scene(sid),
-                roadnet=self._session_roadnet(sid),
-                params=params,
-            )
+            print(f'[dispatch] sid={sid} scene={self._session_scene(sid)}', flush=True)
+            try:
+                result = self.real_engine.ev_service.dispatch(
+                    sid=sid,
+                    scene_id=self._session_scene(sid),
+                    roadnet=self._session_roadnet(sid),
+                    engine=self.real_engine.sessions[sid].engine,
+                    params=params,
+                )
+                print(f'[dispatch] result={result}', flush=True)
+                return result
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                raise
         raise ApiError(
             status=400, code="CITYFLOW_ENGINE_NOT_CONFIGURED",
             message="dispatch requires cityflow engine mode",

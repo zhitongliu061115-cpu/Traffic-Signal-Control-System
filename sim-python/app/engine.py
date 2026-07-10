@@ -107,8 +107,12 @@ class RealCityFlowEngine(SimulationEngine):
             self._advance_signal_phases(session, sim_time)
 
             # ---- EV priority: detect and adjust signals ----
+
+            # EV outputs (default empty)
+            ev_events: list[dict] = []
+            ev_status: list[dict] = []
             if self.ev_service.has_evs(sid):
-                ev_overrides = self.ev_service.step(sid, session.engine, sim_time)
+                ev_overrides, ev_events, ev_status = self.ev_service.step(sid, session.engine, sim_time)
                 for inter_id, phase_idx in ev_overrides.items():
                     try:
                         session.engine.set_tl_phase(inter_id, phase_idx - 1)
@@ -134,6 +138,8 @@ class RealCityFlowEngine(SimulationEngine):
                 "intersections": intersections,
                 "signals": signals,
                 "metrics": metrics,
+                "evEvents": ev_events,
+                "evStatus": ev_status,
             }
 
     def apply_control_actions(self, sid: str, decisions: list[JsonDict]) -> JsonDict:
