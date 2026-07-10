@@ -177,16 +177,16 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* 顶部状态栏：约 8% */
+/* 顶部状态栏：约 5% */
 .ts-topbar {
-  flex: 8 1 0;
-  min-height: 58px;
-  max-height: 92px;
+  flex: 5 1 0;
+  min-height: 44px;
+  max-height: 68px;
 }
 
-/* 主体三栏区：约 65% */
+/* 主体三栏区：约 70% */
 .ts-body {
-  flex: 65 1 0;
+  flex: 70 1 0;
   display: grid;
   grid-template-columns: minmax(0, 22fr) minmax(0, 56fr) minmax(0, 22fr);
   gap: 12px;
