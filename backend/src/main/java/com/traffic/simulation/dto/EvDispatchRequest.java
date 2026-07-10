@@ -1,4 +1,4 @@
-﻿package com.traffic.simulation.dto;
+package com.traffic.simulation.dto;
 
 import jakarta.validation.constraints.NotBlank;
 
