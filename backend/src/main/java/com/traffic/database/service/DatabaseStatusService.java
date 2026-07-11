@@ -17,13 +17,44 @@ import org.springframework.stereotype.Service;
 public class DatabaseStatusService {
 
     private static final List<String> CORE_TABLES = List.of(
+            "scene",
+            "intersection",
+            "road",
+            "lane",
+            "road_link",
+            "lane_link",
+            "signal_phase",
+            "signal_phase_road_link",
+            "signal_timing_plan",
+            "signal_timing_plan_phase",
+            "safety_constraint",
+            "phase_transition_rule",
+            "simulation_session",
+            "simulation_frame",
+            "road_state_snapshot",
+            "lane_state_snapshot",
+            "intersection_state_snapshot",
+            "vehicle_state_snapshot",
+            "control_decision",
+            "control_decision_trace",
+            "traffic_r_inference_log",
+            "max_pressure_score",
+            "strategy_fallback_event",
+            "safety_constraint_event",
+            "control_region",
+            "control_region_intersection",
+            "emergency_event",
+            "emergency_route_node",
+            "emergency_signal_event",
+            "agent_conversation",
+            "agent_message",
+            "agent_tool_call",
+            "operation_audit_log",
+            "alert_event",
+            "service_health_snapshot",
             "intersections",
-            "lanes",
-            "traffic_snapshots",
-            "signal_plans",
-            "signal_phases",
-            "emergency_events",
-            "algorithm_runs"
+            "dashboard_intersection",
+            "analytics_overview"
     );
 
     private final DataSource dataSource;
@@ -61,9 +92,18 @@ public class DatabaseStatusService {
     }
 
     private boolean tableExists(DatabaseMetaData metaData, String tableName) throws SQLException {
-        try (ResultSet resultSet = metaData.getTables(null, "public", tableName, new String[]{"TABLE"})) {
-            return resultSet.next();
+        String[] schemas = {null, "public", "PUBLIC"};
+        String[] tablePatterns = {tableName, tableName.toLowerCase(), tableName.toUpperCase()};
+        for (String schema : schemas) {
+            for (String tablePattern : tablePatterns) {
+                try (ResultSet resultSet = metaData.getTables(null, schema, tablePattern, new String[]{"TABLE"})) {
+                    if (resultSet.next()) {
+                        return true;
+                    }
+                }
+            }
         }
+        return false;
     }
 
     private long countRows(String tableName) {

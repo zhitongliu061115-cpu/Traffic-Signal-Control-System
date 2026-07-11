@@ -1,115 +1,142 @@
 # 数据库结构说明
 
-更新时间：2026-07-10
+更新时间：2026-07-11
 
-本文档整理当前项目代码中可确认的数据库结构，主要依据：
-
-- `src/main/resources/db/migration/V1__init_core_tables.sql`
-- `src/main/resources/db/migration/V2__seed_dashboard_demo_data.sql`
-- `src/main/resources/db/migration/V3__seed_data_analysis_demo_data.sql`
-- `src/main/resources/application.yml`
-- 当前 `JdbcTemplate` Repository 中的实际读写 SQL
+本文档根据 `backend/src/main/resources/db/migration`、当前后端读取表，以及后端同学提供的《Traffic-Signal-Database-Schema-Design.xlsx》整理。核心迁移脚本已经从旧的 `cityflow_*` 扁平表，调整为按业务实体拆分的标准结构。
 
 ## 当前数据库模式
 
 | 场景 | 数据库 | 建表方式 | 说明 |
 | --- | --- | --- | --- |
 | 默认本地启动 | H2 内存库 | Flyway 自动执行 `db/migration` | 用于本地快速验证，应用重启后数据丢失。 |
-| `postgres` profile | PostgreSQL `traffic_signal` | Flyway 关闭，Hibernate 不建表 | 用于连接已有数据库，避免改动现有表结构。 |
+| `postgres` profile | PostgreSQL `traffic_signal` | Flyway 关闭，Hibernate 不建表 | 用于连接已有数据库，避免自动改动真实库结构。 |
 
-注意：`postgres` profile 下 `spring.flyway.enabled=false`，`spring.jpa.hibernate.ddl-auto=none`。也就是说，本文档中的 Flyway 表结构代表项目内置初始化结构，不一定等同于本机已经存在的 PostgreSQL 真实结构。
+注意：`postgres` profile 中 `spring.flyway.enabled=false`，`spring.jpa.hibernate.ddl-auto=none`。因此本文档中的 Flyway 结构代表项目内置初始化结构，不一定等同于本机已有 PostgreSQL 的真实结构。
+
+## 实施原则
+
+- 标准核心表采用表格中的实体名称：`scene`、`intersection`、`road`、`lane`、`signal_phase`、`simulation_frame`、`control_decision` 等。
+- `dashboard_*`、`analytics_*` 和现有接口使用的 `intersections` 表继续保留，避免影响当前前端页面和已经打通的路口 API。
+- 表格中建议为 `jsonb` 或 `jsonb / geometry` 的字段，在当前 Flyway 脚本里使用 `text`，保证 H2 本地环境可以启动；真实 PostgreSQL 落库时可按需要升级为 `jsonb` 或 PostGIS `geometry`。
+- 标准实体主键为 `uuid`，由业务代码生成，不在迁移脚本中绑定 H2 专有默认函数。
+- 核心关系已声明外键和常用唯一约束，演示表仍保持原有轻量结构。
 
 ## 表分组总览
 
-| 模块 | 表 |
+| 业务域 | 表 |
 | --- | --- |
-| CityFlow 静态路网 | `cityflow_scene`、`cityflow_intersection`、`cityflow_road`、`cityflow_road_link`、`cityflow_phase` |
-| 仿真会话与指标 | `simulation_session`、`simulation_metric_snapshot` |
-| 路口基础表 | `intersections` |
-| 驾驶舱看板演示数据 | `dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` |
-| 数据分析页演示数据 | `analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` |
+| 路网与地图绑定 | `scene`、`intersection`、`road`、`lane`、`road_link`、`lane_link` |
+| 信号相位与安全约束 | `signal_phase`、`signal_phase_road_link`、`signal_timing_plan`、`signal_timing_plan_phase`、`safety_constraint`、`phase_transition_rule` |
+| 仿真会话与状态快照 | `simulation_session`、`simulation_frame`、`road_state_snapshot`、`lane_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot` |
+| 策略调度与模型审计 | `control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`max_pressure_score`、`strategy_fallback_event`、`safety_constraint_event` |
+| 区域、应急、Agent 与运维 | `control_region`、`control_region_intersection`、`emergency_event`、`emergency_route_node`、`emergency_signal_event`、`agent_conversation`、`agent_message`、`agent_tool_call`、`operation_audit_log`、`alert_event`、`service_health_snapshot` |
+| 当前保留的兼容/演示表 | `intersections`、`dashboard_*`、`analytics_*` |
 
 ## 逻辑关系
 
-当前迁移脚本没有声明外键，表之间主要靠业务 ID 关联。
-
 ```mermaid
 erDiagram
-  cityflow_scene ||--o{ cityflow_intersection : scene_id
-  cityflow_scene ||--o{ cityflow_road : scene_id
-  cityflow_intersection ||--o{ cityflow_road_link : intersection_id
-  cityflow_intersection ||--o{ cityflow_phase : intersection_id
-  cityflow_scene ||--o{ simulation_session : scene_id
-  simulation_session ||--o{ simulation_metric_snapshot : sid
-
-  dashboard_intersection ||--o{ dashboard_road : from_or_to
-  dashboard_road ||--o{ dashboard_vehicle : road_id
-  dashboard_intersection ||--o{ dashboard_emergency_vehicle : current_intersection_id
-  dashboard_intersection ||--o{ dashboard_emergency_route : intersection_id
-  dashboard_intersection ||--o{ dashboard_alert : intersection_id
+  scene ||--o{ intersection : scene_id
+  scene ||--o{ road : scene_id
+  intersection ||--o{ road : from_or_to
+  road ||--o{ lane : road_id
+  intersection ||--o{ road_link : intersection_id
+  road_link ||--o{ lane_link : road_link_id
+  intersection ||--o{ signal_phase : intersection_id
+  signal_phase ||--o{ signal_phase_road_link : phase_id
+  road_link ||--o{ signal_phase_road_link : road_link_id
+  scene ||--o{ simulation_session : scene_id
+  simulation_session ||--o{ simulation_frame : session_id
+  simulation_frame ||--o{ road_state_snapshot : frame_id
+  simulation_frame ||--o{ lane_state_snapshot : frame_id
+  simulation_frame ||--o{ intersection_state_snapshot : frame_id
+  simulation_session ||--o{ control_decision : session_id
+  control_decision ||--o{ control_decision_trace : decision_id
+  control_decision ||--o{ max_pressure_score : decision_id
+  simulation_session ||--o{ emergency_event : session_id
+  emergency_event ||--o{ emergency_route_node : emergency_event_id
+  emergency_event ||--o{ emergency_signal_event : emergency_event_id
 ```
 
-## CityFlow 静态路网
+## 路网与地图绑定
 
-| 表 | 主键 | 字段概览 | 说明 |
-| --- | --- | --- | --- |
-| `cityflow_scene` | `id bigserial` | `scene_id varchar(64)`、`scene_name varchar(128)`、`roadnet_file_path varchar(512)`、`flow_file_path varchar(512)`、`description varchar(512)`、`created_at timestamp` | 仿真场景元数据。`scene_id` 唯一。 |
-| `cityflow_intersection` | `id bigserial` | `scene_id varchar(64)`、`intersection_id varchar(128)`、`x double precision`、`y double precision`、`virtual boolean`、`controlled boolean` | 场景内路口节点。`scene_id + intersection_id` 唯一。 |
-| `cityflow_road` | `id bigserial` | `scene_id varchar(64)`、`road_id varchar(128)`、`start_intersection_id varchar(128)`、`end_intersection_id varchar(128)`、`points_json text`、`lane_count integer`、`lane_width double precision`、`max_speed double precision` | 路段及几何信息。`scene_id + road_id` 唯一。 |
-| `cityflow_road_link` | `id bigserial` | `scene_id varchar(64)`、`intersection_id varchar(128)`、`road_link_index integer`、`start_road_id varchar(128)`、`end_road_id varchar(128)`、`type varchar(64)`、`lane_links_json text` | 路口内转向连接。`scene_id + intersection_id + road_link_index` 唯一。 |
-| `cityflow_phase` | `id bigserial` | `scene_id varchar(64)`、`intersection_id varchar(128)`、`phase_index integer`、`phase_code varchar(64)`、`duration integer`、`available_road_links_json text` | 路口信号相位。`scene_id + intersection_id + phase_index` 唯一。 |
+| 表 | 主键/唯一约束 | 字段 |
+| --- | --- | --- |
+| `scene` | `id`; `scene_code` 唯一 | `scene_code`、`name`、`source_type`、`cityflow_roadnet_path`、`cityflow_flow_path`、`map_provider`、`coordinate_system` |
+| `intersection` | `id`; `(scene_id, cityflow_id)` 唯一 | `scene_id`、`cityflow_id`、`map_intersection_id`、`name`、`type`、`virtual`、`longitude`、`latitude`、`x`、`y` |
+| `road` | `id`; `(scene_id, cityflow_id)` 唯一 | `scene_id`、`cityflow_id`、`from_intersection_id`、`to_intersection_id`、`name`、`direction`、`length_m`、`speed_limit`、`lane_count`、`geometry` |
+| `lane` | `id`; `(road_id, cityflow_lane_index)` 唯一 | `road_id`、`cityflow_lane_index`、`lane_code`、`direction`、`movement`、`width`、`speed_limit` |
+| `road_link` | `id`; `(intersection_id, cityflow_index)` 唯一 | `intersection_id`、`cityflow_index`、`from_road_id`、`to_road_id`、`movement_type` |
+| `lane_link` | `id`; `(road_link_id, start_lane_id, end_lane_id)` 唯一 | `road_link_id`、`start_lane_id`、`end_lane_id`、`geometry` |
 
-## 仿真会话与指标
+## 信号相位与安全约束
 
-| 表 | 主键 | 字段概览 | 说明 |
-| --- | --- | --- | --- |
-| `simulation_session` | `id bigserial` | `sid varchar(64)`、`scene_id varchar(64)`、`controller_type varchar(64)`、`status varchar(32)`、`sim_time double precision`、`run_counts integer`、`step_interval double precision`、`decision_interval double precision`、`started_at timestamp`、`ended_at timestamp`、`created_at timestamp` | 一次仿真运行会话。`sid` 唯一。 |
-| `simulation_metric_snapshot` | `id bigserial` | `sid varchar(64)`、`sim_time double precision`、`vehicle_count integer`、`queue_count integer`、`avg_speed double precision`、`avg_wait double precision`、`throughput integer`、`created_at timestamp` | 仿真指标快照。通过 `sid` 逻辑关联 `simulation_session`。 |
+| 表 | 主键/唯一约束 | 字段 |
+| --- | --- | --- |
+| `signal_phase` | `id`; `(intersection_id, phase_index)` 唯一 | `intersection_id`、`phase_index`、`phase_code`、`phase_name`、`phase_type`、`default_green_sec`、`yellow_sec`、`all_red_sec` |
+| `signal_phase_road_link` | `(phase_id, road_link_id)` 复合主键 | `phase_id`、`road_link_id` |
+| `signal_timing_plan` | `id`; `(intersection_id, plan_code)` 唯一 | `intersection_id`、`plan_code`、`name`、`source`、`cycle_sec`、`offset_sec`、`status` |
+| `signal_timing_plan_phase` | `id`; `(plan_id, sequence_no)`、`(plan_id, phase_id)` 唯一 | `plan_id`、`phase_id`、`sequence_no`、`green_sec` |
+| `safety_constraint` | `id` | `intersection_id`、`constraint_type`、`min_value`、`max_value`、`config_payload` |
+| `phase_transition_rule` | `id`; `(intersection_id, from_phase_id, to_phase_id)` 唯一 | `intersection_id`、`from_phase_id`、`to_phase_id`、`allowed`、`transition_yellow_sec`、`transition_all_red_sec` |
 
-## 路口基础表
+## 仿真会话与状态快照
 
-| 表 | 主键 | 字段概览 | 说明 |
-| --- | --- | --- | --- |
-| `intersections` | `id uuid` | `code varchar(32)`、`name varchar(128)`、`district varchar(64)`、`longitude decimal(10,6)`、`latitude decimal(10,6)`、`status varchar(32)`、`metadata text`、`created_at timestamp`、`updated_at timestamp` | 当前后端已打通读写闭环的路口基础表。`code` 唯一。 |
+| 表 | 主键/唯一约束 | 字段 |
+| --- | --- | --- |
+| `simulation_session` | `id`; `sid` 唯一 | `sid`、`scene_id`、`controller_type`、`speed`、`status` |
+| `simulation_frame` | `id`; `(session_id, seq)` 唯一 | `session_id`、`seq`、`sim_time`、`vehicle_count`、`queue_count`、`avg_speed`、`avg_wait`、`throughput` |
+| `road_state_snapshot` | `id`; `(frame_id, road_id)` 唯一 | `frame_id`、`road_id`、`vehicle_count`、`queue_count`、`avg_speed`、`level` |
+| `lane_state_snapshot` | `id`; `(frame_id, lane_id)` 唯一 | `frame_id`、`lane_id`、`queue_len`、`vehicle_count`、`avg_wait_time`、`cell_1`、`cell_2`、`cell_3`、`cell_4` |
+| `intersection_state_snapshot` | `id`; `(frame_id, intersection_id)` 唯一 | `frame_id`、`intersection_id`、`queue_count`、`avg_wait`、`level`、`current_phase_id` |
+| `vehicle_state_snapshot` | `id`; `(frame_id, vehicle_id)` 唯一 | `frame_id`、`vehicle_id`、`road_id`、`lane_id`、`x`、`y`、`angle`、`speed`、`vehicle_type` |
 
-当前实际接口：
+## 策略调度与模型审计
 
-- `GET /api/v1/intersections` 读取全部路口。
-- `GET /api/v1/intersections/{code}` 按 `code` 读取单个路口。
-- `PATCH /api/v1/intersections/{code}/status` 更新 `status`。
+| 表 | 主键/唯一约束 | 字段 |
+| --- | --- | --- |
+| `control_decision` | `id` | `session_id`、`intersection_id`、`sim_time`、`controller_type`、`requested_phase_id`、`final_phase_id`、`duration_sec`、`status`、`reason` |
+| `control_decision_trace` | `id` | `decision_id`、`stage`、`input_payload`、`output_payload`、`message` |
+| `traffic_r_inference_log` | `id` | `session_id`、`sim_time`、`request_payload`、`prompt_text`、`raw_output`、`parsed_phase_code`、`valid`、`latency_ms`、`error_message` |
+| `max_pressure_score` | `id`; `(decision_id, phase_id)` 唯一 | `decision_id`、`phase_id`、`pressure_score`、`detail_payload` |
+| `strategy_fallback_event` | `id` | `session_id`、`intersection_id`、`from_strategy`、`to_strategy`、`reason`、`sim_time` |
+| `safety_constraint_event` | `id` | `decision_id`、`constraint_type`、`action`、`before_phase_id`、`after_phase_id`、`reason` |
 
-## 驾驶舱看板演示数据
+## 区域、应急、Agent 与运维
 
-| 表 | 主键 | 字段概览 | 说明 |
-| --- | --- | --- | --- |
-| `dashboard_intersection` | `id varchar(32)` | `name`、`x`、`y`、`lng`、`lat`、`row_no`、`col_no`、`current_phase`、`green_remain`、`queue_length`、`average_delay`、`congestion_index`、`device_status` | 看板路口状态。 |
-| `dashboard_road` | `id varchar(32)` | `from_intersection_id`、`to_intersection_id`、`name`、`flow`、`speed`、`queue_length`、`congestion_index`、`lane_count`、`direction`、`path_json` | 看板道路状态和绘制路径。 |
-| `dashboard_vehicle` | `id varchar(32)` | `road_id`、`progress`、`speed`、`vehicle_type`、`lane_index` | 看板车辆点位。 |
-| `dashboard_emergency_vehicle` | `id varchar(32)` | `vehicle_type`、`current_intersection_id`、`destination`、`green_wave_active`、`eta` | 应急车辆状态。 |
-| `dashboard_emergency_route` | `sequence_no integer` | `intersection_id` | 应急绿波路线，按 `sequence_no` 排序。 |
-| `dashboard_alert` | `id varchar(32)` | `type`、`level`、`title`、`location`、`event_time`、`intersection_id`、`acknowledged` | 看板告警列表。 |
-| `dashboard_statistics` | `id integer` | `total_flow`、`average_speed`、`average_wait_time`、`congestion_index`、`congested_road_count`、`optimized_intersection_count`、`emergency_vehicle_count`、`device_online_rate`、`today_alert_count`、`green_wave_count` | 看板顶部统计卡片，目前查询固定 `id=1`。 |
-| `dashboard_compare_metric` | `metric_key varchar(64)` | `name`、`traditional_value`、`ai_value`、`unit`、`direction` | 传统控制与 AI 控制对比指标。 |
-| `dashboard_congestion_trend` | `sequence_no integer` | `time_label`、`metric_value` | 拥堵趋势折线图。 |
-| `dashboard_assistant_reply` | `keyword varchar(32)` | `reply text` | 看板助手关键字回复。 |
+| 表 | 主键/唯一约束 | 字段 |
+| --- | --- | --- |
+| `control_region` | `id`; `(scene_id, region_code)` 唯一 | `scene_id`、`region_code`、`name`、`controller_type`、`region_type` |
+| `control_region_intersection` | `(region_id, intersection_id)` 复合主键 | `region_id`、`intersection_id`、`role` |
+| `emergency_event` | `id`; `event_code` 唯一 | `session_id`、`event_code`、`vehicle_id`、`vehicle_type`、`priority`、`status`、`start_coord`、`end_coord` |
+| `emergency_route_node` | `id`; `(emergency_event_id, sequence_no)` 唯一 | `emergency_event_id`、`sequence_no`、`intersection_id`、`road_id`、`planned_arrival_time`、`actual_arrival_time` |
+| `emergency_signal_event` | `id` | `emergency_event_id`、`intersection_id`、`sim_time`、`action_type`、`phase_id_before`、`phase_id_after`、`reason` |
+| `agent_conversation` | `id` | `user_id`、`session_id`、`title` |
+| `agent_message` | `id` | `conversation_id`、`role`、`content` |
+| `agent_tool_call` | `id` | `message_id`、`tool_name`、`arguments_payload`、`result_payload`、`status`、`latency_ms` |
+| `operation_audit_log` | `id` | `actor_type`、`actor_id`、`operation_type`、`target_type`、`target_id`、`request_payload`、`result_status` |
+| `alert_event` | `id` | `session_id`、`alert_type`、`level`、`target_type`、`target_id`、`title`、`description`、`status` |
+| `service_health_snapshot` | `id` | `service_name`、`status`、`latency_ms`、`detail_payload`、`checked_at` |
 
-## 数据分析页演示数据
+## 保留表
 
-| 表 | 主键 | 字段概览 | 说明 |
-| --- | --- | --- | --- |
-| `analytics_overview` | `id integer` | `sample_count`、`sample_rate`、`health_score`、`sampled_point_id` | 数据分析总览。当前查询固定 `id=1`。 |
-| `analytics_metric` | `sequence_no integer` | `label`、`detail`、`tone`、`metric_value` | 指标卡片。 |
-| `analytics_status_bucket` | `sequence_no integer` | `label`、`tone`、`bucket_count` | 状态分布。 |
-| `analytics_daily_point` | `sequence_no integer` | `date_label`、`electricity`、`hvac`、`occupancy`、`water` | 日维度趋势。 |
-| `analytics_hourly_point` | `sequence_no integer` | `hour_label`、`electricity`、`hvac`、`occupancy`、`temperature` | 小时维度趋势。 |
-| `analytics_building_summary` | `sequence_no integer` | `building_id`、`building_type`、`average_occupancy`、`efficiency_score`、`electricity`、`hvac`、`status_label`、`warning_count`、`water` | 建筑汇总数据。 |
-| `analytics_heatmap_cell` | `sequence_no integer` | `date_label`、`hour_label`、`electricity`、`intensity`、`occupancy` | 热力图单元格。 |
-| `analytics_composition_item` | `sequence_no integer` | `label`、`color`、`item_value` | 构成占比。 |
-| `analytics_scatter_point` | `sequence_no integer` | `point_id`、`building_id`、`hour_label`、`electricity`、`occupancy`、`temperature`、`tone` | 散点图数据。 |
-| `analytics_monitoring_record` | `sequence_no integer` | `record_id`、`building_id`、`building_type`、`chilled_water_return_temp`、`chilled_water_supply_temp`、`device_id`、`device_status`、`electricity_kwh`、`env_humidity`、`env_temperature`、`hvac_kwh`、`monitor_time`、`occupancy_density`、`water_m3` | 监测明细表。 |
-| `analytics_toast` | `sequence_no integer` | `toast_id`、`title`、`body`、`tone` | 页面提示消息。 |
+### `intersections`
 
-注意：`analytics_*` 当前字段明显偏建筑能耗演示数据，不完全贴合交通信号控制业务。如果数据分析页后续要回归交通主题，建议重新设计为交通流量、排队、延误、通行效率、信号优化效果等指标表。
+当前路口基础 API 仍读取和更新 `intersections` 表：
+
+- `GET /api/v1/intersections`
+- `GET /api/v1/intersections/{code}`
+- `PATCH /api/v1/intersections/{code}/status`
+
+字段保持不变：`id`、`code`、`name`、`district`、`longitude`、`latitude`、`status`、`metadata`、`created_at`、`updated_at`。后续如果要完全切到标准 `intersection` 表，需要同步改 Controller、Service、Repository、DTO 和前端调用。
+
+### `dashboard_*`
+
+`dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` 继续作为驾驶舱演示数据表保留。
+
+### `analytics_*`
+
+`analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` 继续作为数据分析页演示数据表保留。
 
 ## 当前后端实际访问表
 
@@ -118,11 +145,10 @@ erDiagram
 | `IntersectionRepository` | `intersections` |
 | `DashboardRepository` | `dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` |
 | `DataAnalysisRepository` | `analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` |
-| `DatabaseStatusService` | 检查 `intersections`、`lanes`、`traffic_snapshots`、`signal_plans`、`signal_phases`、`emergency_events`、`algorithm_runs` 是否存在并统计行数 |
+| `DatabaseStatusService` | 标准核心表、`intersections`、`dashboard_intersection`、`analytics_overview` |
 
-## 需要特别注意
+## 后续注意事项
 
-- Flyway 迁移脚本没有声明外键，删除或更新数据时要由业务层保证关联一致。
-- `dashboard_*` 和 `analytics_*` 目前更像演示页种子数据表，不是严格的核心业务模型。
-- `DatabaseStatusService` 中的 `lanes`、`traffic_snapshots`、`signal_plans`、`signal_phases`、`emergency_events`、`algorithm_runs` 未在当前 Flyway 脚本中定义；这些更像既有 PostgreSQL 数据库中的外部核心表。
-- `intersections.id` 在迁移脚本中使用 `uuid default random_uuid()`，这适合 H2；如果未来让 PostgreSQL 执行该迁移，需要确认 UUID 默认函数是否改成 PostgreSQL 可用写法。
+- 如果要让 PostgreSQL 自动执行这些迁移，需要先确认 `postgres` profile 的 Flyway 策略，并把 `text` 形式的 JSON/几何字段升级为真实 `jsonb` 或 PostGIS 类型。
+- 当前标准表仅完成结构定义，业务读写仍主要集中在保留表和外部 CityFlow 服务；后续接入落库时需要新增 Repository/Service。
+- `intersections` 与标准 `intersection` 暂时并存。前者服务当前 API，后者服务规范化路网模型。
