@@ -175,6 +175,7 @@ export const mockStatistics: GlobalStatistics = {
   deviceOnlineRate: 90.0,
   todayAlertCount: 6,
   greenWaveCount: 1,
+  throughput: 0,
 }
 
 // ================================================================
