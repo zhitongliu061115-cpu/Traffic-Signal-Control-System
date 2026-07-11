@@ -1,449 +1,480 @@
 <script setup lang="ts">
-// ================================================================
-// RoadNetwork — 城市路网数字孪生（Three.js 三维实现）
-// 场景 / 路口 / 道路热力 / 车辆流动 / 信号灯 / 设备状态 / 应急绿波
-// 点击路口 → store.selectIntersection → 打开 Intersection3DViewer
-// ================================================================
+// 直接搬运 temp-three-frontend/src/main.js 核心渲染逻辑
 import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { storeToRefs } from 'pinia'
-import { Raycaster, Vector2 } from 'three'
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { useTrafficStore } from '@/stores/traffic'
-import { SceneManager } from '@/three/SceneManager'
-import { LabelManager } from '@/three/LabelManager'
-import { IntersectionManager } from '@/three/IntersectionManager'
-import { RoadManager } from '@/three/RoadManager'
-import { VehicleManager } from '@/three/VehicleManager'
-import { EmergencyManager } from '@/three/EmergencyManager'
-import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
+import type { SimRoadnetResponse, SimVehicleState } from '@/types/traffic'
+
+defineProps<{ compact?: boolean }>()
 
 const store = useTrafficStore()
-const {
-  intersections,
-  roads,
-  vehicles,
-  systemMode,
-  emergencyRoute,
-  activeGreenWaveIndex,
-  selectedIntersectionId,
-  statistics,
-} = storeToRefs(store)
+const { simulationStatus, simRoadnet, simulationVehicles, simulationRoads, simulationSignals } = storeToRefs(store)
 
-// ---- 容器 & 管理器 ----
+// ---- 常量（与 temp-three-frontend 一致）----
+const LANE_WIDTH = 10; const ROAD_SHOULDER = 4
+const VISUAL_LANES_PER_DIRECTION = 3; const MEDIAN_GAP = 7
+function roadWidth(lanes: number) { return lanes * LANE_WIDTH + ROAD_SHOULDER * 2 }
+function visualLaneCount() { return VISUAL_LANES_PER_DIRECTION }
+function visualRoadWidth() { return roadWidth(visualLaneCount()) }
+function laneOffset(laneIndex: number, laneCount: number) {
+  const lane = Math.max(0, Math.min(Number(laneIndex) || 0, Math.max(0, laneCount - 1)))
+  return (lane - (Math.max(1, laneCount) - 1) / 2) * LANE_WIDTH
+}
+function visualRoadOffset(road: any) {
+  if (!road || !road.points || road.points.length < 2) return new THREE.Vector3()
+  const pts = road.points.map(worldPoint)
+  const d = new THREE.Vector3().subVectors(pts[pts.length - 1], pts[0]).setY(0)
+  if (d.lengthSq() < 0.001) return new THREE.Vector3()
+  d.normalize()
+  return new THREE.Vector3(-d.z, 0, d.x).normalize().multiplyScalar(visualRoadWidth() / 2 + MEDIAN_GAP / 2)
+}
+function visualRoadPoints(road: any) {
+  const offset = visualRoadOffset(road)
+  return road.points.map((p: any) => worldPoint(p).add(offset))
+}
+
+const levelColors: Record<string, number> = {
+  free: 0x33d17a, slow: 0xffb020, jammed: 0xff4d5a, unknown: 0x7f8c9a,
+}
+
+// ---- 坐标 ----
+function worldPoint(p: { x: number; y: number }) {
+  return new THREE.Vector3(p.x, 0, -p.y)
+}
+
+// ---- DOM 引用 ----
 const canvasBox = ref<HTMLDivElement | null>(null)
-let sceneMgr: SceneManager | null = null
-let labelMgr: LabelManager | null = null
-let intersectionMgr: IntersectionManager | null = null
-let roadMgr: RoadManager | null = null
-let vehicleMgr: VehicleManager | null = null
-let emergencyMgr: EmergencyManager | null = null
+const simActive = computed(() => simulationStatus.value === 'running' && simRoadnet.value !== null)
 
-const raycaster = new Raycaster()
-const pointer = new Vector2()
+// ---- Three.js 实例 ----
+let renderer: THREE.WebGLRenderer
+let scene: THREE.Scene
+let camera: THREE.OrthographicCamera
+let controls: OrbitControls
+let rafId = 0
 
-const emergencyActive = computed(() => systemMode.value === 'emergency')
-const viewerOpen = ref(false)
+let root: THREE.Group
+let roadGroup: THREE.Group
+let intersectionGroup: THREE.Group
+let signalGroup: THREE.Group
+let vehicleGroup: THREE.Group
 
-// ---- 派生集合 ----
-function computeEmergencySets() {
-  const active = emergencyActive.value
-  const roadIds = emergencyMgr?.emergencyRoadIds(emergencyRoute.value, active) ?? new Set<string>()
-  const nodeIds = emergencyMgr?.greenWaveIds(emergencyRoute.value, activeGreenWaveIndex.value, active) ?? new Set<string>()
-  return { roadIds, nodeIds }
+let roadnet: SimRoadnetResponse | null = null
+const roadMeshesById = new Map<string, THREE.Mesh[]>()
+const roadById = new Map<string, any>()
+const intersectionById = new Map<string, any>()
+const vehiclesById = new Map<string, { mesh: THREE.Group; from: THREE.Vector3; to: THREE.Vector3; startAt: number; roadId: string }>()
+let phaseByIntersectionAndIndex = new Map<string, any>()
+let roadLinkByIntersectionAndIndex = new Map<string, any>()
+let signalApproachesByIntersection = new Map<string, any[]>()
+let bounds = { minX: 0, maxX: 1, minZ: 0, maxZ: 1 }
+
+// ---- 构建 ----
+function computeBounds() {
+  if (!roadnet) return
+  const pts = roadnet.roads.flatMap((r) => (r.points || []).map(worldPoint))
+  bounds = pts.reduce((acc, p) => ({
+    minX: Math.min(acc.minX, p.x), maxX: Math.max(acc.maxX, p.x),
+    minZ: Math.min(acc.minZ, p.z), maxZ: Math.max(acc.maxZ, p.z),
+  }), { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity })
 }
 
-/** 全量同步 store → 三维对象 */
-function syncAll(): void {
-  if (!intersectionMgr || !roadMgr || !vehicleMgr) return
-  const { roadIds, nodeIds } = computeEmergencySets()
-  roadMgr.update(roads.value, roadIds)
-  intersectionMgr.update(intersections.value, selectedIntersectionId.value, nodeIds)
-  vehicleMgr.update(vehicles.value)
+function fitCamera() {
+  if (!camera || !canvasBox.value) return
+  const w = Math.max(1, bounds.maxX - bounds.minX)
+  const h = Math.max(1, bounds.maxZ - bounds.minZ)
+  const cw = canvasBox.value.clientWidth || 400
+  const ch = canvasBox.value.clientHeight || 300
+  const aspect = cw / Math.max(1, ch)
+  const ph = Math.max(h * 1.18, (w * 1.18) / aspect)
+  const pw = ph * aspect
+  camera.left = -pw / 2; camera.right = pw / 2
+  camera.top = ph / 2; camera.bottom = -ph / 2
+  const cx = (bounds.minX + bounds.maxX) / 2
+  const cz = (bounds.minZ + bounds.maxZ) / 2
+  camera.position.set(cx, 1800, cz + 0.01)
+  camera.lookAt(cx, 0, cz)
+  controls.target.set(cx, 0, cz)
+  controls.update()
+  camera.updateProjectionMatrix()
 }
 
-// ---- 点击路口（Raycaster）----
-function onPointerDown(ev: PointerEvent): void {
-  if (!sceneMgr || !intersectionMgr || !canvasBox.value) return
-  const rect = canvasBox.value.getBoundingClientRect()
-  pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1
-  pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1
+function makeRoadSegmentMesh(start: THREE.Vector3, end: THREE.Vector3, lanes: number, color: number, y = 0) {
+  const d = new THREE.Vector3().subVectors(end, start)
+  const len = Math.max(d.length(), 0.001)
+  const w = roadWidth(lanes)
+  const geo = new THREE.BoxGeometry(w, 4, len)
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.78, metalness: 0.08 })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.position.copy(start).add(end).multiplyScalar(0.5)
+  mesh.position.y = y
+  mesh.rotation.y = Math.atan2(d.x, d.z)
+  return mesh
+}
 
-  raycaster.setFromCamera(pointer, sceneMgr.camera)
-  const hits = raycaster.intersectObjects(intersectionMgr.raycastTargets, false)
-  if (hits.length > 0) {
-    const id = intersectionMgr.resolveId(hits[0]!.object)
-    if (id) {
-      store.selectIntersection(selectedIntersectionId.value === id ? null : id)
+function drawIntersections() {
+  if (!roadnet) return
+  for (const si of roadnet.intersections) {
+    const pt = worldPoint(si)
+    const r = si.virtual ? 8 : 22
+    const h = si.virtual ? 3 : 8
+    const geo = new THREE.CylinderGeometry(r, r, h, 24)
+    const mat = new THREE.MeshStandardMaterial({
+      color: si.virtual ? 0x50606d : 0xd9e4ef, roughness: 0.55, metalness: 0.12,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.set(pt.x, si.virtual ? 5 : 8, pt.z)
+    intersectionGroup.add(mesh)
+    intersectionById.set(si.id, { ...si, point: pt, mesh })
+  }
+}
+
+function makeLaneMark(start: THREE.Vector3, end: THREE.Vector3, lanes: number) {
+  if (lanes < 1) return [] as THREE.Mesh[]
+  const d = new THREE.Vector3().subVectors(end, start)
+  const len = Math.max(d.length(), 0.001)
+  const side = new THREE.Vector3(-d.z, 0, d.x).normalize()
+  const marks: THREE.Mesh[] = []
+  for (let lane = 0; lane < lanes; lane++) {
+    const off = laneOffset(lane, lanes)
+    const center = start.clone().add(end).multiplyScalar(0.5).addScaledVector(side, off)
+    const geo = new THREE.BoxGeometry(1.4, 1, len * 0.8)
+    const mat = new THREE.MeshBasicMaterial({ color: lane === 0 ? 0xd7e1ea : 0x1f272e, transparent: true, opacity: lane === 0 ? 0.45 : 0.62 })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.copy(center); mesh.position.y = 4.5
+    mesh.rotation.y = Math.atan2(d.x, d.z)
+    marks.push(mesh)
+  }
+  // lane boundaries
+  for (let b = 1; b < lanes; b++) {
+    const off = (b - lanes / 2) * LANE_WIDTH
+    const center = start.clone().add(end).multiplyScalar(0.5).addScaledVector(side, off)
+    const geo = new THREE.BoxGeometry(0.8, 1, len * 0.9)
+    const mat = new THREE.MeshBasicMaterial({ color: 0x9aa8b3, transparent: true, opacity: 0.28 })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.copy(center); mesh.position.y = 5
+    mesh.rotation.y = Math.atan2(d.x, d.z)
+    marks.push(mesh)
+  }
+  return marks
+}
+
+function drawRoads() {
+  if (!roadnet) return
+  for (const sr of roadnet.roads) {
+    roadById.set(sr.id, sr)
+    const pts = visualRoadPoints(sr)
+    const meshes: THREE.Mesh[] = []
+    for (let i = 0; i < pts.length - 1; i++) {
+      const m = makeRoadSegmentMesh(pts[i]!, pts[i + 1]!, visualLaneCount(), levelColors.unknown)
+      m.userData.roadId = sr.id
+      roadGroup.add(m)
+      meshes.push(m)
+      const marks = makeLaneMark(pts[i]!, pts[i + 1]!, visualLaneCount())
+      for (const mk of marks) { roadGroup.add(mk) }
+    }
+    roadMeshesById.set(sr.id, meshes)
+  }
+}
+
+function buildSignalApproaches() {
+  if (!roadnet) return
+  const map = new Map<string, any[]>()
+  const seen = new Set<string>()
+  for (const rl of roadnet.roadLinks) {
+    const si = intersectionById.get(rl.intersectionId)
+    const rd = roadById.get(rl.fromRoadId)
+    if (!si || !rd || !rd.points || rd.points.length < 2) continue
+    const key = `${rl.intersectionId}:${rl.fromRoadId}`
+    if (seen.has(key)) continue; seen.add(key)
+    const pts = visualRoadPoints(rd)
+    const first = pts[0]!, last = pts[pts.length - 1]!
+    const near = first.distanceTo(si.point) <= last.distanceTo(si.point) ? first : last
+    const far = near === first ? pts[1]! : pts[pts.length - 2]!
+    const direction = new THREE.Vector3().subVectors(si.point, far).setY(0)
+    if (direction.lengthSq() < 0.001) continue
+    direction.normalize()
+    const side = new THREE.Vector3(-direction.z, 0, direction.x)
+    const stopDist = 42 + Math.max(0, visualLaneCount() - 1) * 1.5
+    const sideOff = visualRoadWidth() / 2 + 12
+    const pos = near.clone().addScaledVector(direction, -stopDist).addScaledVector(side, sideOff)
+    if (!map.has(rl.intersectionId)) map.set(rl.intersectionId, [])
+    map.get(rl.intersectionId)!.push({ roadId: rl.fromRoadId, position: pos, direction, laneCount: visualLaneCount() })
+  }
+  signalApproachesByIntersection = map
+}
+
+function updateRoadStates(roads: any[]) {
+  for (const r of roads) {
+    const color = levelColors[r.level] ?? levelColors.unknown
+    const meshes = roadMeshesById.get(r.id) || []
+    for (const m of meshes) {
+      m.material.color.setHex(color)
+      ;(m.material as any).emissive?.setHex(r.level === 'jammed' ? 0x2c0508 : 0x000000)
     }
   }
 }
 
-// ---- 双击路口打开实景视图 ----
-function onDblClick(): void {
-  if (selectedIntersectionId.value) {
-    viewerOpen.value = true
+function movementStatesForActiveLinks(activeLinks: any[]) {
+  const states = new Map<string, { straight: boolean; left: boolean }>()
+  for (const rl of activeLinks) {
+    if (rl.type === 'turn_right') continue
+    if (!states.has(rl.fromRoadId)) states.set(rl.fromRoadId, { straight: false, left: false })
+    const s = states.get(rl.fromRoadId)!
+    if (rl.type === 'turn_left') s.left = true; else s.straight = true
+  }
+  return states
+}
+
+function drawMovementLamp(g: THREE.Group, x: number, isGreen: boolean, movement: string) {
+  const color = isGreen ? 0x26ff7a : 0xff3b4a
+  const housing = new THREE.Mesh(new THREE.BoxGeometry(19, 21, 8), new THREE.MeshStandardMaterial({ color: isGreen ? 0x0c3d25 : 0x42151a, emissive: isGreen ? 0x16ff7a : 0xff3347, emissiveIntensity: 0.42, roughness: 0.42 }))
+  housing.position.set(x, 52, -8); g.add(housing)
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(7.2, 24, 24), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: isGreen ? 1.9 : 1.35, roughness: 0.28 }))
+  lamp.position.set(x, 52, -13); lamp.userData.signalLamp = true; g.add(lamp)
+  // arrow
+  const mat = new THREE.MeshBasicMaterial({ color })
+  const shaft = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.4, 10), mat); shaft.position.set(x, 52, -20.5); shaft.rotation.x = Math.PI / 2
+  if (movement === 'left') { shaft.rotation.z = Math.PI / 4; shaft.position.x -= 1.8 }
+  g.add(shaft)
+  const head = new THREE.Mesh(new THREE.ConeGeometry(4.2, 7.5, 3), mat); head.position.set(x, 52, -25.5); head.rotation.x = Math.PI / 2
+  if (movement === 'left') { head.rotation.z = Math.PI / 4; head.position.x -= 5.6; head.position.z += 2.8 }
+  g.add(head)
+}
+
+function drawSignalHead(approach: any, moveState: { straight: boolean; left: boolean }) {
+  const g = new THREE.Group()
+  g.position.copy(approach.position)
+  g.rotation.y = Math.atan2(approach.direction.x, approach.direction.z)
+  const hasGreen = moveState.straight || moveState.left
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(visualRoadWidth() + 26, 2.6, 2.6), new THREE.MeshStandardMaterial({ color: 0x2d3942, roughness: 0.6 }))
+  arm.position.set(0, 54, 0); g.add(arm)
+  drawMovementLamp(g, -11, moveState.left, 'left')
+  drawMovementLamp(g, 11, moveState.straight, 'straight')
+  const stopLine = new THREE.Mesh(new THREE.BoxGeometry(visualRoadWidth(), 2.5, 5), new THREE.MeshBasicMaterial({ color: hasGreen ? 0x62ff99 : 0xff4d5a, transparent: true, opacity: 0.88 }))
+  stopLine.position.set(0, 7, 10); g.add(stopLine)
+  signalGroup.add(g)
+}
+
+function highlightRoadDirection(roadId: string, color: number) {
+  const rd = roadById.get(roadId); if (!rd) return
+  const pts = visualRoadPoints(rd)
+  for (let i = 0; i < pts.length - 1; i++) {
+    const m = makeRoadSegmentMesh(pts[i]!, pts[i + 1]!, visualLaneCount(), color, 9)
+    m.scale.x = 0.48; m.scale.z = 0.7
+    ;(m.material as any).transparent = true; (m.material as any).opacity = 0.82
+    ;(m.material as any).emissive = new THREE.Color(0x19a95c); (m.material as any).emissiveIntensity = 0.7
+    signalGroup.add(m)
   }
 }
 
-function closeViewer(): void {
-  viewerOpen.value = false
+function drawTurnHint(roadLink: any) {
+  const fromRoad = roadById.get(roadLink.fromRoadId)
+  const si = intersectionById.get(roadLink.intersectionId)
+  if (!fromRoad || !si || !fromRoad.points || fromRoad.points.length < 2) return
+  const approach = (signalApproachesByIntersection.get(roadLink.intersectionId) || []).find((a: any) => a.roadId === roadLink.fromRoadId)
+  if (!approach) return
+  const g = new THREE.Group()
+  const base = si.point.clone().addScaledVector(approach.direction, -24)
+  g.position.set(base.x, 13, base.z); g.rotation.y = Math.atan2(approach.direction.x, approach.direction.z)
+  const mat = new THREE.MeshBasicMaterial({ color: 0x8dffb2, transparent: true, opacity: 0.92 })
+  g.add(new THREE.Mesh(new THREE.BoxGeometry(4, 2, 26), mat))
+  const hd = new THREE.Mesh(new THREE.ConeGeometry(8, 16, 3), mat); hd.position.set(0, 0, -18); hd.rotation.x = Math.PI / 2; g.add(hd)
+  if (roadLink.type === 'turn_left' || roadLink.type === 'turn_right') {
+    const s = roadLink.type === 'turn_left' ? -1 : 1
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(4, 2, 18), mat); wing.position.set(s * 9, 0, -12); wing.rotation.y = s * Math.PI / 4; g.add(wing)
+  }
+  signalGroup.add(g)
 }
 
-// ---- 初始化 Three.js ----
+function drawPhaseRing(point: THREE.Vector3, hasActive: boolean) {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(22, 2.4, 8, 28), new THREE.MeshBasicMaterial({ color: hasActive ? 0x69ffa3 : 0xff4d5a, transparent: true, opacity: 0.72 }))
+  ring.position.set(point.x, 35, point.z); ring.rotation.x = Math.PI / 2
+  signalGroup.add(ring)
+}
+
+function updateSignals(signals: any[]) {
+  while (signalGroup.children.length > 0) {
+    const c = signalGroup.children[0]!
+    signalGroup.remove(c)
+    c.traverse((o: any) => { o.geometry?.dispose(); o.material?.dispose() })
+  }
+  for (const sig of signals) {
+    const si = intersectionById.get(sig.intersectionId); if (!si) continue
+    const phase = phaseByIntersectionAndIndex.get(`${sig.intersectionId}:${sig.phaseIndex}`); if (!phase) continue
+    const activeLinks: any[] = []
+    for (const idx of (phase.roadLinkIndexes || [])) {
+      const rl = roadLinkByIntersectionAndIndex.get(`${sig.intersectionId}:${idx}`)
+      if (rl) { activeLinks.push(rl); highlightRoadDirection(rl.fromRoadId, 0x8dffb2); highlightRoadDirection(rl.toRoadId, 0x8dffb2); drawTurnHint(rl) }
+    }
+    const approaches = signalApproachesByIntersection.get(sig.intersectionId) || []
+    const moveStates = movementStatesForActiveLinks(activeLinks)
+    for (const ap of approaches) { drawSignalHead(ap, moveStates.get(ap.roadId) || { straight: false, left: false }) }
+    drawPhaseRing(si.point, activeLinks.length > 0)
+  }
+}
+
+// ---- 车辆 ----
+function vehiclePosition(v: SimVehicleState) {
+  const base = new THREE.Vector3(v.x, 18, -v.y)
+  const rd = roadById.get(v.roadId)
+  if (!rd || !rd.points || rd.points.length < 2) return base
+  const offset = visualRoadOffset(rd)
+  const side = new THREE.Vector3(-visualRoadOffset(rd).z, 0, visualRoadOffset(rd).x).normalize()
+  const laneOff = laneOffset(v.lane, visualLaneCount())
+  return base.add(offset).addScaledVector(side, laneOff)
+}
+
+function createVehicleMesh(v: SimVehicleState) {
+  const g = new THREE.Group()
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(6.2, 5.2, 13.5),
+    new THREE.MeshStandardMaterial({ color: 0x4cc9ff, roughness: 0.42, metalness: 0.18, emissive: 0x0b4c62, emissiveIntensity: 0.85 }),
+  )
+  body.position.y = 2
+  g.add(body)
+  const pos = vehiclePosition(v)
+  g.position.copy(pos)
+  return g
+}
+
+function updateVehicles(vehicles: SimVehicleState[]) {
+  const now = performance.now()
+  const activeIds = new Set<string>()
+  for (const v of vehicles) {
+    activeIds.add(v.id)
+    const target = vehiclePosition(v)
+    let entry = vehiclesById.get(v.id)
+    if (!entry) {
+      const mesh = createVehicleMesh(v)
+      vehicleGroup.add(mesh)
+      entry = { mesh, from: target.clone(), to: target.clone(), startAt: now, roadId: v.roadId }
+      vehiclesById.set(v.id, entry)
+    }
+    entry.mesh.position.copy(target)
+    entry.roadId = v.roadId
+  }
+  for (const [id, entry] of vehiclesById) {
+    if (!activeIds.has(id)) {
+      vehicleGroup.remove(entry.mesh)
+      entry.mesh.traverse((c: any) => { c.geometry?.dispose(); c.material?.dispose() })
+      vehiclesById.delete(id)
+    }
+  }
+}
+
+// ---- 清空 + 重建 ----
+function disposeAll(g: THREE.Group) {
+  while (g.children.length > 0) {
+    const c = g.children[0]!
+    g.remove(c)
+    c.traverse((o: any) => { o.geometry?.dispose(); o.material?.dispose() })
+  }
+}
+
+function rebuildAll() {
+  if (!roadnet || !root) return
+  disposeAll(roadGroup); disposeAll(intersectionGroup)
+  disposeAll(signalGroup); disposeAll(vehicleGroup)
+  roadMeshesById.clear(); roadById.clear(); intersectionById.clear()
+  vehiclesById.clear()
+  computeBounds(); drawIntersections(); drawRoads()
+  phaseByIntersectionAndIndex.clear(); roadLinkByIntersectionAndIndex.clear()
+  for (const ph of roadnet!.phases) phaseByIntersectionAndIndex.set(`${ph.intersectionId}:${ph.phaseIndex}`, ph)
+  for (const rl of roadnet!.roadLinks) roadLinkByIntersectionAndIndex.set(`${rl.intersectionId}:${rl.index}`, rl)
+  buildSignalApproaches()
+  fitCamera()
+}
+
+// ---- 初始化 ----
+let resizeObs: ResizeObserver | null = null
+
 onMounted(() => {
   if (!canvasBox.value) return
+  const w = canvasBox.value.clientWidth || 400
+  const h = canvasBox.value.clientHeight || 300
 
-  sceneMgr = new SceneManager(canvasBox.value)
-  labelMgr = new LabelManager()
-  intersectionMgr = new IntersectionManager(labelMgr)
-  roadMgr = new RoadManager(labelMgr)
-  vehicleMgr = new VehicleManager(roadMgr)
-  emergencyMgr = new EmergencyManager()
+  renderer = new THREE.WebGLRenderer({ antialias: true })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  renderer.setSize(w, h)
+  renderer.setClearColor(0x101418, 1)
+  canvasBox.value.appendChild(renderer.domElement)
 
-  // 构建静态几何
-  roadMgr.build(intersections.value, roads.value)
-  intersectionMgr.build(intersections.value)
-  emergencyMgr.setRoads(roads.value)
+  scene = new THREE.Scene()
+  scene.fog = new THREE.Fog(0x101418, 2200, 5200)
+  scene.add(new THREE.AmbientLight(0xffffff, 0.72))
+  const dir = new THREE.DirectionalLight(0xffffff, 1.2)
+  dir.position.set(500, 900, 300)
+  scene.add(dir)
 
-  sceneMgr.add(roadMgr.group)
-  sceneMgr.add(intersectionMgr.group)
-  sceneMgr.add(vehicleMgr.group)
+  camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 6000)
+  camera.position.set(0, 1700, 900)
 
-  // 首次同步
-  syncAll()
+  root = new THREE.Group(); scene.add(root)
+  roadGroup = new THREE.Group(); intersectionGroup = new THREE.Group()
+  signalGroup = new THREE.Group(); vehicleGroup = new THREE.Group()
+  root.add(roadGroup, intersectionGroup, signalGroup, vehicleGroup)
 
-  // 每帧动画
-  sceneMgr.onUpdate((deltaMs) => {
-    intersectionMgr?.animate(deltaMs, intersections.value)
-    vehicleMgr?.animate(deltaMs)
+  controls = new OrbitControls(camera, renderer.domElement)
+  controls.enableDamping = true; controls.dampingFactor = 0.08
+  controls.mouseButtons = { LEFT: 0, MIDDLE: 2, RIGHT: 1 } as any
+
+  resizeObs = new ResizeObserver(() => {
+    if (!canvasBox.value) return
+    const nw = canvasBox.value.clientWidth || 400
+    const nh = canvasBox.value.clientHeight || 300
+    renderer.setSize(nw, nh)
+    if (roadnet) fitCamera()
   })
+  resizeObs.observe(canvasBox.value)
 
-  sceneMgr.start()
-
-  const el = sceneMgr.renderer.domElement
-  el.addEventListener('pointerdown', onPointerDown)
-  el.addEventListener('dblclick', onDblClick)
+  const loop = () => {
+    rafId = requestAnimationFrame(loop)
+    controls.update()
+    renderer.render(scene, camera)
+  }
+  rafId = requestAnimationFrame(loop)
 })
 
-// ---- 响应 store 数据变化 ----
-watch([intersections, roads, vehicles, selectedIntersectionId, systemMode, activeGreenWaveIndex], syncAll, { deep: true })
-
-// 选中路口时相机平滑飞近
-watch(selectedIntersectionId, (id) => {
-  if (id && sceneMgr && intersectionMgr) {
-    const pos = intersectionMgr.worldPositionOf(id)
-    if (pos) sceneMgr.flyTo(pos, 340)
+// ---- 响应仿真 ----
+watch(simActive, (active) => {
+  if (active && simRoadnet.value) {
+    roadnet = simRoadnet.value
+    console.log('[RoadNetwork] roadnet loaded:', roadnet.intersections.length, 'intersections,', roadnet.roads.length, 'roads')
+    rebuildAll()
   }
 })
+
+watch(simulationRoads, (roads) => { if (simActive.value) updateRoadStates(roads) }, { deep: false })
+watch(simulationSignals, (signals) => { if (simActive.value) updateSignals(signals) }, { deep: false })
+watch(simulationVehicles, (vehicles) => { if (simActive.value) updateVehicles(vehicles as SimVehicleState[]) }, { deep: false })
 
 onBeforeUnmount(() => {
-  const el = sceneMgr?.renderer.domElement
-  if (el) {
-    el.removeEventListener('pointerdown', onPointerDown)
-    el.removeEventListener('dblclick', onDblClick)
-  }
-  vehicleMgr?.dispose()
-  roadMgr?.dispose()
-  intersectionMgr?.dispose()
-  labelMgr?.dispose()
-  sceneMgr?.dispose()
-  sceneMgr = null
-  labelMgr = null
-  intersectionMgr = null
-  roadMgr = null
-  vehicleMgr = null
-  emergencyMgr = null
+  cancelAnimationFrame(rafId)
+  resizeObs?.disconnect()
+  disposeAll(roadGroup); disposeAll(intersectionGroup)
+  disposeAll(signalGroup); disposeAll(vehicleGroup)
+  controls?.dispose(); renderer?.dispose()
 })
-
-// ---- 顶部概览指标 ----
-const overview = computed(() => [
-  { label: '路口总数', value: String(intersections.value.length), unit: '个' },
-  { label: '设备在线率', value: statistics.value.deviceOnlineRate.toFixed(1), unit: '%' },
-  { label: '监测车辆', value: String(vehicles.value.length), unit: '辆' },
-  { label: '拥堵路段', value: String(statistics.value.congestedRoadCount), unit: '条' },
-])
-
-// ---- 图例 ----
-const legend = [
-  { name: '畅通', color: '#22D3A0', shape: 'road' },
-  { name: '缓行', color: '#FFB800', shape: 'road' },
-  { name: '拥堵', color: '#FF7A45', shape: 'road' },
-  { name: '严重拥堵', color: '#FF4D6D', shape: 'road' },
-  { name: '应急绿波', color: '#00E5FF', shape: 'route' },
-  { name: '设备在线', color: '#22D3A0', shape: 'dot' },
-  { name: '设备故障', color: '#FF4D6D', shape: 'dot' },
-] as const
-
-const selectedName = computed(
-  () => intersections.value.find((it) => it.id === selectedIntersectionId.value)?.name ?? '',
-)
 </script>
 
 <template>
   <section class="hud-card data-panel-card comp-card">
-    <div class="hud-panel-titlebar">
-      <div class="titlebar-inner">
-        <span class="titlebar-mark" />
-        <span class="titlebar-text">城市路网数字孪生</span>
-        <span
-          v-if="emergencyActive"
-          class="hud-pill hud-pill--rose rn-emergency-badge"
-        >
-          🚨 应急绿波运行中
-        </span>
-        <span class="titlebar-deco"><i /><i /><i /></span>
-      </div>
-    </div>
-
-    <div class="hud-card__content comp-card__body">
-      <!-- 顶部概览指标 -->
-      <div class="rn-overview">
-        <div v-for="o in overview" :key="o.label" class="rn-metric">
-          <span class="rn-metric__value">{{ o.value }}</span>
-          <span class="rn-metric__unit">{{ o.unit }}</span>
-          <div class="rn-metric__label">{{ o.label }}</div>
-        </div>
-      </div>
-
-      <!-- Three.js 视口 -->
+    <div class="hud-card__content comp-card__body" style="padding:0">
       <div class="rn-viewport">
         <div ref="canvasBox" class="rn-canvas" />
-
-        <!-- 操作提示 -->
-        <div class="rn-hint">
-          <span>🖱 拖拽旋转 · 滚轮缩放 · 单击选中 · 双击进入实景</span>
-        </div>
-
-        <!-- 选中路口浮层 -->
-        <div v-if="selectedName" class="rn-selected-info">
-          <div class="rn-selected-info__name">{{ selectedName }}</div>
-          <button class="rn-enter-btn" @click="viewerOpen = true">进入三维实景 ⛶</button>
-        </div>
-
-        <!-- 图例 -->
-        <div class="rn-legend">
-          <span v-for="l in legend" :key="l.name" class="rn-legend__item">
-            <span
-              v-if="l.shape === 'road'"
-              class="rn-legend__road"
-              :style="{ background: l.color }"
-            />
-            <span
-              v-else-if="l.shape === 'route'"
-              class="rn-legend__route"
-              :style="{ background: l.color }"
-            />
-            <span
-              v-else
-              class="rn-legend__dot"
-              :style="{ background: l.color }"
-            />
-            {{ l.name }}
-          </span>
-        </div>
+        <div v-if="!simActive" class="rn-placeholder">仿真未运行 — 启动后显示 CityFlow 3D 路网</div>
       </div>
     </div>
-
-    <!-- 路口三维实景弹窗 -->
-    <Intersection3DViewer
-      v-if="viewerOpen"
-      :intersection-id="selectedIntersectionId"
-      @close="closeViewer"
-    />
   </section>
 </template>
 
 <style scoped>
-.comp-card {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.comp-card__body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow: hidden;
-}
-
-/* 应急徽章 */
-.rn-emergency-badge {
-  margin-left: 14px;
-  font-size: 11px;
-  padding: 3px 10px;
-  animation: rn-badge-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes rn-badge-pulse {
-  0%, 100% { box-shadow: 0 0 0 rgba(255, 77, 109, 0); }
-  50% { box-shadow: 0 0 14px rgba(255, 77, 109, 0.5); }
-}
-
-/* 概览指标 */
-.rn-overview {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-  flex: 0 0 auto;
-}
-
-.rn-metric {
-  padding: 7px 14px;
-  text-align: center;
-  background: rgba(0, 212, 255, 0.05);
-  border: 1px solid rgba(0, 212, 255, 0.18);
-  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
-}
-
-.rn-metric__value {
-  font-family: 'DINPro', 'Rajdhani', sans-serif;
-  font-size: clamp(18px, 1.6vw, 26px);
-  font-weight: 700;
-  color: #00d4ff;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.rn-metric__unit {
-  margin-left: 4px;
-  font-size: 12px;
-  color: #8da8c5;
-  white-space: nowrap;
-}
-
-.rn-metric__label {
-  margin-top: 1px;
-  font-size: 12px;
-  color: #5a7595;
-  letter-spacing: 0.04em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 视口 */
-.rn-viewport {
-  flex: 1;
-  min-height: 0;
-  position: relative;
-  border: 1.5px solid rgba(0, 212, 255, 0.42);
-  overflow: hidden;
-  box-shadow:
-    inset 0 0 40px rgba(0, 212, 255, 0.06),
-    0 0 24px rgba(0, 212, 255, 0.12);
-}
-
-.rn-canvas {
-  width: 100%;
-  height: 100%;
-}
-
-/* 操作提示 */
-.rn-hint {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  z-index: 3;
-  font-size: 11px;
-  color: #8da8c5;
-  padding: 4px 10px;
-  background: rgba(4, 21, 39, 0.72);
-  border: 1px solid rgba(0, 212, 255, 0.2);
-  backdrop-filter: blur(4px);
-  pointer-events: none;
-}
-
-/* 选中信息浮层 */
-.rn-selected-info {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 3;
-  min-width: 160px;
-  padding: 10px 12px;
-  background: rgba(4, 21, 39, 0.9);
-  border: 1px solid rgba(0, 212, 255, 0.4);
-  backdrop-filter: blur(8px);
-  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
-  box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
-}
-
-.rn-selected-info__name {
-  font-size: 14px;
-  font-weight: 700;
-  color: #7af7ff;
-  margin-bottom: 8px;
-  text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rn-enter-btn {
-  width: 100%;
-  padding: 5px 8px;
-  font-size: 12px;
-  color: #00d4ff;
-  background: rgba(0, 212, 255, 0.08);
-  border: 1px solid rgba(0, 212, 255, 0.4);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-}
-
-.rn-enter-btn:hover {
-  background: rgba(0, 212, 255, 0.18);
-  box-shadow: 0 0 14px rgba(0, 212, 255, 0.3);
-}
-
-/* 图例 */
-.rn-legend {
-  position: absolute;
-  right: 12px;
-  bottom: 10px;
-  z-index: 3;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  max-width: calc(100% - 24px);
-  justify-content: flex-end;
-  padding: 7px 14px;
-  background: rgba(4, 21, 39, 0.75);
-  border: 1px solid rgba(0, 212, 255, 0.24);
-  backdrop-filter: blur(6px);
-}
-
-.rn-legend__item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: #8da8c5;
-  white-space: nowrap;
-}
-
-.rn-legend__road {
-  width: 16px;
-  height: 3.5px;
-  border-radius: 2px;
-  box-shadow: 0 0 6px currentColor;
-}
-
-.rn-legend__route {
-  width: 16px;
-  height: 3.5px;
-  border-radius: 2px;
-  box-shadow: 0 0 8px currentColor;
-  opacity: 0.95;
-}
-
-.rn-legend__dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  box-shadow: 0 0 6px currentColor;
-}
+.comp-card { height: 100%; display: flex; flex-direction: column; }
+.comp-card__body { flex: 1; min-height: 0; overflow: hidden; }
+.rn-viewport { width: 100%; height: 100%; position: relative; border: 1.5px solid rgba(0,212,255,0.42); overflow: hidden; }
+.rn-canvas { width: 100%; height: 100%; }
+.rn-placeholder { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #5a7595; pointer-events: none; }
 </style>

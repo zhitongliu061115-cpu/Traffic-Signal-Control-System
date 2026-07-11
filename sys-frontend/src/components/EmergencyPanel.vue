@@ -199,6 +199,10 @@ function handleSimulateVehicle(): void {
   openDispatchDialog(new MouseEvent('click'))
 }
 
+function handleStartGreenWave(): void {
+  store.startEmergencyGreenWave()
+}
+
 function handleRestoreNormal(): void {
   store.restoreNormalMode()
   store.generateMockAlert(

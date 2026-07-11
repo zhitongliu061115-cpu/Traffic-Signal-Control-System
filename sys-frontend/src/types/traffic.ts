@@ -375,6 +375,17 @@ export interface WsMessage<T = SimFrameData> {
   data: T
 }
 
+/** AI 控制决策（后端 WebSocket control.decision） */
+export interface ControlDecision {
+  intersectionId: string
+  controllerType: string
+  phaseIndex: number
+  phaseCode: string
+  durationSec: number
+  confidence: number
+  reason: string
+}
+
 /** 创建仿真请求 */
 export interface CreateSimulationRequest {
   sceneId: string

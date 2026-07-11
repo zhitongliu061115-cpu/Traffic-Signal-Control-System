@@ -7,7 +7,7 @@
 //   watch(lastFrame, (frame) => { ... })
 // ================================================================
 import { ref, readonly, onUnmounted } from 'vue'
-import type { SimFrameData, WsMessage } from '@/types/traffic'
+import type { ControlDecision, SimFrameData, WsMessage } from '@/types/traffic'
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -37,6 +37,7 @@ export function useSimulationWebSocket() {
   const status = ref<ConnectionStatus>('disconnected')
   const lastFrame = ref<WsMessage<SimFrameData> | null>(null)
   const lastFrameData = ref<SimFrameData | null>(null)
+  const lastControlDecision = ref<ControlDecision | null>(null)
   const frameSeq = ref(0)
   const errorMessage = ref<string | null>(null)
 
@@ -99,6 +100,16 @@ export function useSimulationWebSocket() {
             `[SimWS] frame ${message.seq} | t=${message.simTime?.toFixed(1)}s | ` +
             `vehicles=${message.data?.vehicles?.length ?? 0} ` +
             `signals=${message.data?.signals?.length ?? 0}`,
+          )
+        }
+      } else if (message.type === 'control.decision') {
+        const decisions = message.data as unknown as ControlDecision[]
+        if (Array.isArray(decisions) && decisions.length > 0) {
+          lastControlDecision.value = decisions[0]!
+          console.log(
+            `[SimWS] AI decision | intersection=${decisions[0].intersectionId} ` +
+            `phase=${decisions[0].phaseCode} confidence=${(decisions[0].confidence * 100).toFixed(0)}% ` +
+            `reason=${decisions[0].reason}`,
           )
         }
       } else {
@@ -234,6 +245,7 @@ export function useSimulationWebSocket() {
     currentSid = null
     lastFrame.value = null
     lastFrameData.value = null
+    lastControlDecision.value = null
     frameSeq.value = 0
     console.log('[SimWS] disconnected by client')
   }
@@ -256,6 +268,8 @@ export function useSimulationWebSocket() {
     lastFrame: readonly(lastFrame),
     /** 最新帧 SimFrameData（纯数据） */
     lastFrameData: readonly(lastFrameData),
+    /** 最新 AI 控制决策 */
+    lastControlDecision: readonly(lastControlDecision),
     /** 当前帧序号 */
     frameSeq: readonly(frameSeq),
     /** 错误信息 */

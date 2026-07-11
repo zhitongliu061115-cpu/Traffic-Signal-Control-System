@@ -8,7 +8,7 @@ import { storeToRefs } from 'pinia'
 import * as echarts from 'echarts'
 import type { EChartsOption } from 'echarts'
 import { useTrafficStore } from '@/stores/traffic'
-import type { CompareMetrics, CongestionTrendPoint } from '@/types/traffic'
+import type { CongestionTrendPoint } from '@/types/traffic'
 import {
   CHART_COLORS,
   chartTextStyle,
@@ -17,57 +17,41 @@ import {
   chartLegend,
   chartXAxis,
   chartYAxis,
-  traditionalBarGradient,
-  aiBarGradient,
   thresholdMarkLine,
 } from '@/utils/echartsTheme'
 
 const store = useTrafficStore()
-const { compareMetrics, congestionTrend } = storeToRefs(store)
+const { compareMetrics, congestionTrend, waitTrend, speedTrend, simulationStatus } = storeToRefs(store)
+
+const simRunning = computed(() => simulationStatus.value === 'running')
 
 const summaryItems = computed(() => {
-  const metrics = compareMetrics.value
+  const m = compareMetrics.value
+  const wt = waitTrend.value
+  const st = speedTrend.value
+  const curWait = wt.length > 0 ? wt[wt.length - 1]!.value : m.averageWaitTime.ai
+  const curSpeed = st.length > 0 ? st[st.length - 1]!.value : m.averageSpeed.ai
   return [
-    {
-      label: '等待时间优化',
-      value: formatDrop(metrics.averageWaitTime.traditional, metrics.averageWaitTime.ai),
-    },
-    {
-      label: '平均速度提升',
-      value: formatRise(metrics.averageSpeed.traditional, metrics.averageSpeed.ai),
-    },
-    {
-      label: '应急通行缩短',
-      value: formatDrop(metrics.emergencyPassTime.traditional, metrics.emergencyPassTime.ai),
-    },
+    { label: '当前均等待', value: `${curWait}s` },
+    { label: '当前均速', value: `${curSpeed}km/h` },
+    { label: '拥堵指数', value: `${congestionTrend.value.length > 0 ? congestionTrend.value[congestionTrend.value.length - 1]!.value : '--'}` },
   ]
 })
 
-function formatDrop(before: number, after: number): string {
-  if (before <= 0) return '--'
-  return `${Math.max(0, Math.round(((before - after) / before) * 100))}%`
-}
-
-function formatRise(before: number, after: number): string {
-  if (before <= 0) return '--'
-  return `${Math.max(0, Math.round(((after - before) / before) * 100))}%`
-}
-
 // ---- DOM 引用 ----
-const barContainer = ref<HTMLDivElement | null>(null)
+const trendContainer = ref<HTMLDivElement | null>(null)
 const lineContainer = ref<HTMLDivElement | null>(null)
 
-let barChart: echarts.ECharts | null = null
+let trendChart: echarts.ECharts | null = null
 let lineChart: echarts.ECharts | null = null
 
 // ================================================================
-// 图表 1：AI 控制前后指标对比（分组柱状图）
+// 图表 1：实时指标趋势（均等待 + 均速双线图）
 // ================================================================
-function buildBarOption(m: CompareMetrics): EChartsOption {
-  const items = [m.averageWaitTime, m.averageSpeed, m.queueLength, m.emergencyPassTime]
-  const names = items.map((it) => it.name)
-  const traditional = items.map((it) => it.traditional)
-  const ai = items.map((it) => it.ai)
+function buildTrendOption(wt: CongestionTrendPoint[], st: CongestionTrendPoint[], baselineWait: number, baselineSpeed: number): EChartsOption {
+  const times = wt.length > 0 ? wt.map((p) => p.time) : ['--']
+  const waitVals = wt.length > 0 ? wt.map((p) => p.value) : [0]
+  const speedVals = st.length > 0 ? st.map((p) => p.value) : [0]
 
   return {
     backgroundColor: 'transparent',
@@ -75,55 +59,35 @@ function buildBarOption(m: CompareMetrics): EChartsOption {
     tooltip: {
       ...chartTooltip(),
       trigger: 'axis',
-      formatter: (params: unknown) => {
-        const arr = params as Array<{ seriesName: string; name: string; value: number; color: string }>
-        let html = `<div style="font-weight:700;margin-bottom:6px">${arr[0]?.name ?? ''}</div>`
-        for (const p of arr) {
-          const it = items.find((x) => x.name === p.name)
-          html += `<div style="color:${p.color};margin-top:3px">${p.seriesName}: ${p.value} ${it?.unit ?? ''}</div>`
-        }
-        return html
-      },
     },
-    legend: chartLegend(['传统控制', 'AI 自适应'], {
-      textStyle: { color: CHART_COLORS.text, fontSize: 13, fontWeight: 700 },
-      itemWidth: 18,
-      itemHeight: 6,
-      itemGap: 20,
-    }),
-    grid: chartGrid({ top: 42, bottom: 34, left: 16, right: 24 }),
-    xAxis: chartXAxis(names, {
-      axisLabel: { color: CHART_COLORS.text, fontSize: 13, fontWeight: 700, interval: 0 },
-    }),
-    yAxis: chartYAxis({
-      axisLabel: { color: CHART_COLORS.muted, fontSize: 12 },
-    }),
+    legend: {
+      ...chartLegend(['均等待(s)', '均速(km/h)']),
+      top: 0, left: 'center', right: 'auto',
+      textStyle: { color: CHART_COLORS.text, fontSize: 10 },
+      itemWidth: 14, itemHeight: 3, itemGap: 12,
+    },
+    grid: chartGrid({ top: 30, bottom: 36, left: 20, right: 28 }),
+    xAxis: {
+      ...chartXAxis(times),
+      axisLabel: { color: CHART_COLORS.muted, fontSize: 10, interval: Math.max(0, Math.floor(times.length / 5) - 1) },
+      boundaryGap: false,
+    },
+    yAxis: [
+      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.cyan, fontSize: 10 }, name: '秒', nameTextStyle: { color: CHART_COLORS.cyan, fontSize: 10 },
+        markLine: baselineWait > 0 ? { silent: true, symbol: 'none', lineStyle: { color: '#ff4d6d', type: 'dashed' as const, width: 1 }, label: { formatter: `基线 ${baselineWait}s`, fontSize: 10, color: '#ff4d6d' }, data: [{ yAxis: baselineWait }] } : undefined,
+      },
+      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.amber, fontSize: 10 }, name: 'km/h', nameTextStyle: { color: CHART_COLORS.amber, fontSize: 10 },
+        markLine: baselineSpeed > 0 ? { silent: true, symbol: 'none', lineStyle: { color: '#ff4d6d', type: 'dashed' as const, width: 1 }, label: { formatter: `基线 ${baselineSpeed}km/h`, fontSize: 10, color: '#ff4d6d' }, data: [{ yAxis: baselineSpeed }] } : undefined,
+      },
+    ],
     series: [
       {
-        name: '传统控制',
-        type: 'bar',
-        data: traditional,
-        barWidth: 18,
-        barGap: '30%',
-        itemStyle: {
-          color: traditionalBarGradient(),
-          borderRadius: [2, 2, 0, 0],
-        },
-        animationDuration: 600,
+        name: '均等待(s)', type: 'line', data: waitVals, smooth: true, symbol: 'none',
+        lineStyle: { color: CHART_COLORS.cyan, width: 2 }, itemStyle: { color: CHART_COLORS.cyan },
       },
       {
-        name: 'AI 自适应',
-        type: 'bar',
-        data: ai,
-        barWidth: 18,
-        itemStyle: {
-          color: aiBarGradient(),
-          borderRadius: [2, 2, 0, 0],
-        },
-        emphasis: {
-          itemStyle: { shadowBlur: 14, shadowColor: 'rgba(0, 212, 255, 0.6)' },
-        },
-        animationDuration: 700,
+        name: '均速(km/h)', type: 'line', data: speedVals, smooth: true, symbol: 'none', yAxisIndex: 1,
+        lineStyle: { color: CHART_COLORS.amber, width: 2 }, itemStyle: { color: CHART_COLORS.amber },
       },
     ],
   }
@@ -148,20 +112,20 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
         return `<div style="font-weight:700;margin-bottom:4px">${arr[0].name}</div><div style="color:${CHART_COLORS.cyan}">拥堵指数: ${arr[0].value}</div>`
       },
     },
-    grid: chartGrid({ top: 30, bottom: 34, left: 16, right: 24 }),
+    grid: chartGrid({ top: 30, bottom: 36, left: 20, right: 28 }),
     xAxis: {
       ...chartXAxis(times),
       axisLabel: {
         color: CHART_COLORS.muted,
-        fontSize: 12,
-        fontWeight: 700,
-        interval: Math.max(0, Math.floor(times.length / 8) - 1),
+        fontSize: 10,
+        fontWeight: 600,
+        interval: Math.max(0, Math.floor(times.length / 5) - 1),
       },
       boundaryGap: false,
     },
     yAxis: {
       ...chartYAxis(),
-      axisLabel: { color: CHART_COLORS.muted, fontSize: 12 },
+      axisLabel: { color: CHART_COLORS.muted, fontSize: 10 },
       min: 0,
       max: 100,
     },
@@ -202,10 +166,11 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
 // ================================================================
 // 初始化
 // ================================================================
-function initBarChart(): void {
-  if (!barContainer.value) return
-  barChart = echarts.init(barContainer.value)
-  barChart.setOption(buildBarOption(compareMetrics.value))
+function initTrendChart(): void {
+  if (!trendContainer.value) return
+  trendChart = echarts.init(trendContainer.value)
+  const m = compareMetrics.value
+  trendChart.setOption(buildTrendOption(waitTrend.value, speedTrend.value, m.averageWaitTime.traditional, m.averageSpeed.traditional))
 }
 
 function initLineChart(): void {
@@ -215,38 +180,30 @@ function initLineChart(): void {
 }
 
 function onResize(): void {
-  barChart?.resize()
+  trendChart?.resize()
   lineChart?.resize()
 }
 
 onMounted(() => {
-  initBarChart()
+  initTrendChart()
   initLineChart()
   window.addEventListener('resize', onResize)
 })
 
-// ---- 响应 store 数据变化 ----
-watch(
-  compareMetrics,
-  (metrics) => {
-    barChart?.setOption(buildBarOption(metrics), { notMerge: true })
-  },
-  { deep: true },
-)
+watch([waitTrend, speedTrend], () => {
+  const m = compareMetrics.value
+  trendChart?.setOption(buildTrendOption(waitTrend.value, speedTrend.value, m.averageWaitTime.traditional, m.averageSpeed.traditional), { notMerge: true })
+})
 
-watch(
-  congestionTrend,
-  (trend) => {
-    lineChart?.setOption(buildLineOption(trend), { notMerge: true })
-  },
-  { deep: true },
-)
+watch(congestionTrend, (trend) => {
+  lineChart?.setOption(buildLineOption(trend), { notMerge: true })
+}, { deep: true })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
-  barChart?.dispose()
+  trendChart?.dispose()
   lineChart?.dispose()
-  barChart = null
+  trendChart = null
   lineChart = null
 })
 </script>
@@ -271,8 +228,8 @@ onBeforeUnmount(() => {
       <div class="cc-charts">
         <!-- 左：对比柱状图 -->
         <div class="cc-chart-panel">
-          <div class="cc-chart-panel__label">AI 控制前后指标对比</div>
-          <div ref="barContainer" class="cc-echart-box" />
+          <div class="cc-chart-panel__label">实时指标趋势</div>
+          <div ref="trendContainer" class="cc-echart-box" />
         </div>
 
         <!-- 右：拥堵实时折线图 -->
@@ -310,7 +267,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .cc-summary-item {
@@ -318,35 +275,31 @@ onBeforeUnmount(() => {
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 4px;
+  padding: 4px 8px;
   border: 1px solid rgba(0, 212, 255, 0.14);
   background: rgba(2, 18, 33, 0.22);
   color: #8da8c5;
-  font-size: 13px;
+  font-size: 11px;
   clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
 }
 
-.cc-summary-item span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.cc-summary-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 1; }
 
 .cc-summary-item b {
   color: #7af7ff;
   font-family: 'Rajdhani', 'DINPro', monospace;
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 800;
+  flex-shrink: 0;
 }
 
-/* 两个图表左右排列 */
 .cc-charts {
   flex: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 10px;
 }
 
 .cc-chart-panel {

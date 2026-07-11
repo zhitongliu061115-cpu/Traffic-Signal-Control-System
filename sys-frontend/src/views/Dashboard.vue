@@ -19,56 +19,15 @@ import MapRoadNetwork from '@/components/MapRoadNetwork.vue'
 import SignalControlPanel from '@/components/SignalControlPanel.vue'
 import EmergencyPanel from '@/components/EmergencyPanel.vue'
 import CompareCharts from '@/components/CompareCharts.vue'
+import RoadNetwork from '@/components/RoadNetwork.vue'
 import AiAssistant from '@/components/AiAssistant.vue'
 
 const store = useTrafficStore()
-const { status: wsStatus, lastFrameData, connect: wsConnect, disconnect: wsDisconnect } = useSimulationWebSocket()
+const { status: wsStatus, lastFrameData, lastControlDecision, connect: wsConnect, disconnect: wsDisconnect } = useSimulationWebSocket()
 
 defineOptions({
   name: 'DashboardView',
 })
-
-// ---- 随机告警素材 ----
-const randomAlertPool = [
-  {
-    type: 'abnormal_congestion' as const,
-    level: 'warning' as const,
-    titles: [
-      '长江路-北京路 车流量超阈值',
-      '建设路东段 排队长度异常增长',
-      '人民路南段 拥堵指数突增',
-    ],
-    locations: ['东城区', '西城区', '中心城区'],
-    intersectionIds: ['A03', 'A06', 'A05'],
-  },
-  {
-    type: 'device_offline' as const,
-    level: 'error' as const,
-    titles: ['解放大道信号机通信超时', '建设路检测器数据延迟'],
-    locations: ['南区', '中区'],
-    intersectionIds: ['A09', 'A06'],
-  },
-  {
-    type: 'control_failure' as const,
-    level: 'warning' as const,
-    titles: ['AI 配时方案 B 收敛失败', '绿波同步异常回退'],
-    locations: ['中山大道', '长江路'],
-    intersectionIds: ['A02', 'A03'],
-  },
-]
-
-/** 每 5s 有概率生成随机告警，增加大屏动态感 */
-function maybeGenerateRandomAlert(): void {
-  // ~15% 概率触发（即平均每 30s 一条）
-  if (Math.random() > 0.15) return
-
-  const pool = randomAlertPool[Math.floor(Math.random() * randomAlertPool.length)]!
-  const title = pool.titles[Math.floor(Math.random() * pool.titles.length)]!
-  const location = pool.locations[Math.floor(Math.random() * pool.locations.length)]!
-  const intersectionId = pool.intersectionIds[Math.floor(Math.random() * pool.intersectionIds.length)]
-
-  store.generateMockAlert(pool.type, pool.level, title, location, intersectionId)
-}
 
 // ---- 定时器句柄 ----
 let vehicleTimer: ReturnType<typeof setInterval> | null = null
@@ -128,7 +87,6 @@ onMounted(() => {
     }, 2000)
     trendTimer = setInterval(() => {
       store.addCongestionTrendPoint()
-      maybeGenerateRandomAlert()
     }, 5000)
     console.log('[Dashboard] mock 定时器已启动')
   }
@@ -156,12 +114,13 @@ onMounted(() => {
   )
 
   // ---- 策略切换：监听 simulationSid 变化自动重连 WebSocket ----
+  let sidReadyForReconnect = false
   watch(
     () => store.simulationSid,
     (newSid, oldSid) => {
-      // 跳过首次赋值（页面初始化走 initSimulation）
-      if (oldSid === undefined || oldSid === null) return
-      if (!newSid) return
+      if (oldSid === undefined) return // 首次 ref 初始化，跳过
+      if (!sidReadyForReconnect) { sidReadyForReconnect = true; return } // 页面初始 initSimulation 跳过
+      if (!newSid) return // resetSimulationState 置空，跳过
       // recreate 触发的 sid 变化 → 断开旧连接 + 接新连接
       wsDisconnect()
       wsConnect(newSid)
@@ -182,6 +141,11 @@ watch(
   },
   { deep: true },
 )
+
+// ---- AI 控制决策 → Store ----
+watch(lastControlDecision, (decision) => {
+  if (decision) store.handleControlDecision(decision)
+})
 
 onUnmounted(() => {
   if (vehicleTimer) clearInterval(vehicleTimer)
@@ -228,8 +192,9 @@ onUnmounted(() => {
       </div>
     </main>
 
-    <!-- ============ 底部：控制效果对比 (27%) ============ -->
+    <!-- ============ 底部：AI 对比 + 3D 路网并排 (36%) ============ -->
     <footer class="ts-footer">
+      <RoadNetwork compact />
       <CompareCharts />
     </footer>
 
@@ -254,19 +219,25 @@ onUnmounted(() => {
   max-height: 68px;
 }
 
-/* 主体三栏区：约 70% */
+/* 主体三栏区：约 59% */
 .ts-body {
-  flex: 70 1 0;
+  flex: 59 1 0;
   display: grid;
   grid-template-columns: minmax(0, 22fr) minmax(0, 56fr) minmax(0, 22fr);
   gap: 12px;
   min-height: 0;
 }
 
-/* 底部区：约 30%，对比图表横向占满 */
+/* 底部：AI 对比图 + 3D 路网并排，各占一半 */
 .ts-footer {
-  flex: 30 1 0;
-  display: block;
+  flex: 36 1 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-height: 0;
+}
+
+.ts-footer > :deep(*) {
   min-height: 0;
 }
 
