@@ -32,6 +32,113 @@
 }
 ```
 
+## 认证接口
+
+当前登录、注册和邮箱验证码接口使用 `/api/auth/**` 前缀。前端通过 `sys-frontend/src/api/auth.ts` 统一调用，后端由 `com.traffic.auth.AuthController` 承载。
+
+### 发送邮箱验证码
+
+```http
+POST /api/auth/send-captcha
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "email": "operator@example.com"
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "data": null
+}
+```
+
+验证码发送依赖 `spring.mail.*` 和 `auth.mail.*` 配置。验证码默认 5 分钟有效，默认 60 秒内不能重复发送。
+
+### 用户名密码登录
+
+```http
+POST /api/auth/login
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "username": "admin",
+  "email": "admin@traffic.local",
+  "password": "123456"
+}
+```
+
+当前后端按 `username` 查询账号并校验密码，`email` 字段保留给前端表单和后续兼容。
+
+### 邮箱验证码登录
+
+```http
+POST /api/auth/captcha-login
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "email": "operator@example.com",
+  "captcha": "123456"
+}
+```
+
+### 注册
+
+```http
+POST /api/auth/register
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "username": "operator",
+  "email": "operator@example.com",
+  "password": "secret",
+  "inviteCode": "123456"
+}
+```
+
+登录、验证码登录和注册成功时返回：
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "data": {
+    "token": "uuid-token",
+    "user": {
+      "id": "user-uuid",
+      "username": "admin",
+      "email": "admin@traffic.local"
+    }
+  }
+}
+```
+
+注意：
+
+- 当前 `token` 是后端生成的临时 UUID 登录态标识，尚未接入 JWT、服务端会话校验或接口鉴权拦截器。
+- 默认初始账号由 `auth.initial-account.*` 配置创建，默认用户名 `admin`，默认密码 `123456`。生产或公网演示前必须修改默认密码和邀请码。
+- 密码以 PBKDF2-SHA256 哈希写入 `auth_user.password_hash`，不得在日志、文档或接口返回中暴露明文密码。
+
 ## 前端调用接口
 
 ### 获取静态路网

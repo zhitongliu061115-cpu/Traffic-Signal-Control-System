@@ -30,6 +30,34 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  mail:
+    host: ${QQ_MAIL_HOST:smtp.qq.com}
+    port: ${QQ_MAIL_PORT:465}
+    username: ${QQ_MAIL_USERNAME:}
+    password: ${QQ_MAIL_AUTH_CODE:}
+    protocol: smtp
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          socketFactory:
+            class: javax.net.ssl.SSLSocketFactory
+            fallback: false
+
+auth:
+  mail:
+    from: ${QQ_MAIL_FROM:${QQ_MAIL_USERNAME:}}
+    sender-name: ${QQ_MAIL_SENDER_NAME:信号灯配时控制系统}
+  captcha:
+    ttl-minutes: ${AUTH_CAPTCHA_TTL_MINUTES:5}
+    resend-interval-seconds: ${AUTH_CAPTCHA_RESEND_INTERVAL_SECONDS:60}
+  invite-code: ${AUTH_INVITE_CODE:123456}
+  initial-account:
+    username: ${AUTH_INITIAL_USERNAME:admin}
+    password: ${AUTH_INITIAL_PASSWORD:123456}
+    email: ${AUTH_INITIAL_EMAIL:admin@traffic.local}
 
 cityflow:
   base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9000}
@@ -95,4 +123,4 @@ spring:
       ddl-auto: none
     open-in-view: false
   flyway:
-    enabled: false
+    enabled: ${TRAFFIC_DB_FLYWAY_ENABLED:true}
