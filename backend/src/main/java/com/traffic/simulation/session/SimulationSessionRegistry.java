@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Component
@@ -14,7 +15,17 @@ public class SimulationSessionRegistry {
     private final Map<String, SimulationRuntimeSession> sessions = new ConcurrentHashMap<>();
 
     public SimulationRuntimeSession register(String sid, String sceneId, String controllerType) {
-        SimulationRuntimeSession session = new SimulationRuntimeSession(sid, sceneId, controllerType, SimulationSessionState.CREATED);
+        return register(sid, sceneId, controllerType, UUID.randomUUID());
+    }
+
+    public SimulationRuntimeSession register(String sid, String sceneId, String controllerType, UUID telemetryRunId) {
+        SimulationRuntimeSession session = new SimulationRuntimeSession(
+                sid,
+                sceneId,
+                controllerType,
+                telemetryRunId,
+                SimulationSessionState.CREATED
+        );
         sessions.put(sid, session);
         return session;
     }

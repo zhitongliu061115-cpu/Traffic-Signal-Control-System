@@ -1,18 +1,29 @@
 package com.traffic.simulation.session;
 
+import java.util.UUID;
+
 public class SimulationRuntimeSession {
 
     private final String sid;
     private final String sceneId;
     private final String controllerType;
+    private final UUID telemetryRunId;
     private long sequence;
     private double simTime;
+    private long lastTelemetrySampleAt;
     private SimulationSessionState state;
 
-    public SimulationRuntimeSession(String sid, String sceneId, String controllerType, SimulationSessionState state) {
+    public SimulationRuntimeSession(
+            String sid,
+            String sceneId,
+            String controllerType,
+            UUID telemetryRunId,
+            SimulationSessionState state
+    ) {
         this.sid = sid;
         this.sceneId = sceneId;
         this.controllerType = controllerType;
+        this.telemetryRunId = telemetryRunId;
         this.state = state;
     }
 
@@ -26,6 +37,10 @@ public class SimulationRuntimeSession {
 
     public String getControllerType() {
         return controllerType;
+    }
+
+    public UUID getTelemetryRunId() {
+        return telemetryRunId;
     }
 
     public long nextSequence() {
@@ -46,5 +61,13 @@ public class SimulationRuntimeSession {
 
     public void setState(SimulationSessionState state) {
         this.state = state;
+    }
+
+    public synchronized boolean claimTelemetrySample(long now, long intervalMs, boolean force) {
+        if (!force && now - lastTelemetrySampleAt < intervalMs) {
+            return false;
+        }
+        lastTelemetrySampleAt = now;
+        return true;
     }
 }

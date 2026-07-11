@@ -111,6 +111,7 @@ Python CityFlow 服务访问边界。
 - `SimulationSessionRegistry`：暂存运行中会话。
 - `SimulationFrameScheduler`：定时从 Python 拉取 frame。
 - `SimulationWebSocketHandler`：向前端推送 WebSocket 消息。
+- `SimulationTelemetryService`：按配置间隔把聚合指标、道路和路口采样写入分析遥测表。
 - `SimFrameData`、`WsMessage` 等实时帧 DTO。
 
 规则：`simulation` 只负责仿真帧流转，不直接写具体控制策略。
@@ -130,7 +131,7 @@ Python CityFlow 服务访问边界。
 
 ### `metrics`
 
-指标统计和历史快照模块。
+指标统计和历史快照模块。当前数据分析页先读取 `dashboard_*` 未优化历史基线，再轮询 `simulation_*_sample` 的持久化采样；仿真结束后保留最近完成会话，不切回历史界面。
 
 后续负责：
 

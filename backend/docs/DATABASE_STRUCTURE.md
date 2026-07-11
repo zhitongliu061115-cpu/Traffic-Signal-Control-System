@@ -27,7 +27,7 @@
 | --- | --- |
 | 路网与地图绑定 | `scene`、`intersection`、`road`、`lane`、`road_link`、`lane_link` |
 | 信号相位与安全约束 | `signal_phase`、`signal_phase_road_link`、`signal_timing_plan`、`signal_timing_plan_phase`、`safety_constraint`、`phase_transition_rule` |
-| 仿真会话与状态快照 | `simulation_session`、`simulation_frame`、`road_state_snapshot`、`lane_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot` |
+| 仿真会话与状态快照 | `simulation_session`、`simulation_frame`、`road_state_snapshot`、`lane_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot`、`simulation_run`、`simulation_metric_sample`、`simulation_road_sample`、`simulation_intersection_sample` |
 | 策略调度与模型审计 | `control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`max_pressure_score`、`strategy_fallback_event`、`safety_constraint_event` |
 | 区域、应急、Agent 与运维 | `control_region`、`control_region_intersection`、`emergency_event`、`emergency_route_node`、`emergency_signal_event`、`agent_conversation`、`agent_message`、`agent_tool_call`、`operation_audit_log`、`alert_event`、`service_health_snapshot` |
 | 当前保留的兼容/演示表 | `intersections`、`dashboard_*`、`analytics_*` |
@@ -90,6 +90,12 @@ erDiagram
 | `lane_state_snapshot` | `id`; `(frame_id, lane_id)` 唯一 | `frame_id`、`lane_id`、`queue_len`、`vehicle_count`、`avg_wait_time`、`cell_1`、`cell_2`、`cell_3`、`cell_4` |
 | `intersection_state_snapshot` | `id`; `(frame_id, intersection_id)` 唯一 | `frame_id`、`intersection_id`、`queue_count`、`avg_wait`、`level`、`current_phase_id` |
 | `vehicle_state_snapshot` | `id`; `(frame_id, vehicle_id)` 唯一 | `frame_id`、`vehicle_id`、`road_id`、`lane_id`、`x`、`y`、`angle`、`speed`、`vehicle_type` |
+| `simulation_run` | `id`; `sid` 唯一 | `sid`、`scene_id`、`controller_type`、`speed`、`status`、`created_at`、`started_at`、`ended_at` |
+| `simulation_metric_sample` | `id`; `(run_id, seq)` 唯一 | `run_id`、`seq`、`sim_time`、`recorded_at`、`vehicle_count`、`active_vehicle_count`、`scheduled_departure_count`、`queue_count`、`avg_speed`、`avg_wait`、`throughput` |
+| `simulation_road_sample` | `(sample_id, road_id)` 复合主键 | `sample_id`、`road_id`、`vehicle_count`、`queue_count`、`avg_speed`、`level` |
+| `simulation_intersection_sample` | `(sample_id, intersection_id)` 复合主键 | `sample_id`、`intersection_id`、`vehicle_count`、`queue_count`、`avg_wait`、`level`、`phase_code` |
+
+`simulation_run` 和三张 `simulation_*_sample` 是面向数据分析的低频遥测投影，默认每 1000 ms 采样一次。它保留 CityFlow 原始字符串 ID，避免分析查询依赖标准路网映射是否已完成；`simulation_session` / `simulation_frame` 仍是控制审计和运行时查询的规范化主链路。
 
 ## 策略调度与模型审计
 
@@ -144,7 +150,8 @@ erDiagram
 | --- | --- |
 | `IntersectionRepository` | `intersections` |
 | `DashboardRepository` | `dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` |
-| `DataAnalysisRepository` | `analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` |
+| `DataAnalysisRepository` | 历史基线读取 `dashboard_*` / `analytics_*`；实时分析读取 `simulation_run`、`simulation_metric_sample`、`simulation_road_sample`、`simulation_intersection_sample` |
+| `SimulationTelemetryRepository` | 写入 `simulation_run`、`simulation_metric_sample`、`simulation_road_sample`、`simulation_intersection_sample` |
 | `DatabaseStatusService` | 标准核心表、`intersections`、`dashboard_intersection`、`analytics_overview` |
 | `RuntimePersistenceService` | `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link`、`simulation_session`、`simulation_frame`、`road_state_snapshot`、`intersection_movement_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event` |
 | `RuntimeQueryService` | 只读查询 `simulation_session`、`simulation_frame`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`road_state_snapshot`、`intersection_movement_state_snapshot`、`intersection_state_snapshot`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`service_health_snapshot` |

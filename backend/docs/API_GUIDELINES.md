@@ -131,7 +131,19 @@ GET /api/v1/database/status
 - 验证 Spring Boot 是否能连接 PostgreSQL。
 - 返回核心业务表是否存在以及行数统计。
 
-### 3.5 运行时数据库查询接口
+### 3.5 数据分析历史基线与持久化遥测
+
+```http
+GET /api/v1/data-analysis/bootstrap
+GET /api/v1/data-analysis/bootstrap?baseline=true
+```
+
+- 默认请求返回数据库中最近的仿真遥测。优先选择最近 60 秒仍有新采样的运行中或已暂停会话；没有活动会话时继续返回最近完成会话，`liveSid` 为 `null`，页面不会退回另一套演示数据。
+- `baseline=true` 始终返回 `dashboard_*` 中的未优化历史基线，供页面首次展示和后续策略效果计算使用。
+- 响应通过 `dataSource` 标识 `dashboard` 或 `simulation`，并返回 `activeStrategy`、`liveSid`、策略汇总指标以及排队、等待、速度、通行量、路口和道路采样。
+- 数据分析页每 2 秒读取默认接口；页面只从已经写入数据库的采样更新，不直接使用 WebSocket 帧覆盖分析结果。
+
+### 3.6 运行时数据库查询接口
 
 这些接口只查询 Spring Boot 已落库的真实业务数据，不直接推进 CityFlow，也不下发控制动作。前端、运维页面和后续 MCP 工具应优先复用这一层，避免 Agent 直接拼 SQL。
 

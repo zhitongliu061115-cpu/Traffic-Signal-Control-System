@@ -38,6 +38,10 @@ cityflow:
   default-scene-id: jinan_3x4
   frame-poll-interval-ms: 100
 
+traffic:
+  telemetry:
+    sample-interval-ms: ${TRAFFIC_TELEMETRY_SAMPLE_INTERVAL_MS:1000}
+
 traffic-r:
   enabled: ${TRAFFIC_R_ENABLED:true}
   base-url: ${TRAFFIC_R_BASE_URL:http://127.0.0.1:16008}

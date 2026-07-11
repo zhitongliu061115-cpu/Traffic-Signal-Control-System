@@ -16,4 +16,8 @@ public class DataAnalysisService {
     public DataAnalysisBootstrapResponse loadBootstrapData() {
         return dataAnalysisRepository.loadBootstrapData();
     }
+
+    public DataAnalysisBootstrapResponse loadBaselineData() {
+        return dataAnalysisRepository.loadBaselineData();
+    }
 }

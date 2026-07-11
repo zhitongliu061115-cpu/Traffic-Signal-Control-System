@@ -337,6 +337,16 @@ export interface SimIntersectionState {
   level: string
 }
 
+export interface SimMovementState {
+  queue_len: number
+  avg_wait_time: number
+  cells: number[]
+}
+
+export interface SimIntersectionLaneState {
+  lanes: Record<string, SimMovementState>
+}
+
 /** 单帧信号状态（后端 SignalStateDto） */
 export interface SimSignalState {
   intersectionId: string
@@ -347,6 +357,8 @@ export interface SimSignalState {
 /** 单帧聚合指标（后端 SimulationMetricsDto） */
 export interface SimMetrics {
   vehicleCount: number
+  activeVehicleCount?: number | null
+  scheduledDepartureCount?: number | null
   queueCount: number
   avgSpeed: number
   avgWait: number
@@ -359,6 +371,7 @@ export interface SimFrameData {
   status?: 'running' | 'finished'
   vehicles: SimVehicleState[]
   roads: SimRoadState[]
+  laneStates?: Record<string, SimIntersectionLaneState>
   intersections: SimIntersectionState[]
   signals: SimSignalState[]
   metrics: SimMetrics

@@ -5,6 +5,7 @@ import com.traffic.analysis.service.DataAnalysisService;
 import com.traffic.common.response.ApiResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -18,7 +19,11 @@ public class DataAnalysisController {
     }
 
     @GetMapping("/bootstrap")
-    public ApiResponse<DataAnalysisBootstrapResponse> bootstrap() {
-        return ApiResponse.ok(dataAnalysisService.loadBootstrapData());
+    public ApiResponse<DataAnalysisBootstrapResponse> bootstrap(
+            @RequestParam(defaultValue = "false") boolean baseline
+    ) {
+        return ApiResponse.ok(baseline
+                ? dataAnalysisService.loadBaselineData()
+                : dataAnalysisService.loadBootstrapData());
     }
 }

@@ -1022,6 +1022,26 @@ export interface AlertCreatedData {
 
 ---
 
+## 17.1 数据分析快照
+
+```http
+GET /api/v1/data-analysis/bootstrap
+GET /api/v1/data-analysis/bootstrap?baseline=true
+```
+
+`baseline=true` 固定返回未优化历史基线。默认请求返回最近活动或最近完成会话的持久化遥测，并新增以下顶层字段：
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `dataSource` | `dashboard \| simulation` | 当前响应来自历史基线还是仿真遥测。 |
+| `activeStrategy` | `string` | 遥测对应控制策略；历史基线为 `未运行`。 |
+| `liveSid` | `string \| null` | 活动会话 sid；完成会话返回 `null`。 |
+| `strategyMetrics` | `StrategyMetric[]` | 按策略聚合的排队、等待、速度和通行量指标。 |
+
+数据分析页必须先读取基线，再按固定周期读取默认接口。分析图表只使用已经持久化的遥测；路网大屏的车辆和真实灯色仍只使用 `sim.frame`。
+
+---
+
 ## 18. 前端接入流程
 
 ```text
@@ -1036,7 +1056,7 @@ export interface AlertCreatedData {
    - roads 更新道路颜色；
    - intersections 更新路口状态；
    - signals 高亮信号灯放行方向；
-   - metrics 更新指标卡。
+   - metrics 更新路网大屏指标卡；数据分析页指标通过持久化快照接口更新。
 8. 如果启用 Traffic-R、绿波、告警：
    - 订阅对应 topic；
    - 增加对应 type 的处理器；

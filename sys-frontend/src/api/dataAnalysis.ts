@@ -79,7 +79,7 @@ interface MonitoringRecord {
   building_type: string
   chilled_water_return_temp: number
   chilled_water_supply_temp: number
-  control_strategy: 'FixedTime' | 'MaxPressure' | 'RL' | 'Traffic-R1' | '应急绿波'
+  control_strategy: string
   device_id: string
   device_status: 'maintenance' | 'normal' | 'offline' | 'warning'
   electricity_kwh: number
@@ -99,11 +99,21 @@ interface DashboardToast {
   tone: 'cyan' | 'emerald' | 'rose'
 }
 
+interface StrategyMetric {
+  label: string
+  unit: string
+  lowerBetter: boolean
+  values: Record<string, number>
+}
+
 export interface DataAnalysisBootstrapData {
   sampleCount: number
   sampleRate: number
   healthScore: number
   sampledPointId: string
+  dataSource: 'dashboard' | 'simulation'
+  activeStrategy: string
+  liveSid: string | null
   metrics: MonitoringMetric[]
   statusDistribution: StatusBucket[]
   dailySeries: DailyPoint[]
@@ -113,11 +123,15 @@ export interface DataAnalysisBootstrapData {
   composition: CompositionItem[]
   scatterPoints: ScatterPoint[]
   records: MonitoringRecord[]
+  strategyMetrics: StrategyMetric[]
   toasts: DashboardToast[]
 }
 
-export async function fetchDataAnalysisBootstrap(): Promise<DataAnalysisBootstrapData> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/data-analysis/bootstrap`)
+export async function fetchDataAnalysisBootstrap(
+  options: { baseline?: boolean } = {},
+): Promise<DataAnalysisBootstrapData> {
+  const query = options.baseline ? '?baseline=true' : ''
+  const response = await fetch(`${API_BASE_URL}/api/v1/data-analysis/bootstrap${query}`)
   if (!response.ok) {
     throw new Error(`data analysis bootstrap failed: ${response.status}`)
   }
@@ -127,5 +141,8 @@ export async function fetchDataAnalysisBootstrap(): Promise<DataAnalysisBootstra
     throw new Error(body.message || 'data analysis bootstrap failed')
   }
 
-  return body.data
+  return {
+    ...body.data,
+    liveSid: body.data.liveSid ?? null,
+  }
 }

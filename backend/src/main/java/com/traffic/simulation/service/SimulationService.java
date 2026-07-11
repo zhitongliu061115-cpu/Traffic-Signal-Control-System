@@ -13,6 +13,7 @@ import com.traffic.simulation.dto.WsMessage;
 import com.traffic.simulation.session.SimulationRuntimeSession;
 import com.traffic.simulation.session.SimulationSessionRegistry;
 import com.traffic.simulation.session.SimulationSessionState;
+import com.traffic.simulation.telemetry.SimulationTelemetryService;
 import com.traffic.simulation.websocket.SimulationWebSocketHandler;
 import com.traffic.strategy.TrafficSignalControllerType;
 import com.traffic.strategy.dto.AppliedControlResult;
@@ -20,6 +21,7 @@ import com.traffic.strategy.service.TrafficSignalControllerRegistry;
 import com.traffic.strategy.service.StrategyDispatchService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -38,6 +40,7 @@ public class SimulationService {
     private final StrategyDispatchService strategyDispatchService;
     private final SimulationFrameTimingLogger frameTimingLogger;
     private final RuntimePersistenceService runtimePersistenceService;
+    private final SimulationTelemetryService telemetryService;
 
     public SimulationService(
             CityFlowClient cityFlowClient,
@@ -46,7 +49,8 @@ public class SimulationService {
             TrafficSignalControllerRegistry controllerRegistry,
             StrategyDispatchService strategyDispatchService,
             SimulationFrameTimingLogger frameTimingLogger,
-            RuntimePersistenceService runtimePersistenceService
+            RuntimePersistenceService runtimePersistenceService,
+            SimulationTelemetryService telemetryService
     ) {
         this.cityFlowClient = cityFlowClient;
         this.sessionRegistry = sessionRegistry;
@@ -55,6 +59,7 @@ public class SimulationService {
         this.strategyDispatchService = strategyDispatchService;
         this.frameTimingLogger = frameTimingLogger;
         this.runtimePersistenceService = runtimePersistenceService;
+        this.telemetryService = telemetryService;
     }
 
     public CreateSimulationResponse createSimulation(CreateSimulationRequest request) {
@@ -75,7 +80,13 @@ public class SimulationService {
                 request.warmupSeconds(),
                 cityFlowResponse.status()
         );
-        sessionRegistry.register(cityFlowResponse.sid(), cityFlowResponse.sceneId(), controllerType);
+        var telemetryRunId = telemetryService.createRun(
+                cityFlowResponse.sid(),
+                cityFlowResponse.sceneId(),
+                controllerType,
+                request.speed()
+        );
+        sessionRegistry.register(cityFlowResponse.sid(), cityFlowResponse.sceneId(), controllerType, telemetryRunId);
         return new CreateSimulationResponse(
                 cityFlowResponse.sid(),
                 cityFlowResponse.sceneId(),
@@ -89,6 +100,7 @@ public class SimulationService {
         forwardLifecycleToCityFlow("start", sid);
         session.setState(SimulationSessionState.RUNNING);
         runtimePersistenceService.updateSessionStatus(sid, "running");
+        telemetryService.markStarted(session);
     }
 
     public void pause(String sid) {
@@ -96,6 +108,7 @@ public class SimulationService {
         forwardLifecycleToCityFlow("pause", sid);
         session.setState(SimulationSessionState.PAUSED);
         runtimePersistenceService.updateSessionStatus(sid, "paused");
+        telemetryService.markPaused(session);
     }
 
     public void stop(String sid) {
@@ -103,6 +116,7 @@ public class SimulationService {
         forwardLifecycleToCityFlow("stop", sid);
         session.setState(SimulationSessionState.FINISHED);
         runtimePersistenceService.updateSessionStatus(sid, "finished");
+        telemetryService.markFinished(session);
         releaseSessionState(sid);
     }
 
@@ -140,7 +154,17 @@ public class SimulationService {
         double previousSimTime = session.getSimTime();
         // Spring Boot owns WebSocket delivery; Python only advances CityFlow and returns frame data.
         long cityFlowStart = System.nanoTime();
-        SimFrameData frameData = cityFlowClient.nextFrame(session.getSid());
+        SimFrameData frameData;
+        try {
+            frameData = cityFlowClient.nextFrame(session.getSid());
+        } catch (HttpClientErrorException.NotFound ex) {
+            log.warn("CityFlow session disappeared; release backend session. sid={}", session.getSid());
+            session.setState(SimulationSessionState.FINISHED);
+            runtimePersistenceService.updateSessionStatus(session.getSid(), "finished");
+            telemetryService.markFinished(session);
+            releaseSessionState(session.getSid());
+            return;
+        }
         long cityFlowMs = elapsedMs(cityFlowStart);
         boolean finished = "finished".equalsIgnoreCase(frameData.status());
         long strategyStart = System.nanoTime();
@@ -173,6 +197,18 @@ public class SimulationService {
                 TimeUtils.nowRfc3339(),
                 publishFrame
         );
+        try {
+            telemetryService.recordFrame(session, seq, publishFrame, finished);
+        } catch (RuntimeException ex) {
+            log.error(
+                    "failed to persist analysis telemetry. sid={}, controllerType={}, seq={}, error={}",
+                    session.getSid(),
+                    session.getControllerType(),
+                    seq,
+                    ex.getMessage(),
+                    ex
+            );
+        }
         webSocketHandler.publish(session.getSid(), message);
         long websocketMs = elapsedMs(wsStart);
         long totalMs = elapsedMs(totalStart);
@@ -217,6 +253,7 @@ public class SimulationService {
         if (finished) {
             session.setState(SimulationSessionState.FINISHED);
             runtimePersistenceService.updateSessionStatus(session.getSid(), "finished");
+            telemetryService.markFinished(session);
             releaseSessionState(session.getSid());
             log.info("simulation finished and released. sid={}, simTime={}", session.getSid(), publishFrame.simTime());
         }

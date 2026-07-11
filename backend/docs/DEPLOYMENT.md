@@ -26,7 +26,13 @@ cityflow:
 
 traffic-r:
   base-url: http://127.0.0.1:16008
+
+traffic:
+  telemetry:
+    sample-interval-ms: ${TRAFFIC_TELEMETRY_SAMPLE_INTERVAL_MS:1000}
 ```
+
+需要使用 PostgreSQL 持久化分析遥测时，设置 `SPRING_PROFILES_ACTIVE=postgres` 以及 `TRAFFIC_DB_HOST`、`TRAFFIC_DB_PORT`、`TRAFFIC_DB_NAME`、`TRAFFIC_DB_USER`、`TRAFFIC_DB_PASSWORD`。`TRAFFIC_TELEMETRY_SAMPLE_INTERVAL_MS` 控制数据分析采样间隔，最小有效值为 100 ms，演示环境建议保留默认 1000 ms。
 
 然后通过 HTTP 调用 Python 服务：
 

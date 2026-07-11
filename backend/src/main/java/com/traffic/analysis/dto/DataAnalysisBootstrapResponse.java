@@ -7,6 +7,9 @@ public record DataAnalysisBootstrapResponse(
         int sampleRate,
         int healthScore,
         String sampledPointId,
+        String dataSource,
+        String activeStrategy,
+        String liveSid,
         List<MonitoringMetricDto> metrics,
         List<StatusBucketDto> statusDistribution,
         List<DailyPointDto> dailySeries,
@@ -16,6 +19,7 @@ public record DataAnalysisBootstrapResponse(
         List<CompositionItemDto> composition,
         List<ScatterPointDto> scatterPoints,
         List<MonitoringRecordDto> records,
+        List<StrategyMetricDto> strategyMetrics,
         List<DashboardToastDto> toasts
 ) {
     public record MonitoringMetricDto(String detail, String label, String tone, String value) {
@@ -76,6 +80,14 @@ public record DataAnalysisBootstrapResponse(
             String monitor_time,
             double occupancy_density,
             double water_m3
+    ) {
+    }
+
+    public record StrategyMetricDto(
+            String label,
+            String unit,
+            boolean lowerBetter,
+            java.util.Map<String, Double> values
     ) {
     }
 

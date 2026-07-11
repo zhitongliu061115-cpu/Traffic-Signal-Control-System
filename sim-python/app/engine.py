@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from bisect import bisect_right
 from dataclasses import dataclass, field
 import json
 import math
@@ -129,6 +130,7 @@ class RealCityFlowEngine(SimulationEngine):
             hard_end_time=scene.flow_end_time + SESSION_DRAIN_TIMEOUT_SECONDS,
             engine=engine,
             config_path=config_path,
+            departure_times=scene.departure_times,
         )
         with self.sessions_lock:
             self.sessions[sid] = session
@@ -663,8 +665,10 @@ class RealCityFlowEngine(SimulationEngine):
         queue_count = sum(road["queueCount"] for road in roads)
         avg_speed = sum(vehicle["speed"] for vehicle in vehicles) / vehicle_count if vehicle_count else 0.0
         active_vehicle_count = int(session.engine.get_vehicle_count())
+        scheduled_departure_count = bisect_right(session.departure_times, float(session.engine.get_current_time()))
         finished_vehicle_count = self._finished_vehicle_count(session.engine)
-        scheduled_departure_count = min(session.total_vehicle_count, finished_vehicle_count + active_vehicle_count)
+        if finished_vehicle_count is None:
+            finished_vehicle_count = max(0, scheduled_departure_count - active_vehicle_count)
         return {
             "vehicleCount": active_vehicle_count,
             "activeVehicleCount": active_vehicle_count,
@@ -675,11 +679,11 @@ class RealCityFlowEngine(SimulationEngine):
             "throughput": finished_vehicle_count,
         }
 
-    def _finished_vehicle_count(self, engine: object) -> int:
+    def _finished_vehicle_count(self, engine: object) -> int | None:
         try:
             return int(engine.get_finished_vehicle_count())
         except Exception:
-            return 0
+            return None
 
     def _normalize_control_phase(self, decision: JsonDict) -> int:
         phase_code = decision.get("phaseCode")
@@ -714,6 +718,7 @@ class CityFlowEngineSession:
     hard_end_time: float
     engine: object
     config_path: Path
+    departure_times: tuple[float, ...] = ()
     seq: int = 0
     current_phases: dict[str, int] = field(default_factory=dict)
     external_control_enabled: bool = False

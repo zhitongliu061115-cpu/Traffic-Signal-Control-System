@@ -4,19 +4,20 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { fetchDataAnalysisBootstrap, type DataAnalysisBootstrapData } from '@/api/dataAnalysis'
 import AiAssistant from '@/components/AiAssistant.vue'
 import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
+import { useTrafficStore } from '@/stores/traffic'
+import type { SimFrameData } from '@/types/traffic'
+import {
+  cumulativeSimulationTraffic,
+  liveVariation,
+  smoothPresentationValue,
+  strategyPresentationProfile,
+} from '@/utils/strategyPresentation'
 import bgVideo from '@/assets/images/bg/bg-video.mp4'
 
 type Tone = 'amber' | 'emerald' | 'rose' | 'sky'
 type StatusTone = 'amber' | 'emerald' | 'rose' | 'slate'
-type NumberRange = readonly [number, number]
 
-interface TrafficStatusProfile {
-  delay: NumberRange
-  load: NumberRange
-  queue: NumberRange
-  saturation: NumberRange
-  speed: NumberRange
-}
+const trafficStore = useTrafficStore()
 
 interface MonitoringMetric {
   detail: string
@@ -88,7 +89,7 @@ interface MonitoringRecord {
   building_type: string
   chilled_water_return_temp: number
   chilled_water_supply_temp: number
-  control_strategy: 'FixedTime' | 'MaxPressure' | 'RL' | 'Traffic-R1' | '应急绿波'
+  control_strategy: string
   device_id: string
   device_status: 'maintenance' | 'normal' | 'offline' | 'warning'
   electricity_kwh: number
@@ -146,6 +147,22 @@ interface DashboardToast {
   tone: 'cyan' | 'emerald' | 'rose'
 }
 
+interface StrategyMetric {
+  label: string
+  unit: string
+  lowerBetter: boolean
+  values: Record<string, number>
+}
+
+interface StrategyDisplayMetric {
+  baseline: number
+  label: string
+  lowerBetter: boolean
+  maxPressure: number
+  trafficR1: number
+  unit: string
+}
+
 const colors = {
   amber: '#ffb800',
   bgPanel: '#0a2540',
@@ -175,6 +192,7 @@ const hoveredHeatmap = ref<{ date?: string; hour?: string; mode: 'cell' | 'colum
 const sampledHeatmapKey = ref<string | null>(null)
 const scanIndex = ref(3)
 const sampledPointId = ref('intersection_3_4-27')
+const activeStrategy = ref('未运行')
 const hoveredScatterTone = ref<Tone | null>(null)
 const hoveredScatterRiskChart = ref<string | null>(null)
 const hoveredScatterTrendChart = ref<string | null>(null)
@@ -190,14 +208,22 @@ const tooltipPosition = ref({ x: 0, y: 0 })
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let syncTimer: ReturnType<typeof setInterval> | null = null
 let scanTimer: ReturnType<typeof setInterval> | null = null
-let liveMetricTimer: ReturnType<typeof setInterval> | null = null
-let hourlyTimer: ReturnType<typeof setInterval> | null = null
-let energyTimer: ReturnType<typeof setInterval> | null = null
-let healthTimer: ReturnType<typeof setInterval> | null = null
-let tableTimer: number | null = null
-let eventTimer: number | null = null
-let sampleFrameCarry = 0
+let dataRefreshTimer: ReturnType<typeof setInterval> | null = null
 let tooltipHideTimer: number | null = null
+let dataRefreshInFlight = false
+let dataErrorShown = false
+let lastHistoryFrameAt = 0
+let lastLiveThroughput: number | null = null
+const liveQueueWindow: number[] = []
+const liveWaitWindow: number[] = []
+let historicalBaselineCaptured = false
+let historicalDailyTraffic = 0
+let historicalQueue = 18
+let historicalWait = 52
+let presentedQueue = historicalQueue
+let presentedWait = historicalWait
+let historicalRecords: MonitoringRecord[] = []
+let historicalSummaries: BuildingSummary[] = []
 
 const metrics = ref<MonitoringMetric[]>([
   {
@@ -210,19 +236,19 @@ const metrics = ref<MonitoringMetric[]>([
     detail: '当前 12 个路口进口道平均排队长度，2 秒小幅浮动。',
     label: '当前平均排队长度',
     tone: 'emerald',
-    value: '8.6 辆',
+    value: '18.0 辆',
   },
   {
     detail: '当前全路网车辆平均等待时间，晚高峰随拥堵上升。',
     label: '当前平均等待时间',
     tone: 'amber',
-    value: '46 秒',
+    value: '52.0 秒',
   },
   {
     detail: '接入 AI 自适应控制策略的路口占比。',
     label: '自适应控制覆盖率',
     tone: 'sky',
-    value: '83.3%',
+    value: '0.0%',
   },
   {
     detail: '今日已触发的拥堵与应急事件告警数。',
@@ -596,6 +622,7 @@ function applyBootstrapData(data: DataAnalysisBootstrapData) {
   sampleRate.value = data.sampleRate
   healthScore.value = data.healthScore
   sampledPointId.value = data.sampledPointId
+  activeStrategy.value = data.activeStrategy
   metrics.value = data.metrics
   statusDistribution.value = data.statusDistribution
   replaceReactiveArray(dailySeries, data.dailySeries)
@@ -605,7 +632,40 @@ function applyBootstrapData(data: DataAnalysisBootstrapData) {
   composition.value = data.composition
   replaceReactiveArray(scatterPoints, data.scatterPoints)
   records.value = data.records
+  strategyMetrics.value = mapStrategyMetrics(data.strategyMetrics)
   toasts.value = data.toasts
+  if (!historicalBaselineCaptured) {
+    historicalDailyTraffic = data.dailySeries[data.dailySeries.length - 1]?.electricity
+      ?? parseMetricValue(data.metrics.find((metric) => metric.label === '今日累计通行量')?.value ?? '0').numeric
+    historicalQueue = Math.max(
+      18,
+      parseMetricValue(data.metrics.find((metric) => metric.label === '当前平均排队长度')?.value ?? '0').numeric,
+    )
+    historicalWait = Math.max(
+      52,
+      parseMetricValue(data.metrics.find((metric) => metric.label === '当前平均等待时间')?.value ?? '0').numeric,
+    )
+    presentedQueue = historicalQueue
+    presentedWait = historicalWait
+    historicalRecords = structuredClone(data.records).map((record) => ({
+      ...record,
+      control_strategy: 'fixed-time',
+    }))
+    records.value = structuredClone(historicalRecords)
+    historicalSummaries = structuredClone(data.buildingSummaries)
+    historicalBaselineCaptured = true
+    updateMetricNumber('当前平均排队长度', presentedQueue, {
+      decimals: 1,
+      detail: '未优化历史基线，仿真启动后按策略效果逐步变化。',
+      suffix: ' 辆',
+    })
+    updateMetricNumber('当前平均等待时间', presentedWait, {
+      decimals: 1,
+      detail: '未优化历史基线，仿真启动后按策略效果逐步变化。',
+      suffix: ' 秒',
+    })
+  }
+  lastLiveThroughput = 0
   syncSeconds.value = 0
 }
 
@@ -753,13 +813,14 @@ const detailHeaders = [
   { colClass: 'col-status', label: '状态', meaning: '路口运行状态' },
 ] as const
 
-const strategyMetrics = [
+const defaultStrategyMetrics: StrategyDisplayMetric[] = [
   { baseline: 18, label: '平均排队长度', maxPressure: 12.4, trafficR1: 9.7, unit: '辆', lowerBetter: true },
   { baseline: 1260, label: '累计排队车辆数', maxPressure: 880, trafficR1: 690, unit: '辆', lowerBetter: true },
   { baseline: 52, label: '平均等待时间', maxPressure: 38, trafficR1: 31, unit: '秒', lowerBetter: true },
   { baseline: 238, label: '平均旅行时间', maxPressure: 209, trafficR1: 196, unit: '秒', lowerBetter: true },
   { baseline: 7200, label: '通行量', maxPressure: 7900, trafficR1: 8350, unit: '辆/h', lowerBetter: false },
 ]
+const strategyMetrics = ref<StrategyDisplayMetric[]>(defaultStrategyMetrics.map((metric) => ({ ...metric })))
 
 const strategySeries = [
   { color: colors.slate, key: 'baseline', label: 'FixedTime' },
@@ -767,9 +828,36 @@ const strategySeries = [
   { color: colors.cyan, key: 'trafficR1', label: 'Traffic-R1' },
 ] as const
 
+function mapStrategyMetrics(source: StrategyMetric[]): StrategyDisplayMetric[] {
+  if (source.length === 0) return defaultStrategyMetrics.map((metric) => ({ ...metric }))
+  const find = (label: string, strategy: string) =>
+    source.find((metric) => metric.label === label)?.values[strategy] ?? 0
+  const value = (label: string, strategy: 'fixed-time' | 'max-pressure' | 'traffic-r') => {
+    if (strategy === 'traffic-r') return find(label, 'traffic-r') || find(label, 'rl')
+    return find(label, strategy)
+  }
+  const row = (sourceLabel: string, label: string, unit: string, lowerBetter: boolean): StrategyDisplayMetric => ({
+    baseline: value(sourceLabel, 'fixed-time'),
+    label,
+    lowerBetter,
+    maxPressure: value(sourceLabel, 'max-pressure'),
+    trafficR1: value(sourceLabel, 'traffic-r'),
+    unit,
+  })
+  return [
+    row('平均排队车辆数', '平均排队长度', '辆', true),
+    row('累计排队车辆数', '累计排队车辆数', '辆', true),
+    row('平均等待时间', '平均等待时间', '秒', true),
+    row('平均旅行时间', '平均旅行时间', '秒', true),
+    row('累计通行量', '通行量', '辆/h', false),
+  ]
+}
+
 const queueImprovement = computed(() => {
-  const queueMetric = strategyMetrics[0]!
-  return Math.round(((queueMetric.trafficR1 - queueMetric.baseline) / queueMetric.baseline) * 100)
+  const queueMetric = strategyMetrics.value[0]!
+  const candidate = queueMetric.trafficR1 || queueMetric.maxPressure
+  if (queueMetric.baseline <= 0 || candidate <= 0) return 0
+  return Math.round(((queueMetric.baseline - candidate) / queueMetric.baseline) * 100)
 })
 
 function seedMetricTrends() {
@@ -869,146 +957,6 @@ function updateMetricNumber(
 
 function pushToast(toast: Omit<DashboardToast, 'id'>) {
   toasts.value = [{ ...toast, id: Date.now() + Math.random() }, ...toasts.value].slice(0, 3)
-}
-
-function currentSlotIndex() {
-  const hour = now.value.getHours()
-  if (hour < 6) return 0
-  if (hour < 12) return 1
-  if (hour < 18) return 2
-  return 3
-}
-
-function trafficStatusProfile(status: MonitoringRecord['device_status']): TrafficStatusProfile {
-  if (status === 'warning') {
-    return {
-      delay: [58, 90],
-      load: [1.08, 1.2],
-      queue: [24, 40],
-      saturation: [95, 118],
-      speed: [8, 20],
-    }
-  }
-  if (status === 'maintenance') {
-    return {
-      delay: [32, 58],
-      load: [0.86, 1.04],
-      queue: [12, 23],
-      saturation: [72, 92],
-      speed: [18, 38],
-    }
-  }
-  return {
-    delay: [10, 30],
-    load: [0.58, 0.9],
-    queue: [2, 10],
-    saturation: [38, 72],
-    speed: [38, 60],
-  }
-}
-
-function createLiveMonitoringRecord(id: number, warning = false): MonitoringRecord {
-  const buildingPool = [
-    { id: 'intersection_1_1', name: '路口 1-1', status: 'normal' as const },
-    { id: 'intersection_1_3', name: '路口 1-3', status: 'normal' as const },
-    { id: 'intersection_2_2', name: '路口 2-2', status: 'maintenance' as const },
-    { id: 'intersection_2_4', name: '路口 2-4', status: warning ? ('warning' as const) : ('normal' as const) },
-    { id: 'intersection_3_2', name: '路口 3-2', status: warning ? ('warning' as const) : ('maintenance' as const) },
-  ]
-  const building = buildingPool[randomInt(0, buildingPool.length - 1)]!
-  const slot = hourlySeries.value[currentSlotIndex()]!
-  const status = warning ? ('warning' as const) : building.status
-  const profile = trafficStatusProfile(status)
-  const loadFactor = randomBetween(profile.load[0], profile.load[1])
-  const phasePool = ['东西直行', '南北直行', '东西左转', '南北左转'] as const
-  const strategyPool = ['FixedTime', 'MaxPressure', 'RL', 'Traffic-R1', '应急绿波'] as const
-  const queue = randomBetween(profile.queue[0], profile.queue[1])
-  const delay = randomBetween(profile.delay[0], profile.delay[1])
-  const saturation = randomBetween(profile.saturation[0], profile.saturation[1])
-  const speed = randomBetween(profile.speed[0], profile.speed[1])
-  const monitorTime = `${now.value.getFullYear()}-${String(now.value.getMonth() + 1).padStart(2, '0')}-${String(now.value.getDate()).padStart(2, '0')} ${slot.hour}`
-
-  return {
-    building_id: building.name,
-    building_type: building.id,
-    chilled_water_return_temp: Number(queue.toFixed(1)),
-    chilled_water_supply_temp: Number(saturation.toFixed(1)),
-    control_strategy: strategyPool[randomInt(0, strategyPool.length - 1)]!,
-    device_id: phasePool[randomInt(0, phasePool.length - 1)]!,
-    device_status: status,
-    electricity_kwh: Number(clamp(slot.electricity * loadFactor, 200, 1500).toFixed(0)),
-    env_humidity: Number(saturation.toFixed(0)),
-    env_temperature: Number(speed.toFixed(1)),
-    hvac_kwh: Number(queue.toFixed(1)),
-    id,
-    monitor_time: monitorTime,
-    occupancy_density: Number(clamp(saturation * 0.58, 10, 90).toFixed(1)),
-    water_m3: Number(delay.toFixed(1)),
-  }
-}
-
-function insertLiveRecord(warning = false) {
-  const newRecord = createLiveMonitoringRecord(Date.now(), warning)
-  records.value = [newRecord, ...records.value].slice(0, 12)
-  syncSeconds.value = 0
-
-  if (warning) {
-    const nextWarning = getMetricNumber('今日拥堵/事件告警') + 1
-    updateMetricNumber('今日拥堵/事件告警', nextWarning, {
-      decimals: 0,
-      detail: `${newRecord.building_id} 触发拥堵事件告警`,
-      suffix: ' 条',
-    })
-    let shifted = false
-    statusDistribution.value = statusDistribution.value.map((bucket) => {
-      if (bucket.tone === 'rose') return { ...bucket, count: Math.min(12, bucket.count + 1) }
-      if (!shifted && bucket.tone === 'emerald' && bucket.count > 0) {
-        shifted = true
-        return { ...bucket, count: bucket.count - 1 }
-      }
-      return bucket
-    })
-  }
-}
-
-function scheduleTableInsert() {
-  tableTimer = window.setTimeout(() => {
-    insertLiveRecord(false)
-    scheduleTableInsert()
-  }, randomInt(2000, 3000))
-}
-
-function scheduleRandomEvent() {
-  eventTimer = window.setTimeout(() => {
-    const eventType = randomInt(1, 4)
-    if (eventType === 1) {
-      insertLiveRecord(true)
-      pushToast({
-        body: `路口 3-2 排队长度超阈值 ${randomInt(12, 28)}%`,
-        title: '新拥堵告警',
-        tone: 'rose',
-      })
-    } else if (eventType === 2) {
-      pushToast({
-        body: `共扫描 ${statusTotal.value} 个路口`,
-        title: '系统扫描完成',
-        tone: 'emerald',
-      })
-    } else if (eventType === 3) {
-      pushToast({
-        body: `${['路口 1-2', '路口 2-3', '路口 3-2', '路口 3-4'][randomInt(0, 3)]} 完成相位巡检`,
-        title: '路口状态刷新',
-        tone: 'emerald',
-      })
-    } else {
-      pushToast({
-        body: '热力矩阵与关系图完成一次路网采集脉冲',
-        title: '采集周期完成',
-        tone: 'cyan',
-      })
-    }
-    scheduleRandomEvent()
-  }, randomInt(8000, 15000))
 }
 
 function tooltipAttrs(content: DashboardTooltipContent) {
@@ -1422,21 +1370,373 @@ function handleTooltipHide(event: PointerEvent) {
   }, 200)
 }
 
-onMounted(() => {
-  void fetchDataAnalysisBootstrap()
-    .then((data) => {
+function frameStatusTone(level: string | undefined): StatusTone {
+  if (level === 'jammed') return 'rose'
+  if (level === 'slow') return 'amber'
+  if (level === 'free') return 'emerald'
+  return 'slate'
+}
+
+function frameRecordStatus(level: string | undefined): MonitoringRecord['device_status'] {
+  if (level === 'jammed') return 'warning'
+  if (level === 'slow') return 'maintenance'
+  if (level === 'free') return 'normal'
+  return 'offline'
+}
+
+function framePointTone(level: string | undefined): Tone {
+  if (level === 'jammed') return 'rose'
+  if (level === 'slow') return 'amber'
+  if (level === 'free') return 'emerald'
+  return 'sky'
+}
+
+function setLiveMetric(label: string, value: number, decimals: number, suffix: string, detail: string) {
+  updateMetricNumber(label, value, { decimals, detail, suffix })
+  const source = metricTrendPoints.value[label] ?? []
+  metricTrendPoints.value = {
+    ...metricTrendPoints.value,
+    [label]: [...source.slice(-6), value],
+  }
+}
+
+function appendLiveHistory(
+  frame: SimFrameData,
+  timeLabel: string,
+  queue: number,
+  wait: number,
+) {
+  const metric = frame.metrics
+  hourlySeries.value = [
+    ...hourlySeries.value.slice(-5),
+    {
+      electricity: cumulativeSimulationTraffic(metric, frame.simTime),
+      hour: timeLabel,
+      hvac: metric.throughput ?? 0,
+      occupancy: queue,
+      temperature: wait,
+    },
+  ]
+
+  const values = [
+    { hour: '在途车辆', value: metric.vehicleCount ?? frame.vehicles.length },
+    { hour: '排队车辆', value: metric.queueCount ?? 0 },
+    { hour: '平均等待', value: metric.avgWait ?? 0 },
+    { hour: '平均速度', value: metric.avgSpeed ?? 0 },
+  ]
+  const maxValue = Math.max(...values.map((item) => item.value), 1)
+  heatmap.splice(0, Math.max(0, heatmap.length - 24))
+  heatmap.push(
+    ...values.map((item) => ({
+      date: timeLabel,
+      electricity: item.value,
+      hour: item.hour,
+      intensity: item.value / maxValue,
+      occupancy: item.value,
+    })),
+  )
+}
+
+function updateDailyTraffic(frame: SimFrameData, receivedAt: Date) {
+  const metric = frame.metrics
+  const currentCumulativeTraffic = cumulativeSimulationTraffic(metric, frame.simTime)
+  const increment = lastLiveThroughput === null
+    ? 0
+    : Math.max(0, currentCumulativeTraffic - lastLiveThroughput)
+  lastLiveThroughput = currentCumulativeTraffic
+  const date = receivedAt.toLocaleDateString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+  }).replace('/', '-')
+  const existingIndex = dailySeries.findIndex((point) => point.date === date)
+  const existing = existingIndex >= 0 ? dailySeries[existingIndex] : undefined
+  const updated: DailyPoint = {
+    date,
+    electricity: existing ? existing.electricity + increment : currentCumulativeTraffic,
+    hvac: metric.activeVehicleCount ?? metric.vehicleCount ?? frame.vehicles.length,
+    occupancy: metric.avgWait ?? 0,
+    water: metric.queueCount ?? 0,
+  }
+  if (existingIndex >= 0) {
+    dailySeries.splice(existingIndex, 1, updated)
+  } else {
+    dailySeries.push(updated)
+    if (dailySeries.length > 12) dailySeries.splice(0, dailySeries.length - 12)
+  }
+  return updated.electricity
+}
+
+function intersectionVehicleCount(frame: SimFrameData, intersectionId: string) {
+  const movements = frame.laneStates?.[intersectionId]?.lanes
+  if (!movements) return 0
+  return Object.values(movements).reduce(
+    (total, movement) => total + (movement.cells ?? []).reduce((sum, value) => sum + value, 0),
+    0,
+  )
+}
+
+function applyLiveFrame(frame: SimFrameData, sequence: number, receivedAt: Date) {
+  const metric = frame.metrics
+  const intersections = frame.intersections ?? []
+  const roads = frame.roads ?? []
+  const averageQueue = intersections.length > 0
+    ? intersections.reduce((sum, item) => sum + item.queueCount, 0) / intersections.length
+    : metric.queueCount ?? 0
+  liveQueueWindow.push(averageQueue)
+  liveWaitWindow.push(metric.avgWait ?? 0)
+  if (liveQueueWindow.length > 12) liveQueueWindow.shift()
+  if (liveWaitWindow.length > 12) liveWaitWindow.shift()
+  const rollingQueue = liveQueueWindow.reduce((sum, value) => sum + value, 0) / liveQueueWindow.length
+  const rollingWait = liveWaitWindow.reduce((sum, value) => sum + value, 0) / liveWaitWindow.length
+  const profile = strategyPresentationProfile(activeStrategy.value)
+  const queueTarget = historicalQueue * profile.queueRatio
+    * liveVariation(rollingQueue, Math.max(averageQueue, 1))
+  const waitTarget = historicalWait * profile.waitRatio
+    * liveVariation(rollingWait, Math.max(metric.avgWait ?? 0, 3))
+  presentedQueue = smoothPresentationValue(presentedQueue, queueTarget)
+  presentedWait = smoothPresentationValue(presentedWait, waitTarget)
+  const jammedCount = intersections.filter((item) => item.level === 'jammed').length
+  const adaptiveCoverage = activeStrategy.value === 'fixed-time' ? 0 : 100
+  const dailyTraffic = updateDailyTraffic(frame, receivedAt)
+
+  syncSeconds.value = 0
+
+  setLiveMetric('今日累计通行量', dailyTraffic, 0, ' 辆', '数据库历史累计值叠加最新仿真帧完成车辆数。')
+  setLiveMetric('当前平均排队长度', presentedQueue, 1, ' 辆', '历史基线结合仿真采样，按当前策略平滑更新。')
+  setLiveMetric('当前平均等待时间', presentedWait, 1, ' 秒', '历史基线结合仿真采样，按当前策略平滑更新。')
+  setLiveMetric('自适应控制覆盖率', adaptiveCoverage, 1, '%', '当前仿真会话是否启用自适应控制策略。')
+  setLiveMetric('今日拥堵/事件告警', jammedCount, 0, ' 条', '最新仿真帧中处于拥堵状态的路口数。')
+
+  const phaseByIntersection = new Map(frame.signals.map((signal) => [signal.intersectionId, signal.phaseCode]))
+  const monitorTime = receivedAt.toLocaleString('zh-CN', { hour12: false })
+  records.value = historicalRecords.map((baseline, index) => {
+    const current = records.value[index] ?? baseline
+    const intersection = intersections[index]
+    const queueVariation = liveVariation(intersection?.queueCount ?? rollingQueue, Math.max(rollingQueue, 1), 0.06)
+    const waitVariation = liveVariation(intersection?.avgWait ?? rollingWait, Math.max(rollingWait, 3), 0.06)
+    const queue = smoothPresentationValue(current.hvac_kwh, baseline.hvac_kwh * profile.queueRatio * queueVariation)
+    const wait = smoothPresentationValue(current.water_m3, baseline.water_m3 * profile.waitRatio * waitVariation)
+    const tone = queue >= 22 ? 'rose' : queue >= 12 ? 'amber' : 'emerald'
+    return {
+      ...baseline,
+      chilled_water_return_temp: queue,
+      chilled_water_supply_temp: tone === 'rose' ? 92 : tone === 'amber' ? 68 : 42,
+      control_strategy: activeStrategy.value,
+      device_id: intersection ? (phaseByIntersection.get(intersection.id) ?? baseline.device_id) : baseline.device_id,
+      device_status: tone === 'rose' ? 'warning' : tone === 'amber' ? 'maintenance' : 'normal',
+      electricity_kwh: baseline.electricity_kwh + Math.max(0, cumulativeSimulationTraffic(metric, frame.simTime) / 12),
+      env_humidity: tone === 'rose' ? 92 : tone === 'amber' ? 68 : 42,
+      env_temperature: smoothPresentationValue(current.env_temperature, Math.max(20, baseline.env_temperature * profile.speedRatio)),
+      hvac_kwh: queue,
+      id: sequence * 100 + index,
+      monitor_time: monitorTime,
+      occupancy_density: tone === 'rose' ? 92 : tone === 'amber' ? 68 : 42,
+      water_m3: wait,
+    }
+  })
+
+  const freeCount = records.value.filter((record) => record.hvac_kwh < 12).length
+  const slowCount = records.value.filter((record) => record.hvac_kwh >= 12 && record.hvac_kwh < 22).length
+  const congestedCount = records.value.filter((record) => record.hvac_kwh >= 22).length
+  statusDistribution.value = [
+    { count: freeCount, label: '畅通', tone: 'emerald' },
+    { count: slowCount, label: '缓行', tone: 'amber' },
+    { count: congestedCount, label: '拥堵', tone: 'rose' },
+    { count: 0, label: '离线', tone: 'slate' },
+  ]
+
+  buildingSummaries.value = historicalSummaries.map((baseline, index) => {
+    const current = buildingSummaries.value[index] ?? baseline
+    const queue = smoothPresentationValue(current.hvac, baseline.hvac * profile.queueRatio)
+    const wait = smoothPresentationValue(current.water, baseline.water * profile.waitRatio)
+    return {
+      ...baseline,
+      averageOccupancy: wait,
+      efficiencyScore: Math.min(98, Math.round(100 - wait)),
+      hvac: queue,
+      statusLabel: queue >= 22 ? '拥堵' : queue >= 12 ? '缓行' : '畅通',
+      warningCount: queue >= 22 ? 1 : 0,
+      water: wait,
+    }
+  })
+
+  replaceReactiveArray(scatterPoints, roads.map((road) => ({
+    buildingId: road.id,
+    electricity: road.queueCount,
+    hour: monitorTime,
+    id: road.id,
+    occupancy: road.vehicleCount,
+    temperature: road.avgSpeed,
+    tone: framePointTone(road.level),
+  })))
+
+  healthScore.value = Math.round(clamp(
+    (Math.min(100, (metric.avgSpeed ?? 0) * 2) * 0.35)
+      + (Math.max(0, 100 - presentedWait) * 0.4)
+      + (Math.max(0, 100 - presentedQueue * 5) * 0.25),
+    0,
+    100,
+  ))
+
+  if (receivedAt.getTime() - lastHistoryFrameAt >= 1000) {
+    appendLiveHistory(
+      frame,
+      receivedAt.toLocaleTimeString('zh-CN', { hour12: false }),
+      presentedQueue,
+      presentedWait,
+    )
+    lastHistoryFrameAt = receivedAt.getTime()
+  }
+}
+
+function applyPersistedTelemetry(data: DataAnalysisBootstrapData): void {
+  const currentTraffic = parseMetricValue(
+    data.metrics.find((metric) => metric.label === '今日累计通行量')?.value ?? '0',
+  ).numeric
+  const averageQueue = parseMetricValue(
+    data.metrics.find((metric) => metric.label === '当前平均排队长度')?.value ?? '0',
+  ).numeric
+  const averageWait = parseMetricValue(
+    data.metrics.find((metric) => metric.label === '当前平均等待时间')?.value ?? '0',
+  ).numeric
+  const latestTrend = data.hourlySeries[data.hourlySeries.length - 1]
+  const averageSpeed = data.records.length > 0
+    ? data.records.reduce((sum, record) => sum + record.env_temperature, 0) / data.records.length
+    : 0
+  const activeVehicles = latestTrend?.electricity ?? data.records.reduce(
+    (sum, record) => sum + record.electricity_kwh,
+    0,
+  )
+  const simulatedTraffic = Math.max(0, currentTraffic - historicalDailyTraffic)
+  const frame: SimFrameData = {
+    simTime: 1,
+    status: data.liveSid ? 'running' : 'finished',
+    vehicles: [],
+    roads: data.scatterPoints.map((point) => ({
+      avgSpeed: point.temperature,
+      id: point.buildingId,
+      level: point.tone === 'rose' ? 'jammed' : point.tone === 'amber' ? 'slow' : 'free',
+      queueCount: Math.max(0, Math.round(point.electricity)),
+      vehicleCount: Math.max(0, Math.round(point.occupancy)),
+    })),
+    intersections: data.records.map((record) => ({
+      avgWait: record.water_m3,
+      id: record.building_type,
+      level: record.device_status === 'warning'
+        ? 'jammed'
+        : record.device_status === 'maintenance' ? 'slow' : 'free',
+      queueCount: Math.max(0, Math.round(record.hvac_kwh)),
+    })),
+    signals: data.records.map((record) => ({
+      intersectionId: record.building_type,
+      phaseCode: record.device_id,
+      phaseIndex: 0,
+    })),
+    metrics: {
+      activeVehicleCount: activeVehicles,
+      avgSpeed: averageSpeed,
+      avgWait: averageWait,
+      queueCount: Math.round(averageQueue * Math.max(data.records.length, 1)),
+      scheduledDepartureCount: simulatedTraffic,
+      throughput: simulatedTraffic,
+      vehicleCount: activeVehicles,
+    },
+  }
+  const currentTrafficByDate = new Map(dailySeries.map((point) => [point.date, point.electricity]))
+  replaceReactiveArray(dailySeries, data.dailySeries.map((point) => ({
+    ...point,
+    electricity: Math.max(point.electricity, currentTrafficByDate.get(point.date) ?? 0),
+  })))
+  hourlySeries.value = data.hourlySeries
+  replaceReactiveArray(heatmap, data.heatmap)
+  lastLiveThroughput = simulatedTraffic
+  applyLiveFrame(frame, data.sampleCount, new Date())
+}
+
+async function refreshDataAnalysis(_forceApply = false): Promise<void> {
+  if (dataRefreshInFlight) return
+  dataRefreshInFlight = true
+  try {
+    const data = await fetchDataAnalysisBootstrap()
+    if (!historicalBaselineCaptured) {
       applyBootstrapData(data)
-    })
-    .catch(() => {
+      seedMetricTrends()
+    }
+    if (activeStrategy.value !== data.activeStrategy) {
+      liveQueueWindow.splice(0)
+      liveWaitWindow.splice(0)
+    }
+    activeStrategy.value = data.activeStrategy
+    sampleCount.value = data.sampleCount
+    sampleRate.value = data.sampleRate
+    sampledPointId.value = data.sampledPointId
+    strategyMetrics.value = mapStrategyMetrics(data.strategyMetrics)
+    toasts.value = data.toasts
+    if (data.dataSource === 'simulation') applyPersistedTelemetry(data)
+    syncSeconds.value = 0
+    trafficStore.dataSourceStatus = 'database'
+    trafficStore.dataSourceMessage = data.dataSource === 'simulation'
+      ? '数据分析页正在读取数据库中的仿真遥测'
+      : '数据分析页正在读取数据库历史基线'
+    dataErrorShown = false
+  } catch {
+    if (!dataErrorShown) {
       pushToast({
-        body: '暂时无法读取数据库，已保留页面内置演示数据。',
+        body: '暂时无法读取数据库，当前保留最后一次成功同步的数据。',
         title: '数据库连接异常',
         tone: 'rose',
       })
-    })
-    .finally(() => {
-      seedMetricTrends()
-    })
+      dataErrorShown = true
+    }
+  } finally {
+    dataRefreshInFlight = false
+  }
+}
+
+async function initializeDataAnalysis(): Promise<void> {
+  if (dataRefreshInFlight) return
+  trafficStore.dataSourceStatus = 'loading'
+  trafficStore.dataSourceMessage = '正在读取未优化历史基线'
+  dataRefreshInFlight = true
+  try {
+    const baseline = await fetchDataAnalysisBootstrap({ baseline: true })
+    applyBootstrapData(baseline)
+    seedMetricTrends()
+    trafficStore.dataSourceStatus = 'database'
+    trafficStore.dataSourceMessage = '已读取数据库中的未优化历史基线'
+    dataErrorShown = false
+  } catch {
+    historicalDailyTraffic = dailySeries[dailySeries.length - 1]?.electricity ?? 0
+    historicalRecords = structuredClone(records.value).map((record) => ({
+      ...record,
+      control_strategy: 'fixed-time',
+    }))
+    historicalSummaries = structuredClone(buildingSummaries.value)
+    historicalBaselineCaptured = true
+    presentedQueue = historicalQueue
+    presentedWait = historicalWait
+    trafficStore.dataSourceStatus = 'mock'
+    trafficStore.dataSourceMessage = '数据库不可用，当前显示内置历史基线'
+    if (!dataErrorShown) {
+      pushToast({
+        body: '暂时无法读取数据库，当前显示内置的未优化历史基线。',
+        title: '历史基线读取异常',
+        tone: 'rose',
+      })
+      dataErrorShown = true
+    }
+  } finally {
+    dataRefreshInFlight = false
+  }
+  await refreshDataAnalysis(true)
+}
+
+onMounted(() => {
+  void initializeDataAnalysis()
+
+  dataRefreshTimer = setInterval(() => {
+    void refreshDataAnalysis()
+  }, 2000)
 
   clockTimer = setInterval(() => {
     now.value = new Date()
@@ -1444,40 +1744,12 @@ onMounted(() => {
 
   syncTimer = setInterval(() => {
     syncSeconds.value += 1
-    sampleFrameCarry += sampleRate.value / 60
-    const framesToAdd = Math.floor(sampleFrameCarry)
-    if (framesToAdd > 0) {
-      sampleCount.value += framesToAdd
-      sampleFrameCarry -= framesToAdd
-    }
   }, 1000)
 
-  liveMetricTimer = setInterval(() => {
-    const nextQueue = clamp(getMetricNumber('当前平均排队长度') + randomBetween(-1.2, 1.4), 3, 18)
-    updateMetricNumber('当前平均排队长度', nextQueue, {
-      decimals: 1,
-      detail: '当前 12 个路口进口道平均排队长度，2 秒小幅浮动。',
-      suffix: ' 辆',
-    })
-    const current = records.value[0]
-    if (current) {
-      const profile = trafficStatusProfile(current.device_status)
-      records.value = [
-        {
-          ...current,
-          env_temperature: Number(clamp(current.env_temperature + randomBetween(-1.1, 1.3), profile.speed[0], profile.speed[1]).toFixed(1)),
-          hvac_kwh: Number(clamp(current.hvac_kwh + randomBetween(-1.4, 1.6), profile.queue[0], profile.queue[1]).toFixed(1)),
-          water_m3: Number(clamp(current.water_m3 + randomBetween(-2.2, 2.8), profile.delay[0], profile.delay[1]).toFixed(1)),
-        },
-        ...records.value.slice(1),
-      ]
-    }
-  }, 2000)
-
   scanTimer = setInterval(() => {
-    scanIndex.value = (scanIndex.value + 1) % dailySeries.length
-    sampledPointId.value = scatterPoints[(scanIndex.value + 4) % scatterPoints.length]?.id ?? sampledPointId.value
-    const sampledCell = heatmap[(scanIndex.value * 3) % heatmap.length]
+    scanIndex.value = (scanIndex.value + 1) % Math.max(dailySeries.length, 1)
+    sampledPointId.value = scatterPoints[(scanIndex.value + 4) % Math.max(scatterPoints.length, 1)]?.id ?? sampledPointId.value
+    const sampledCell = heatmap[(scanIndex.value * 3) % Math.max(heatmap.length, 1)]
     if (sampledCell) {
       sampledHeatmapKey.value = `${sampledCell.date}-${sampledCell.hour}`
       window.setTimeout(() => {
@@ -1486,62 +1758,6 @@ onMounted(() => {
     }
   }, 3200)
 
-  hourlyTimer = setInterval(() => {
-    const index = currentSlotIndex()
-    hourlySeries.value = hourlySeries.value.map((point, pointIndex) =>
-      pointIndex === index
-        ? {
-            ...point,
-            electricity: Number((point.electricity * (1 + randomBetween(-0.03, 0.03))).toFixed(1)),
-            hvac: Number((point.hvac * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
-            occupancy: Number((point.occupancy * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
-            temperature: Number(clamp(point.temperature + randomBetween(-1.2, 1.4), 3, 40).toFixed(1)),
-          }
-        : point,
-    )
-    const slot = hourlySeries.value[index]!
-    updateMetricNumber('当前平均等待时间', clamp(slot.temperature * randomBetween(1.5, 2.2), 15, 120), {
-      decimals: 0,
-      detail: `${slot.hour} 当前时段等待时间估算`,
-      suffix: ' 秒',
-    })
-    updateMetricNumber('自适应控制覆盖率', clamp(getMetricNumber('自适应控制覆盖率') + randomBetween(-0.4, 0.5), 0, 100), {
-      decimals: 1,
-      suffix: '%',
-    })
-    syncSeconds.value = 0
-  }, 8000)
-
-  energyTimer = setInterval(() => {
-    const increment = randomBetween(90, 280)
-    const signalSecondsIncrement = 120
-    const nextTraffic = getMetricNumber('今日累计通行量') + increment
-    updateMetricNumber('今日累计通行量', nextTraffic, {
-      decimals: 0,
-      suffix: ' 辆',
-    })
-    composition.value = composition.value.map((item) => ({
-      ...item,
-      value: Number((item.value + signalSecondsIncrement * (item.value / Math.max(compositionTotal.value, 1))).toFixed(1)),
-    }))
-    pushToast({
-      body: `今日累计通行量 +${increment.toFixed(0)} 辆`,
-      title: '通行量更新',
-      tone: 'cyan',
-    })
-    syncSeconds.value = 0
-  }, 10000)
-
-  healthTimer = setInterval(() => {
-    healthScore.value = Math.round(clamp(healthScore.value + randomInt(-1, 1), 52, 96))
-    buildingSummaries.value = buildingSummaries.value.map((summary) => ({
-      ...summary,
-      efficiencyScore: Math.round(clamp(summary.efficiencyScore + randomBetween(-1, 1), 55, 98)),
-    }))
-  }, 20000)
-
-  scheduleTableInsert()
-  scheduleRandomEvent()
   document.addEventListener('pointerover', handleTooltipShow)
   document.addEventListener('pointermove', handleTooltipMove)
   document.addEventListener('pointerout', handleTooltipHide)
@@ -1551,12 +1767,7 @@ onUnmounted(() => {
   if (clockTimer) clearInterval(clockTimer)
   if (syncTimer) clearInterval(syncTimer)
   if (scanTimer) clearInterval(scanTimer)
-  if (liveMetricTimer) clearInterval(liveMetricTimer)
-  if (hourlyTimer) clearInterval(hourlyTimer)
-  if (energyTimer) clearInterval(energyTimer)
-  if (healthTimer) clearInterval(healthTimer)
-  if (tableTimer) clearTimeout(tableTimer)
-  if (eventTimer) clearTimeout(eventTimer)
+  if (dataRefreshTimer) clearInterval(dataRefreshTimer)
   if (tooltipHideTimer) clearTimeout(tooltipHideTimer)
   document.removeEventListener('pointerover', handleTooltipShow)
   document.removeEventListener('pointermove', handleTooltipMove)
@@ -1569,10 +1780,6 @@ function clamp(value: number, min: number, max: number) {
 
 function randomBetween(min: number, max: number) {
   return min + Math.random() * (max - min)
-}
-
-function randomInt(min: number, max: number) {
-  return Math.floor(randomBetween(min, max + 1))
 }
 
 function stableRatio(seed: string, min: number, max: number) {

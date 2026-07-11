@@ -63,6 +63,27 @@ class RealCityFlowEngineConfigTest(unittest.TestCase):
         self.assertTrue(engine._simulation_complete(session, 100.0, {"activeVehicleCount": 0}))
         self.assertTrue(engine._simulation_complete(session, 200.0, {"activeVehicleCount": 1}))
 
+    def test_metrics_fall_back_to_scheduled_departures_when_cityflow_lacks_finished_count(self):
+        class EngineWithoutFinishedCount:
+            def get_vehicle_count(self):
+                return 20
+
+            def get_current_time(self):
+                return 100.0
+
+        engine = RealCityFlowEngine.__new__(RealCityFlowEngine)
+        session = Mock(
+            engine=EngineWithoutFinishedCount(),
+            total_vehicle_count=120,
+            departure_times=tuple(float(value) for value in range(1, 121)),
+        )
+
+        metrics = engine._metrics(session, [{"speed": 10.0}] * 20, [{"queueCount": 3}])
+
+        self.assertEqual(100, metrics["scheduledDepartureCount"])
+        self.assertEqual(20, metrics["activeVehicleCount"])
+        self.assertEqual(80, metrics["throughput"])
+
 
 if __name__ == "__main__":
     unittest.main()

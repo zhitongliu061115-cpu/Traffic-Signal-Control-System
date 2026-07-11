@@ -75,6 +75,7 @@ let vehicleTimer: ReturnType<typeof setInterval> | null = null
 let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
 let dataRetryTimer: ReturnType<typeof setInterval> | null = null
+let simulationHasStarted = false
 
 async function syncDashboardData(): Promise<void> {
   const loaded = await store.loadDashboardData()
@@ -148,8 +149,9 @@ onMounted(() => {
     () => store.simulationStatus,
     (status) => {
       if (status === 'running') {
+        simulationHasStarted = true
         stopMockTimers()
-      } else if (vehicleTimer === null) {
+      } else if (!simulationHasStarted && vehicleTimer === null) {
         startMockTimers()
       }
     },

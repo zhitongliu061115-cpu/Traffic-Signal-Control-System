@@ -14,7 +14,7 @@
 4. Python 服务读取 `roadnet` / `flow`，在真实 CityFlow 模式下后台连续推进仿真并缓存快照。
 5. Spring Boot 负责策略调度，并将统一 `ControlDecision` 通过 `/actions` 下发给 Python CityFlow。
 6. 实时帧由 Spring Boot 通过 WebSocket 推送给前端。
-7. `sim.frame` 是前端实时渲染车辆、信号灯和指标的唯一可信数据来源。
+7. `sim.frame` 是路网大屏实时渲染车辆和信号灯的唯一可信来源；数据分析页只读取由同一帧持久化得到的数据库遥测。
 
 ## 静态路网调用链
 
@@ -62,6 +62,7 @@ Python CityFlow set_tl_phase
   v
 Spring Boot SimulationService
   |
+  | SimulationTelemetryService 按间隔写入 simulation_*_sample
   | 封装 WsMessage<SimFrameData>
   v
 SimulationWebSocketHandler
@@ -69,6 +70,20 @@ SimulationWebSocketHandler
   | 推送 sim.frame
   v
 前端 Vue Canvas / SVG / 地图渲染层
+```
+
+## 数据分析调用链
+
+```text
+数据分析页首次进入
+  -> GET /api/v1/data-analysis/bootstrap?baseline=true
+  -> DataAnalysisRepository 读取 dashboard_* 未优化历史基线
+
+数据分析页每 2 秒
+  -> GET /api/v1/data-analysis/bootstrap
+  -> DataAnalysisRepository 读取最近活动或最近完成的 simulation_run
+  -> 聚合 simulation_metric_sample / road_sample / intersection_sample
+  -> 前端在同一页面内按当前策略平滑更新展示值
 ```
 
 ## Python 服务当前状态
@@ -91,6 +106,8 @@ SimulationWebSocketHandler
 | POST | `/api/v1/simulations/{sid}/start` | 启动仿真 |
 | POST | `/api/v1/simulations/{sid}/pause` | 暂停仿真 |
 | POST | `/api/v1/simulations/{sid}/stop` | 停止仿真 |
+| GET | `/api/v1/data-analysis/bootstrap` | 获取最近持久化仿真分析数据 |
+| GET | `/api/v1/data-analysis/bootstrap?baseline=true` | 获取未优化历史基线 |
 | WebSocket | `/ws/v1/simulations/{sid}` | 接收 `sim.frame` |
 
 ### Spring Boot 访问 Python CityFlow

@@ -14,6 +14,7 @@ class SceneDefinition:
     flow_file: Path
     total_vehicle_count: int = 0
     flow_end_time: float = 0.0
+    departure_times: tuple[float, ...] = ()
 
 
 class SceneRegistry:
@@ -77,7 +78,7 @@ class SceneRegistry:
                     retryable=False,
                 )
 
-            total_vehicle_count, flow_end_time = self._flow_summary(flow_file)
+            total_vehicle_count, flow_end_time, departure_times = self._flow_summary(flow_file)
             scenes[scene_id] = SceneDefinition(
                 scene_id=scene_id,
                 name=str(item.get("name", scene_id)),
@@ -85,6 +86,7 @@ class SceneRegistry:
                 flow_file=flow_file,
                 total_vehicle_count=total_vehicle_count,
                 flow_end_time=flow_end_time,
+                departure_times=departure_times,
             )
 
         if not scenes:
@@ -96,10 +98,10 @@ class SceneRegistry:
             )
         return scenes
 
-    def _flow_summary(self, flow_file: Path) -> tuple[int, float]:
+    def _flow_summary(self, flow_file: Path) -> tuple[int, float, tuple[float, ...]]:
         with flow_file.open("r", encoding="utf-8") as file:
             flows = json.load(file)
-        count = 0
+        departure_times: list[float] = []
         flow_end_time = 0.0
         iterable_flows = flows if isinstance(flows, list) else []
         for flow in iterable_flows:
@@ -108,11 +110,13 @@ class SceneRegistry:
                 end_time = float(flow.get("endTime", start_time))
                 interval = float(flow.get("interval", 1.0))
             except (TypeError, ValueError):
-                count += 1
+                departure_times.append(0.0)
                 continue
             flow_end_time = max(flow_end_time, start_time, end_time)
             if interval <= 0 or end_time <= start_time:
-                count += 1
+                departure_times.append(start_time)
             else:
-                count += int((end_time - start_time) / interval) + 1
-        return count, flow_end_time
+                vehicle_count = int((end_time - start_time) / interval) + 1
+                departure_times.extend(start_time + index * interval for index in range(vehicle_count))
+        departure_times.sort()
+        return len(departure_times), flow_end_time, tuple(departure_times)
