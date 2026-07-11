@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.traffic.agent.dto.AgentChatRequest;
 import com.traffic.agent.dto.AgentChatResponse.EvidenceItem;
 import com.traffic.agent.dto.AgentChatResponse.ToolCallSummary;
+import com.traffic.agent.tool.AgentToolResult;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Service;
@@ -88,15 +90,28 @@ public class AgentResponseAssembler {
     }
 
     private List<EvidenceItem> evidence(List<AgentToolExecution> executions) {
-        return executions.stream()
-                .filter(AgentToolExecution::success)
-                .map(execution -> new EvidenceItem(
+        List<EvidenceItem> items = new ArrayList<>();
+        for (AgentToolExecution execution : executions) {
+            if (!execution.success()) {
+                continue;
+            }
+            if (execution.result() instanceof AgentToolResult toolResult && toolResult.evidence() != null) {
+                toolResult.evidence().forEach(evidence -> items.add(new EvidenceItem(
+                        evidence.source(),
+                        evidence.name(),
+                        evidence.summary(),
+                        evidence.value()
+                )));
+            } else {
+                items.add(new EvidenceItem(
                         "tool",
                         execution.toolName(),
                         "工具 " + execution.toolName() + " 返回真实后端数据",
                         execution.result()
-                ))
-                .toList();
+                ));
+            }
+        }
+        return items;
     }
 
     private String safeJson(Object value) {

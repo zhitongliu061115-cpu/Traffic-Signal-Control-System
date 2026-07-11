@@ -2,8 +2,14 @@ package com.traffic.agent.orchestrator;
 
 import com.traffic.agent.dto.AgentDataDtos.ToolCallResponse;
 import com.traffic.agent.service.AgentDataService;
+import com.traffic.agent.tool.AgentToolResult;
+import com.traffic.agent.tool.EmergencyAgentTools;
+import com.traffic.agent.tool.TrafficDecisionAgentTools;
+import com.traffic.agent.tool.TrafficDiagnosisAgentTools;
+import com.traffic.agent.tool.TrafficHealthAgentTools;
+import com.traffic.agent.tool.TrafficKnowledgeAgentTools;
+import com.traffic.agent.tool.TrafficRuntimeAgentTools;
 import com.traffic.common.exception.BusinessException;
-import com.traffic.runtime.query.RuntimeQueryService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -13,7 +19,6 @@ import org.springframework.stereotype.Service;
 public class AgentToolExecutor {
 
     private static final int DEFAULT_LIMIT = 20;
-    private static final int MAX_LIMIT = 100;
     private static final List<String> ALLOWED_TOOLS = List.of(
             "get_current_simulation_state",
             "get_intersection_detail",
@@ -22,18 +27,37 @@ public class AgentToolExecutor {
             "get_decision_trace",
             "get_system_health",
             "get_model_inference_log",
+            "search_knowledge_base",
             "get_fallback_events",
             "get_safety_events",
             "get_alert_events",
             "get_emergency_events"
     );
 
-    private final RuntimeQueryService runtimeQueryService;
     private final AgentDataService agentDataService;
+    private final TrafficRuntimeAgentTools runtimeTools;
+    private final TrafficDecisionAgentTools decisionTools;
+    private final TrafficHealthAgentTools healthTools;
+    private final TrafficKnowledgeAgentTools knowledgeTools;
+    private final TrafficDiagnosisAgentTools diagnosisTools;
+    private final EmergencyAgentTools emergencyTools;
 
-    public AgentToolExecutor(RuntimeQueryService runtimeQueryService, AgentDataService agentDataService) {
-        this.runtimeQueryService = runtimeQueryService;
+    public AgentToolExecutor(
+            AgentDataService agentDataService,
+            TrafficRuntimeAgentTools runtimeTools,
+            TrafficDecisionAgentTools decisionTools,
+            TrafficHealthAgentTools healthTools,
+            TrafficKnowledgeAgentTools knowledgeTools,
+            TrafficDiagnosisAgentTools diagnosisTools,
+            EmergencyAgentTools emergencyTools
+    ) {
         this.agentDataService = agentDataService;
+        this.runtimeTools = runtimeTools;
+        this.decisionTools = decisionTools;
+        this.healthTools = healthTools;
+        this.knowledgeTools = knowledgeTools;
+        this.diagnosisTools = diagnosisTools;
+        this.emergencyTools = emergencyTools;
     }
 
     public List<String> allowedTools() {
@@ -45,18 +69,20 @@ public class AgentToolExecutor {
         Map<String, Object> arguments = normalizeArguments(plannedCall.arguments());
         long startNanos = System.nanoTime();
         try {
-            Object result = callTool(toolName, arguments);
+            AgentToolResult result = callTool(toolName, arguments);
             int latencyMs = elapsedMs(startNanos);
+            String status = result.success() ? "SUCCESS" : "FAILED";
+            String errorMessage = result.success() ? null : String.join("; ", result.warnings());
             ToolCallResponse audit = agentDataService.recordToolCall(
                     messageId,
                     toolName,
                     arguments,
                     result,
-                    "SUCCESS",
+                    status,
                     latencyMs,
-                    null
+                    errorMessage
             );
-            return new AgentToolExecution(audit.id(), toolName, arguments, result, "SUCCESS", latencyMs, null);
+            return new AgentToolExecution(audit.id(), toolName, arguments, result, status, latencyMs, errorMessage);
         } catch (RuntimeException ex) {
             int latencyMs = elapsedMs(startNanos);
             ToolCallResponse audit = agentDataService.recordToolCall(
@@ -72,52 +98,57 @@ public class AgentToolExecutor {
         }
     }
 
-    private Object callTool(String toolName, Map<String, Object> arguments) {
+    private AgentToolResult callTool(String toolName, Map<String, Object> arguments) {
         return switch (toolName) {
             case "get_current_simulation_state" ->
-                    runtimeQueryService.getCurrentSimulationState(stringArg(arguments, "sid", false));
-            case "get_intersection_detail" -> runtimeQueryService.getIntersectionDetail(
+                    runtimeTools.getCurrentSimulationState(stringArg(arguments, "sid", false));
+            case "get_intersection_detail" -> runtimeTools.getIntersectionDetail(
                     stringArg(arguments, "intersectionId", true),
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "sceneCode", false)
             );
-            case "get_road_detail" -> runtimeQueryService.getRoadDetail(
+            case "get_road_detail" -> runtimeTools.getRoadDetail(
                     stringArg(arguments, "roadId", true),
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "sceneCode", false)
             );
-            case "get_latest_control_decisions" -> runtimeQueryService.getLatestControlDecisions(
+            case "get_latest_control_decisions" -> decisionTools.getLatestControlDecisions(
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "intersectionId", false),
                     intArg(arguments, "limit", DEFAULT_LIMIT)
             );
             case "get_decision_trace" ->
-                    runtimeQueryService.getDecisionTrace(stringArg(arguments, "decisionId", true));
+                    decisionTools.getDecisionTrace(stringArg(arguments, "decisionId", true));
             case "get_system_health" ->
-                    runtimeQueryService.getSystemHealth(intArg(arguments, "limit", DEFAULT_LIMIT));
-            case "get_model_inference_log" -> runtimeQueryService.getModelInferenceLog(
+                    healthTools.getSystemHealth(intArg(arguments, "limit", DEFAULT_LIMIT));
+            case "get_model_inference_log" -> decisionTools.getModelInferenceLog(
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "intersectionId", false),
                     intArg(arguments, "limit", DEFAULT_LIMIT)
             );
-            case "get_fallback_events" -> runtimeQueryService.getFallbackEvents(
+            case "search_knowledge_base" -> knowledgeTools.searchKnowledgeBase(
+                    stringArg(arguments, "query", true),
+                    intArg(arguments, "topK", 5),
+                    stringArg(arguments, "scope", false)
+            );
+            case "get_fallback_events" -> diagnosisTools.getFallbackEvents(
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "intersectionId", false),
                     intArg(arguments, "limit", DEFAULT_LIMIT)
             );
-            case "get_safety_events" -> runtimeQueryService.getSafetyEvents(
+            case "get_safety_events" -> diagnosisTools.getSafetyEvents(
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "intersectionId", false),
                     stringArg(arguments, "decisionId", false),
                     intArg(arguments, "limit", DEFAULT_LIMIT)
             );
-            case "get_alert_events" -> runtimeQueryService.getAlertEvents(
+            case "get_alert_events" -> diagnosisTools.getAlertEvents(
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "level", false),
                     stringArg(arguments, "status", false),
                     intArg(arguments, "limit", DEFAULT_LIMIT)
             );
-            case "get_emergency_events" -> runtimeQueryService.getEmergencyEvents(
+            case "get_emergency_events" -> emergencyTools.getEmergencyEvents(
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "status", false),
                     intArg(arguments, "limit", DEFAULT_LIMIT)
@@ -171,7 +202,7 @@ public class AgentToolExecutor {
             if (parsed <= 0) {
                 return defaultValue;
             }
-            return Math.min(parsed, MAX_LIMIT);
+            return Math.min(parsed, 100);
         } catch (NumberFormatException ex) {
             throw new BusinessException("工具参数必须是整数：" + name);
         }

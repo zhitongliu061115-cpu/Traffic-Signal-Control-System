@@ -212,7 +212,7 @@ Traffic-R 在线批量推理当前测试平均约 7 秒，不能按 `cityflow.fr
 
 ### Agent LangChain4j / 百炼模型配置
 
-当前后端已完成 LangChain4j 第一阶段依赖与配置准备，但默认不启用 LangChain4j 编排：
+当前后端已完成 LangChain4j 依赖配置、Agent 编排层和第一批 `@Tool` 工具封装，但默认不启用 LangChain4j 模型客户端：
 
 ```yaml
 traffic:
@@ -228,11 +228,11 @@ traffic:
 
 部署注意：
 
-- 当前仍保留原有 `bailian.*` 配置和 `BailianAgentService`，LangChain4j 不会自动替换现有 Agent 聊天入口。
-- `AGENT_LANGCHAIN4J_ENABLED` 默认是 `false`，后续实现 `AgentOrchestratorService` 后再开启。
+- 当前仍保留原有 `bailian.*` 配置和 `BailianAgentService`。`/api/v1/agent/chat` 已统一经过 `AgentOrchestratorService`，但 `AGENT_LANGCHAIN4J_ENABLED=false` 时编排层会复用 `BailianAgentService` 调用百炼模型。
+- `AGENT_LANGCHAIN4J_ENABLED` 默认是 `false`。需要切换到 LangChain4j `ChatModel` 客户端时再改为 `true`，并确保 `DASHSCOPE_API_KEY` 或 `BAILIAN_API_KEY` 已配置。
 - 不引入 `langchain4j-spring-boot-starter`，不要求升级 Spring Boot。
 - `DASHSCOPE_API_KEY` / `BAILIAN_API_KEY` 不应写入文档、日志或 Git；本地联调可以先写 `application.yml`，稳定后应改为环境变量或部署密钥。
-- LangChain4j 只负责模型编排和工具调用，实时交通状态仍必须通过后端数据库、CityFlow 和 Traffic-R 查询。
+- Agent 工具层位于 `com.traffic.agent.tool`，只读工具调用 `RuntimeQueryService` 等后端 Service；实时交通状态仍必须通过后端数据库、CityFlow 和 Traffic-R 查询，不能由模型凭空生成。
 
 ## 4. 后续同机部署方案
 

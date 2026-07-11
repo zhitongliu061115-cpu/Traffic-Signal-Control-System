@@ -349,6 +349,29 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 - `get_alert_events`：查询系统告警。
 - `get_emergency_events`：查询应急车辆/绿波任务主事件。
 
+#### Agent 内部 LangChain4j 工具层
+
+除 HTTP 查询入口外，后端已新增 `com.traffic.agent.tool` 包，把第一批工具封装为 LangChain4j `@Tool` 方法，供 `/api/v1/agent/chat` 编排流程内部调用。
+
+当前工具类：
+
+| 工具类 | 工具 |
+|---|---|
+| `TrafficRuntimeAgentTools` | `get_current_simulation_state`、`get_intersection_detail`、`get_road_detail` |
+| `TrafficDecisionAgentTools` | `get_latest_control_decisions`、`get_decision_trace`、`get_model_inference_log` |
+| `TrafficHealthAgentTools` | `get_system_health` |
+| `TrafficKnowledgeAgentTools` | `search_knowledge_base` |
+| `TrafficDiagnosisAgentTools` | `get_fallback_events`、`get_safety_events`、`get_alert_events` |
+| `EmergencyAgentTools` | `get_emergency_events` |
+
+工具实现规则：
+
+- `@Tool` 方法只能调用后端 Service，例如 `RuntimeQueryService`，不能调用 Controller，也不能用 `RestTemplate` 自调用本后端 HTTP 接口。
+- 工具统一返回 `AgentToolResult`：`success`、`toolName`、`data`、`evidence`、`warnings`、`timestamp`。
+- 工具异常会被包装为 `success=false` 的结构化结果，并记录为 `agent_tool_call.status=FAILED`，不应导致整个 Agent 对话崩溃。
+- 当前工具全部只读，不推进仿真、不下发相位、不切换策略、不执行应急绿波。
+- `search_knowledge_base` 当前是本地项目文档检索基础版，检索 `.md/.txt` 文件；尚不是百炼知识库 API。
+
 ### 3.6 Agent 会话、消息与工具调用审计
 
 这些接口用于保存和查询 Agent 自身交互数据。`/api/v1/agent/chat` 会自动创建/读取会话、写入用户消息、记录 LLM 工具规划、执行工具并写入工具调用审计；外部手动调用 `/api/v1/agent/tools/**` 时，仍可传入 `messageId` 形成可复盘链路。
@@ -426,7 +449,7 @@ Content-Type: application/json
 编排规则：
 
 - `AgentController` 只调用 `AgentOrchestratorService`，不直接调用模型。
-- 工具选择由 LLM 输出格式化 JSON 规划，后端只做 JSON 解析、工具白名单过滤和参数校验。
+- 工具选择由 LLM 输出格式化 JSON 规划，后端只做 JSON 解析、工具白名单过滤和参数校验，并调用 `com.traffic.agent.tool` 下的 `@Tool` 封装类执行。
 - 当前白名单工具均为只读工具，不下发信号控制动作。
 - LLM 规划轨迹会以 `llm_tool_plan` 写入 `agent_tool_call`；每个真实工具调用也会写入 `agent_tool_call`。
 - 涉及实时状态的问题必须基于工具结果回答；如果工具失败或没有真实数据，回答必须说明无法获取，不能编造。

@@ -104,6 +104,7 @@ public class AgentIntentClassifier {
                 - get_decision_trace: 查询指定决策链路。参数：decisionId 必填
                 - get_system_health: 查询系统健康。参数：limit?
                 - get_model_inference_log: 查询 Traffic-R 推理日志。参数：sid?，intersectionId?，limit?
+                - search_knowledge_base: 查询项目文档、接口规范、部署资料、Agent 设计和算法说明。参数：query 必填，topK?，scope?
                 - get_fallback_events: 查询策略降级事件。参数：sid?，intersectionId?，limit?
                 - get_safety_events: 查询安全约束事件。参数：sid?，intersectionId?，decisionId?，limit?
                 - get_alert_events: 查询告警事件。参数：sid?，level?，status?，limit?
@@ -111,7 +112,7 @@ public class AgentIntentClassifier {
 
                 规划规则：
                 - 涉及“当前、实时、仿真状态、路口状态、道路状态、拥堵、决策、健康、推理日志、应急事件”的问题，必须选择工具。
-                - 只有纯概念、纯规范、纯部署说明问题可以 needsTools=false。
+                - 纯概念、纯规范、纯部署说明问题优先调用 search_knowledge_base。
                 - 不要创造工具名。不要填入未知 ID；如果用户没有提供必填 ID，就不要调用该工具。
                 - 最多输出 4 个 toolCalls。
 

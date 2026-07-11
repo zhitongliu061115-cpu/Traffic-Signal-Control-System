@@ -40,12 +40,15 @@ Agent 可见语义化工具
 | `get_decision_trace` | 已实现基础版 | 查询指定决策和 trace | 后续增强为聚合 Traffic-R、安全层、fallback、执行结果 |
 | `get_system_health` | 已实现基础版 | 查询数据库视角健康摘要 | 后续增强为 Spring Boot、CityFlow、Traffic-R、WebSocket、数据库统一健康 |
 | `get_model_inference_log` | 已实现 | 查询 Traffic-R 推理日志和逐路口结果 | 保留，主要用于调试和决策追踪 |
+| `search_knowledge_base` | 已实现基础版 | 检索本地项目文档 `.md/.txt`，返回命中文档、片段和来源 | 后续替换或增强为百炼知识库 API |
 | `get_fallback_events` | 已实现 | 查询策略 fallback 事件 | 后续作为内部证据，减少模型直接使用 |
 | `get_safety_events` | 已实现 | 查询安全约束事件 | 后续作为内部证据，减少模型直接使用 |
 | `get_alert_events` | 已实现 | 查询告警事件 | 后续并入系统健康或诊断结果 |
 | `get_emergency_events` | 已实现主事件查询 | 查询应急事件主记录 | 后续升级为 `get_emergency_vehicle_status` |
 
 这些工具支持可选 `messageId` 参数。传入后会自动写入 `agent_tool_call`。
+
+同时已新增 LangChain4j 工具封装包 `com.traffic.agent.tool`，包括 `TrafficRuntimeAgentTools`、`TrafficDecisionAgentTools`、`TrafficHealthAgentTools`、`TrafficKnowledgeAgentTools`、`TrafficDiagnosisAgentTools` 和 `EmergencyAgentTools`。这些 `@Tool` 方法不调用 Controller，也不通过 `RestTemplate` 自调用本后端，而是调用 `RuntimeQueryService` 等后端 Service。
 
 ### 2.2 Agent 会话与审计
 
@@ -65,7 +68,7 @@ Agent 可见语义化工具
 ### 2.3 当前缺口
 
 - 已新增统一 `AgentOrchestratorService`：`/api/v1/agent/chat` 会经过编排层完成会话落库、LLM 工具规划、工具执行审计和回答生成。
-- 还没有 `search_knowledge_base`：百炼知识库 / 项目知识库尚未接入后端工具体系。
+- `search_knowledge_base` 已有本地项目文档检索基础版，但尚未接入百炼知识库 API；当前适合回答项目文档、接口规范、部署和算法说明类问题，不适合承载实时交通状态。
 - 还没有语义化分析工具：拥堵诊断、异常检测、溢出风险、策略对比等尚未实现。
 - `get_decision_trace` 仍偏数据库 trace，没有完整聚合 Traffic-R 原始输出、安全层、fallback 和 CityFlow 执行结果。
 - `get_system_health` 仍偏数据库视角，没有主动探测 CityFlow、Traffic-R、WebSocket 和云端连接。
@@ -128,7 +131,7 @@ Agent 可见语义化工具
 | `get_decision_trace` | 查询决策链路 | `decisionId` 或后续支持 `sid + intersectionId` | Traffic-R 原始输出、安全校验、fallback、最终执行结果 | 已实现基础版，需增强 |
 | `diagnose_congestion` | 分析拥堵原因 | `targetType`, `targetId`, `sid?` | 关键证据、可能原因、影响范围、处理建议 | 未实现，第一优先级 |
 | `get_system_health` | 查询系统健康 | `limit?` | Spring Boot、CityFlow、Traffic-R、数据库、WebSocket、云端服务连接状态 | 已实现数据库基础版，需增强 |
-| `search_knowledge_base` | 查询项目知识库 | `query`, `topK?`, `scope?` | 命中文档、片段、来源、相似度或引用 | 未实现，第一优先级 |
+| `search_knowledge_base` | 查询项目知识库 | `query`, `topK?`, `scope?` | 命中文档、片段、来源、相似度或引用 | 已实现本地文档检索基础版；后续接百炼知识库 API |
 
 ### 4.2 第二批：应急与区域分析
 
@@ -199,22 +202,25 @@ Agent 可见语义化工具
   -> 返回答案、引用证据和工具调用摘要
 ```
 
-### 6.0 当前阶段 2 落地状态
+### 6.0 当前阶段 2 / 阶段 3 落地状态
 
-当前阶段 2 已完成后端编排骨架：
+当前阶段 2 已完成后端编排骨架，阶段 3 已完成第一批 LangChain4j 工具层封装：
 
 - `AgentController` 不再直接调用模型，而是调用 `AgentOrchestratorService`。
 - `AgentOrchestratorService` 负责创建或读取 `agent_conversation`，写入 user / assistant `agent_message`。
 - `AgentIntentClassifier` 使用 LLM 生成结构化 JSON 工具规划，不用后端硬编码规则选择工具。
-- `AgentToolExecutor` 负责后端工具白名单过滤、参数校验、调用 `RuntimeQueryService`，并把每个工具调用写入 `agent_tool_call`。
+- `AgentToolExecutor` 负责后端工具白名单过滤、参数校验，调用 `com.traffic.agent.tool` 下的 LangChain4j `@Tool` 封装类，并把每个工具调用写入 `agent_tool_call`。
 - `AgentResponseAssembler` 将 LLM 规划、工具结果和上下文组装给模型生成最终回答。
 - LLM 规划轨迹会以 `llm_tool_plan` 写入 `agent_tool_call`，接口响应中也返回 `planTrace`。
+- 已新增统一工具返回结构 `AgentToolResult`：`success`、`toolName`、`data`、`evidence`、`warnings`、`timestamp`。
+- 工具异常由 `AgentToolSupport` 捕获并包装为结构化失败结果，不直接中断整个 Agent 编排。
+- 工具结果进入 `agent_tool_call.result_payload` 前由 `AgentDataService` 截断到约 12,000 字符，模型回答上下文也会截断大 payload。
 
 当前工具规划不是让模型直接执行 Java 方法，而是采用“LLM 输出 JSON 计划 -> 后端白名单执行”的安全模式。这样既满足由 LLM 进行工具调用决策，又避免模型越权调用未开放能力。
 
 当前仍未完成：
 
-- `search_knowledge_base` 尚未接入，所以规范/部署/算法说明类问题仍只能由模型基于已有上下文回答。
+- `search_knowledge_base` 目前是本地项目文档检索，不是百炼知识库 API。
 - `diagnose_congestion`、`detect_signal_anomaly` 等语义化分析工具尚未实现。
 - 暂未开放执行类工具；策略切换、相位下发、应急绿波执行仍必须等待安全层和仲裁层。
 
@@ -252,6 +258,7 @@ Agent 可见语义化工具
 - `traffic.agent.langchain4j.enabled` 默认是 `false`，未开启时编排层会复用现有 `BailianAgentService` 调用百炼。
 - 开启 `traffic.agent.langchain4j.enabled=true` 后，会通过普通 Java API 创建 LangChain4j `ChatModel`。
 - 第二阶段采用 LLM JSON 规划模式，不依赖 `langchain4j-spring-boot-starter`。
+- 第三阶段已封装 `com.traffic.agent.tool` 工具层，工具方法使用 LangChain4j `@Tool` 注解，但实际执行仍由后端白名单和审计流程控制。
 
 当前配置项：
 
@@ -375,6 +382,8 @@ traffic:
 - 返回引用来源；
 - 不依赖百炼平台 Agent 工具调用。
 
+当前状态：已完成本地文档检索基础版，检索范围为项目根目录、`docs/` 和 `backend/docs/` 下的 `.md/.txt` 文件；尚未接入百炼知识库 API。
+
 ### 阶段 C：实现核心分析工具
 
 目标：
@@ -441,11 +450,11 @@ traffic:
 
 下一步优先实现：
 
-1. `search_knowledge_base`
-2. `diagnose_congestion`
-3. 增强 `get_decision_trace`
-4. 增强 `get_system_health`
-5. `get_emergency_vehicle_status`
+1. `diagnose_congestion`
+2. 增强 `get_decision_trace`
+3. 增强 `get_system_health`
+4. `get_emergency_vehicle_status`
+5. 将 `search_knowledge_base` 从本地文档检索增强为百炼知识库 API 或混合检索
 
 暂缓：
 
