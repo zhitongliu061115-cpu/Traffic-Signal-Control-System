@@ -104,29 +104,72 @@ onMounted(() => {
     const result = await store.initSimulationSession()
     if (result?.sid) {
       wsConnect(result.sid)
+      // WebSocket 连接成功后自动启动仿真
+      const stopWatch = watch(wsStatus, (s) => {
+        if (s === 'connected') {
+          stopWatch()
+          store.resumeSimulation()
+        }
+      })
     }
   }
 
   // 页面启动自动连接仿真 WebSocket（后端不可用时不影响 mock 模式运行）
   void initSimulation()
 
-  // 200ms — 车辆位置高频更新
-  vehicleTimer = setInterval(() => {
-    store.updateVehiclePositions(200)
-  }, 200)
+  // ---- Mock 定时器控制 ----
+  function startMockTimers(): void {
+    if (vehicleTimer) return // 已启动
+    vehicleTimer = setInterval(() => {
+      store.updateVehiclePositions(200)
+    }, 200)
+    statsTimer = setInterval(() => {
+      store.updateTrafficIndicators(2000)
+    }, 2000)
+    trendTimer = setInterval(() => {
+      store.addCongestionTrendPoint()
+      maybeGenerateRandomAlert()
+    }, 5000)
+    console.log('[Dashboard] mock 定时器已启动')
+  }
 
-  // 2s — 交通统计 / 道路指数 / 信号灯 / 系统延迟
-  statsTimer = setInterval(() => {
-    store.updateTrafficIndicators(2000)
-  }, 2000)
+  function stopMockTimers(): void {
+    if (vehicleTimer) { clearInterval(vehicleTimer); vehicleTimer = null }
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null }
+    if (trendTimer) { clearInterval(trendTimer); trendTimer = null }
+    console.log('[Dashboard] mock 定时器已停止，使用仿真数据')
+  }
 
-  // 5s — 拥堵趋势 + 随机告警
-  trendTimer = setInterval(() => {
-    store.addCongestionTrendPoint()
-    maybeGenerateRandomAlert()
-  }, 5000)
+  // 初始启动 mock 定时器
+  startMockTimers()
 
-  console.log('[Dashboard] 定时刷新已启动 (200ms / 2s / 5s)')
+  // ---- 仿真运行后关闭 mock，仿真停止后恢复 mock ----
+  watch(
+    () => store.simulationStatus,
+    (status) => {
+      if (status === 'running') {
+        stopMockTimers()
+      } else if (vehicleTimer === null) {
+        startMockTimers()
+      }
+    },
+  )
+
+  // ---- 策略切换：监听 simulationSid 变化自动重连 WebSocket ----
+  watch(
+    () => store.simulationSid,
+    (newSid, oldSid) => {
+      // 跳过首次赋值（页面初始化走 initSimulation）
+      if (oldSid === undefined || oldSid === null) return
+      if (!newSid) return
+      // recreate 触发的 sid 变化 → 断开旧连接 + 接新连接
+      wsDisconnect()
+      wsConnect(newSid)
+      const stop = watch(wsStatus, (s) => {
+        if (s === 'connected') { stop(); store.resumeSimulation() }
+      })
+    },
+  )
 })
 
 // ---- 仿真帧数据 → Store ----

@@ -10,13 +10,19 @@ import { useTrafficStore } from '@/stores/traffic'
 import { initAMap, type AMapInstance } from '@/map/amapInit'
 import { addAMapRoadLayer } from '@/map/amapRoads'
 import { createTLMarkers, type TLMarker } from '@/map/amapMarkers'
-import { fetchDrivingPath } from '@/map/amapPathGen'
+import { fetchDrivingPathsBatch } from '@/map/amapPathGen'
 import RoadNetwork from '@/components/RoadNetwork.vue'
 import MapLegend from '@/components/MapLegend.vue'
 import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
+import { createVehicleLayer, type VehicleLayer } from '@/map/amapVehicleLayer'
+import type { SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 
 const store = useTrafficStore()
-const { intersections, roads, vehicles, systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId } = storeToRefs(store)
+const {
+  intersections, roads, vehicles,
+  systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId,
+  simulationVehicles, simulationStatus, simRoadnet,
+} = storeToRefs(store)
 
 const mapBox = ref<HTMLDivElement | null>(null)
 const mapReady = ref(false)
@@ -29,6 +35,7 @@ let amapInstance: AMapInstance | null = null
 let roadLayer: ReturnType<typeof addAMapRoadLayer> | null = null
 let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
 let emergencyLine: AMap.Polyline | null = null
+let vehicleLayer: VehicleLayer | null = null
 
 async function bootstrapMap(): Promise<void> {
   if (!mapBox.value) return
@@ -52,19 +59,56 @@ async function bootstrapMap(): Promise<void> {
   }
 }
 
+function addEndpoint(map: Map<string, Array<[number, number]>>, itId: string, pt: [number, number]): void {
+  const arr = map.get(itId)
+  if (arr) arr.push(pt)
+  else map.set(itId, [pt])
+}
+
 async function loadRealData(): Promise<void> {
   const map = amapInstance!.map
 
   // ---- 第 1 步：从后端加载数据（失败自动降级 mock）----
   await store.loadDashboardData()
 
-  // ---- 第 2 步：路径规划 ----
+  // ---- 第 2 步：路径规划（3 路并发 + localStorage 缓存）----
+  const pairs: Array<{ origin: [number, number]; destination: [number, number] }> = []
   for (const r of roads.value) {
     const from = intersections.value.find((i) => i.id === r.from)
     const to = intersections.value.find((i) => i.id === r.to)
     if (!from || !to) continue
-    const realPath = await fetchDrivingPath([from.lng, from.lat], [to.lng, to.lat])
+    pairs.push({ origin: [from.lng, from.lat], destination: [to.lng, to.lat] })
+  }
+  const paths = await fetchDrivingPathsBatch(pairs, 3)
+  let pi = 0
+  for (const r of roads.value) {
+    const from = intersections.value.find((i) => i.id === r.from)
+    const to = intersections.value.find((i) => i.id === r.to)
+    if (!from || !to) continue
+    const realPath = paths[pi++]
     if (realPath) r.path = realPath
+  }
+
+  // ---- 第 2.5 步：用真实路径端点修正路口坐标 ----
+  // 高德驾车路径端点 = 道路实际交叉口位置，比 mock 手写坐标更准确
+  const itEndpoints = new Map<string, Array<[number, number]>>()
+  for (const r of roads.value) {
+    if (!r.path || r.path.length < 2) continue
+    const first = r.path[0]!
+    const last = r.path[r.path.length - 1]!
+    addEndpoint(itEndpoints, r.from, first)
+    addEndpoint(itEndpoints, r.to, last)
+  }
+  for (const it of intersections.value) {
+    const pts = itEndpoints.get(it.id)
+    if (!pts || pts.length === 0) continue
+    const sumLng = pts.reduce((s, p) => s + p[0], 0)
+    const sumLat = pts.reduce((s, p) => s + p[1], 0)
+    it.lng = sumLng / pts.length
+    it.lat = sumLat / pts.length
+    // 同步修正归一化坐标（Three.js 备用）
+    it.x = (it.lng - 121.450) / 0.035
+    it.y = (31.240 - it.lat) / 0.027
   }
 
   // ---- 第 3 步：一次性创建 ----
@@ -88,12 +132,36 @@ function syncEmergency(): void {
   }
 }
 
+// 防抖更新：避免 200ms 高频属性变更触发 AMap 全量重绘风暴
+let updateTimer: ReturnType<typeof setTimeout> | null = null
 watch([roads, intersections], () => {
-  roadLayer?.update(intersections.value, roads.value)
-  tlMarkers?.updateAll(intersections.value)
-  syncEmergency()
-})
+  if (updateTimer !== null) return // 已有待执行更新，合并跳过
+  updateTimer = setTimeout(() => {
+    updateTimer = null
+    roadLayer?.update(intersections.value, roads.value)
+    tlMarkers?.updateAll(intersections.value)
+    syncEmergency()
+  }, 300)
+}, { deep: true })
 watch(systemMode, syncEmergency)
+
+// ---- 仿真车辆图层：路网就绪后按帧刷新 ----
+watch([simulationVehicles, simRoadnet, simulationStatus], () => {
+  if (simulationStatus.value !== 'running' || !amapInstance || !simRoadnet.value) {
+    vehicleLayer?.dispose()
+    vehicleLayer = null
+    return
+  }
+  if (!vehicleLayer) {
+    vehicleLayer = createVehicleLayer(
+      amapInstance.map,
+      simRoadnet.value as SimRoadnetResponse,
+      roads.value,
+      intersections.value,
+    )
+  }
+  vehicleLayer.update(simulationVehicles.value as SimVehicleState[])
+})
 
 function onMapDblClick(): void {
   if (selectedIntersectionId.value) viewerOpen.value = true
@@ -104,6 +172,7 @@ setTimeout(bootstrapMap, 100)
 onBeforeUnmount(() => {
   roadLayer?.dispose()
   tlMarkers?.dispose()
+  vehicleLayer?.dispose()
   emergencyLine?.setMap(null)
   amapInstance?.destroy()
 })

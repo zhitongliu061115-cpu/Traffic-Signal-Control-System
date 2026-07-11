@@ -3,9 +3,10 @@
 // EmergencyPanel — 应急绿波控制面板
 // 驱动应急车辆模拟、绿波激活、路线高亮（与 RoadNetwork 联动）
 // ================================================================
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useTrafficStore } from '@/stores/traffic'
+import type { EmergencyEvType } from '@/types/traffic'
 
 const store = useTrafficStore()
 const {
@@ -20,6 +21,37 @@ const {
 
 // ---- 本地状态：是否曾经触发过（区分"未触发"与"已完成"） ----
 const wasEverTriggered = ref(false)
+
+// ---- Dialog 状态 ----
+const showDispatchDialog = ref(false)
+const dispatchDialogX = ref(0)
+const dispatchDialogY = ref(0)
+const dispatching = ref(false)
+const dispatchResult = ref<{
+  evId: string
+  route: string[]
+  routeRoads: string[]
+  estimatedTravelTime: number
+  startName: string
+  endName: string
+} | null>(null)
+
+const dispatchForm = reactive({
+  startId: 'A01' as string,
+  endId: 'A10' as string,
+  vehicleType: 'ambulance' as EmergencyEvType,
+  priority: 3 as number,
+})
+
+
+/** 确认按钮是否可用 */
+const canDispatch = computed(
+  () =>
+    dispatchForm.startId !== dispatchForm.endId &&
+    dispatchForm.startId !== '' &&
+    dispatchForm.endId !== '' &&
+    !dispatching.value,
+)
 
 // ---- 应急车辆类型查找 ----
 const emergencyVehOnRoad = computed(() =>
@@ -117,21 +149,54 @@ const canRestore = computed(() => systemMode.value === 'emergency')
 // 按钮处理
 // ================================================================
 
-function handleSimulateVehicle(): void {
-  store.simulateEmergencyVehicle()
-  wasEverTriggered.value = true
+function openDispatchDialog(e: MouseEvent): void {
+  dispatchResult.value = null
+  dispatchForm.startId = emergencyRoute.value[0] ?? 'A01'
+  dispatchForm.endId = emergencyRoute.value[emergencyRoute.value.length - 1] ?? 'A10'
+  dispatchForm.vehicleType = 'ambulance'
+  dispatchForm.priority = 3
+  // 边界检测
+  const pw = 420, ph = 400, margin = 12
+  let x = e.clientX + 10, y = e.clientY - 10
+  if (x + pw > window.innerWidth - margin) x = window.innerWidth - pw - margin
+  if (y + ph > window.innerHeight - margin) y = e.clientY - ph - 10
+  if (x < margin) x = margin
+  if (y < margin) y = margin
+  dispatchDialogX.value = x
+  dispatchDialogY.value = y
+  showDispatchDialog.value = true
 }
 
-function handleStartGreenWave(): void {
-  store.startEmergencyGreenWave()
-  wasEverTriggered.value = true
-  store.generateMockAlert(
-    'green_wave_start',
-    'emergency',
-    `应急绿波启动成功 — ${vehicleTypeLabel.value ?? '应急车辆'}优先通行`,
-    `${startNodeName.value} → ${endNodeName.value}`,
-    emergencyRoute.value[0],
-  )
+function closeDispatchDialog(): void {
+  showDispatchDialog.value = false
+}
+
+async function handleConfirmDispatch(): Promise<void> {
+  if (!canDispatch.value) return
+  dispatching.value = true
+  dispatchResult.value = null
+
+  try {
+    const result = await store.dispatchEmergencyVehicle({
+      startIntersection: dispatchForm.startId,
+      endIntersection: dispatchForm.endId,
+      evType: dispatchForm.vehicleType,
+      priority: dispatchForm.priority,
+    })
+
+    if (result) {
+      dispatchResult.value = result
+      wasEverTriggered.value = true
+    }
+  } catch (err) {
+    console.error('[EmergencyPanel] dispatch failed', err)
+  } finally {
+    dispatching.value = false
+  }
+}
+
+function handleSimulateVehicle(): void {
+  openDispatchDialog(new MouseEvent('click'))
 }
 
 function handleRestoreNormal(): void {
@@ -260,17 +325,13 @@ const waveProgress = computed(() => {
         </div>
       </div>
 
-      <!-- ===== 一键激活大按钮（仅 idle 时醒目） ===== -->
+      <!-- ===== 大按钮（仅 idle 时醒目） ===== -->
       <button
         v-if="emergencyPhase === 'idle'"
-        class="cyber-btn ep-activate-big"
-        @click="handleSimulateVehicle"
+        class="cyber-btn ep-dispatch-trigger"
+        @click="openDispatchDialog($event)"
       >
-        <span class="ep-activate-big__icon">🚨</span>
-        <div class="ep-activate-big__text">
-          <div>模拟救护车进入路网</div>
-          <div class="ep-activate-big__sub">激活应急绿波通道 · 优先放行沿线信号</div>
-        </div>
+        应急调度
       </button>
 
       <!-- ===== 控制按钮组 ===== -->
@@ -278,7 +339,7 @@ const waveProgress = computed(() => {
         <button
           class="cyber-btn ep-action-btn ep-action-btn--sim"
           :disabled="!canSimulate"
-          @click="handleSimulateVehicle"
+          @click="openDispatchDialog($event)"
         >
           <span>🚑</span> 新增应急车辆
         </button>
@@ -303,11 +364,131 @@ const waveProgress = computed(() => {
         <div class="ep-idle-placeholder__icon">🟢</div>
         <div class="ep-idle-placeholder__text">路网运行正常，无应急事件</div>
         <div class="ep-idle-placeholder__desc">
-          点击上方按钮模拟应急车辆进入路网<br>
+          点击上方按钮配置应急车辆调度<br>
           系统将自动规划绿波路线
         </div>
       </div>
     </div>
+
+    <!-- ===== 调度浮动面板 ===== -->
+    <Teleport to="body">
+      <div v-if="showDispatchDialog" class="ep-dispatch-float" @click.self="closeDispatchDialog">
+        <aside
+          class="hud-card data-panel-card ep-dispatch-panel"
+          :style="{ left: dispatchDialogX + 'px', top: dispatchDialogY + 'px' }"
+          aria-label="应急车辆调度"
+        >
+          <!-- 标题栏 — 复用全局 .hud-panel-titlebar -->
+          <header class="hud-panel-titlebar">
+            <div class="titlebar-inner">
+              <span class="titlebar-mark" />
+              <span class="titlebar-text">应急车辆调度</span>
+              <div class="titlebar-deco">
+                <i /><i /><i />
+              </div>
+            </div>
+          </header>
+
+          <!-- 表单 -->
+          <div class="ep-dispatch-body">
+            <div v-if="!dispatchResult">
+              <div class="ep-field">
+                <label class="ep-label">起点路口</label>
+                <el-select
+                  v-model="dispatchForm.startId"
+                  placeholder="选择起点路口"
+                  filterable
+                  class="ep-select"
+                >
+                  <el-option
+                    v-for="it in intersections"
+                    :key="it.id"
+                    :label="`${it.name} [${it.id}]`"
+                    :value="it.id"
+                  />
+                </el-select>
+              </div>
+
+              <div class="ep-field">
+                <label class="ep-label">终点路口</label>
+                <el-select
+                  v-model="dispatchForm.endId"
+                  placeholder="选择终点路口"
+                  filterable
+                  class="ep-select"
+                >
+                  <el-option
+                    v-for="it in intersections"
+                    :key="it.id"
+                    :label="`${it.name} [${it.id}]`"
+                    :value="it.id"
+                  />
+                </el-select>
+              </div>
+
+              <div class="ep-form-row">
+                <div class="ep-field ep-field--half">
+                  <label class="ep-label">车辆类型</label>
+                  <el-select v-model="dispatchForm.vehicleType" class="ep-select">
+                    <el-option label="🚑 救护车" value="ambulance" />
+                    <el-option label="🚒 消防车" value="firetruck" />
+                  </el-select>
+                </div>
+                <div class="ep-field ep-field--half">
+                  <label class="ep-label">优先级别</label>
+                  <el-select v-model="dispatchForm.priority" class="ep-select">
+                    <el-option label="5 · 最高" :value="5" />
+                    <el-option label="4 · 高" :value="4" />
+                    <el-option label="3 · 中" :value="3" />
+                    <el-option label="2 · 低" :value="2" />
+                    <el-option label="1 · 最低" :value="1" />
+                  </el-select>
+                </div>
+              </div>
+            </div>
+
+            <!-- 结果 -->
+            <div v-else class="ep-result">
+              <div class="ep-result__icon">🚨</div>
+              <div class="ep-result__title">调度成功</div>
+              <div class="ep-result__meta">
+                <div class="ep-result__row">
+                  <span class="ep-result__key">车辆 ID</span>
+                  <span class="ep-result__val text-cyan">{{ dispatchResult.evId }}</span>
+                </div>
+                <div class="ep-result__row">
+                  <span class="ep-result__key">路线</span>
+                  <span class="ep-result__val text-cyan">{{ dispatchResult.route.join(' → ') }}</span>
+                </div>
+                <div class="ep-result__row">
+                  <span class="ep-result__key">预计通行</span>
+                  <span class="ep-result__val text-emerald">~{{ dispatchResult.estimatedTravelTime.toFixed(1) }} min</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 底部 -->
+          <div class="ep-dispatch-footer">
+            <button v-if="!dispatchResult" class="cyber-btn ep-footer-btn ep-footer-btn--cancel" @click="closeDispatchDialog">
+              取消
+            </button>
+            <button
+              v-if="!dispatchResult"
+              class="cyber-btn ep-footer-btn ep-footer-btn--go"
+              :disabled="!canDispatch"
+              @click="handleConfirmDispatch"
+            >
+              <span v-if="dispatching">⏳ 调度中…</span>
+              <span v-else>🚨 确认调度</span>
+            </button>
+            <button v-else class="cyber-btn ep-footer-btn" @click="closeDispatchDialog">
+              关闭
+            </button>
+          </div>
+        </aside>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -609,37 +790,30 @@ const waveProgress = computed(() => {
   font-weight: 700;
 }
 
-/* 一键激活大按钮 */
-.ep-activate-big {
+/* 应急调度大按钮 */
+.ep-dispatch-trigger {
   width: 100%;
-  padding: 8px 12px;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
+  padding: 22px 16px;
   text-transform: none;
-  letter-spacing: 0.04em;
+  font-family: 'AlimamaShuHeiTi', 'PingFang SC', sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
   color: #ff4d6d;
-  border-color: rgba(255, 77, 109, 0.6);
-  border-width: 1.5px;
+  border-color: rgba(255, 77, 109, 0.55);
+  border-width: 2px;
+  background: linear-gradient(180deg, rgba(255, 77, 109, 0.06), rgba(255, 77, 109, 0.02));
+  transition: all 0.25s ease;
 }
 
-.ep-activate-big:hover {
+.ep-dispatch-trigger:hover {
+  color: #ff6b85;
+  border-color: rgba(255, 107, 133, 0.7);
   background: rgba(255, 77, 109, 0.14);
-  box-shadow: 0 0 24px rgba(255, 77, 109, 0.4), inset 0 0 14px rgba(255, 77, 109, 0.1);
-}
-
-.ep-activate-big__icon {
-  font-size: 22px;
-}
-
-.ep-activate-big__text {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.ep-activate-big__sub {
-  font-size: 10px;
-  color: rgba(255, 77, 109, 0.6);
+  box-shadow:
+    0 0 36px rgba(255, 77, 109, 0.45),
+    inset 0 0 22px rgba(255, 77, 109, 0.12);
+  transform: translateY(-2px);
 }
 
 /* 按钮组 */
@@ -720,5 +894,136 @@ const waveProgress = computed(() => {
   color: #5a7595;
   text-align: center;
   line-height: 1.6;
+}
+
+/* ================================================================
+   Floating Panel — 复用全局 HUD 样式，el-select 依赖 dashboard-shell 暗色覆盖
+   ================================================================ */
+
+.ep-dispatch-float {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+}
+.ep-dispatch-panel {
+  position: absolute;
+  width: 380px;
+  max-height: 76vh;
+  pointer-events: auto;
+  display: flex;
+  --hud-fill: rgba(5, 19, 35, 0.96);
+  flex-direction: column;
+}
+
+.ep-dispatch-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ep-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ep-field--half {
+  flex: 1;
+  min-width: 0;
+}
+
+.ep-form-row {
+  display: flex;
+  gap: 10px;
+}
+
+.ep-label {
+  font-family: 'Rajdhani', 'PingFang SC', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8da8c5;
+  letter-spacing: 0.04em;
+}
+
+.ep-select {
+  width: 100%;
+}
+
+.ep-dispatch-footer {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid rgba(0, 212, 255, 0.1);
+}
+
+.ep-footer-btn {
+  font-size: 12px;
+  padding: 7px 16px;
+  letter-spacing: 0.04em;
+}
+
+.ep-footer-btn--cancel {
+  color: #8da8c5;
+  border-color: rgba(143, 172, 197, 0.35);
+}
+
+.ep-footer-btn--go {
+  color: #ff4d6d;
+  border-color: rgba(255, 77, 109, 0.45);
+}
+
+.ep-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 0;
+}
+
+.ep-result__icon {
+  font-size: 36px;
+}
+
+.ep-result__title {
+  font-family: 'Rajdhani', 'DINPro', sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  color: #22d3a0;
+  text-shadow: 0 0 14px rgba(34, 211, 160, 0.4);
+}
+
+.ep-result__meta {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  background: rgba(4, 21, 39, 0.4);
+  border: 1px solid rgba(0, 212, 255, 0.1);
+}
+
+.ep-result__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.ep-result__key {
+  font-size: 11px;
+  color: #5a7595;
+}
+
+.ep-result__val {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
 }
 </style>

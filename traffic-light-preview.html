@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>红绿灯 Marker 预览</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap');
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background: #0a1628;
+    display: flex; flex-wrap: wrap; gap: 24px; padding: 40px;
+    justify-content: center; align-items: flex-start;
+    font-family: 'Rajdhani', 'PingFang SC', sans-serif;
+  }
+
+  /* ======== 卡片容器 ======== */
+  .tl-card {
+    width: 152px;
+    background: rgba(4, 21, 39, 0.92);
+    border: 1.5px solid rgba(0, 212, 255, 0.35);
+    border-radius: 6px;
+    padding: 8px 10px 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    box-shadow: 0 0 18px rgba(0, 212, 255, 0.12);
+    user-select: none; cursor: pointer;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .tl-card:hover {
+    border-color: rgba(0, 212, 255, 0.7);
+    box-shadow: 0 0 28px rgba(0, 212, 255, 0.28);
+  }
+  /* 应急绿波 */
+  .tl-card.emergency {
+    border-color: rgba(0, 229, 255, 0.8);
+    box-shadow: 0 0 24px rgba(0, 229, 255, 0.35);
+    animation: pulse-border 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes pulse-border {
+    from { box-shadow: 0 0 18px rgba(0,229,255,0.25); }
+    to   { box-shadow: 0 0 36px rgba(0,229,255,0.55); }
+  }
+
+  /* ======== 顶部相位信息 ======== */
+  .tl-phase {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.06em;
+    color: #7af7ff; text-shadow: 0 0 8px rgba(122,247,255,0.4);
+    text-align: center;
+  }
+  .tl-countdown {
+    font-size: 22px; font-weight: 700; line-height: 1;
+    color: #e8f4ff; text-shadow: 0 0 10px rgba(232,244,255,0.3);
+  }
+  .tl-countdown.warn { color: #f5a623; text-shadow: 0 0 10px rgba(245,166,35,0.4); }
+  .tl-countdown.urgent { color: #ff4d6d; text-shadow: 0 0 10px rgba(255,77,109,0.4); animation: blink-num 0.5s step-end infinite alternate; }
+  @keyframes blink-num { 50% { opacity: 0.3; } }
+
+  /* ======== 方向指示灯网格 ======== */
+  .tl-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 10px;
+    width: 100%;
+  }
+  .tl-dir {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 10px; color: #5a7595;
+  }
+  .tl-dir .dot {
+    width: 16px; height: 16px; border-radius: 50%;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 7px; font-weight: 700; color: #fff;
+    text-shadow: 0 0 3px rgba(0,0,0,0.4);
+  }
+  .tl-dir .dot.green {
+    background: #22d3a0;
+    box-shadow: 0 0 10px rgba(34,211,160,0.7), inset 0 1px 2px rgba(255,255,255,0.3);
+  }
+  .tl-dir .dot.red {
+    background: #3a1020;
+    box-shadow: 0 0 6px rgba(255,77,109,0.4);
+    color: rgba(255,255,255,0.3);
+  }
+  .tl-dir .dot.yellow {
+    background: #f5a623;
+    box-shadow: 0 0 10px rgba(245,166,35,0.7);
+  }
+  .tl-dir .label { font-size: 9px; white-space: nowrap; }
+
+  /* ======== 底部路口名 + 状态点 ======== */
+  .tl-footer {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 9px; color: #5a7595; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; max-width: 100%;
+  }
+  .tl-footer .status-dot {
+    width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
+    background: #22d3a0; box-shadow: 0 0 4px #22d3a0;
+  }
+  .tl-footer .status-dot.fault { background: #ff4d6d; box-shadow: 0 0 4px #ff4d6d; }
+  .tl-footer .status-dot.offline { background: #5a7595; box-shadow: none; }
+
+  /* ======== 图例 ======== */
+  .legend {
+    width: 100%; text-align: center; color: #8da8c5; font-size: 12px;
+    margin-bottom: 8px;
+  }
+  .legend span { margin: 0 6px; }
+</style>
+</head>
+<body>
+
+<div style="width:100%;text-align:center">
+  <div class="legend">
+    <span style="color:#22d3a0">● 放行</span>
+    <span style="color:#f5a623">● 即将切换</span>
+    <span style="color:#3a1020">● 等待</span>
+  </div>
+</div>
+
+<!-- 1. 东西直行，28s 剩余 -->
+<div class="tl-card">
+  <div class="tl-phase">🚥 东西直行</div>
+  <div class="tl-countdown">28</div>
+  <div class="tl-grid">
+    <div class="tl-dir"><span class="dot green">→</span><span class="label">东直</span></div>
+    <div class="tl-dir"><span class="dot green">←</span><span class="label">西直</span></div>
+    <div class="tl-dir"><span class="dot red">↓</span><span class="label">南</span></div>
+    <div class="tl-dir"><span class="dot red">↑</span><span class="label">北</span></div>
+  </div>
+  <div class="tl-footer"><span class="status-dot"></span>西藏中路-南京东路</div>
+</div>
+
+<!-- 2. 东西左转，6s 剩余（黄灯预警） -->
+<div class="tl-card">
+  <div class="tl-phase">🚥 东西左转</div>
+  <div class="tl-countdown warn">6</div>
+  <div class="tl-grid">
+    <div class="tl-dir"><span class="dot yellow">↰</span><span class="label">东左</span></div>
+    <div class="tl-dir"><span class="dot yellow">↱</span><span class="label">西左</span></div>
+    <div class="tl-dir"><span class="dot red">↓</span><span class="label">南</span></div>
+    <div class="tl-dir"><span class="dot red">↑</span><span class="label">北</span></div>
+  </div>
+  <div class="tl-footer"><span class="status-dot"></span>黄陂北路-南京西路</div>
+</div>
+
+<!-- 3. 南北直行，50s 剩余 -->
+<div class="tl-card">
+  <div class="tl-phase">🚥 南北直行</div>
+  <div class="tl-countdown">50</div>
+  <div class="tl-grid">
+    <div class="tl-dir"><span class="dot red">→</span><span class="label">东</span></div>
+    <div class="tl-dir"><span class="dot red">←</span><span class="label">西</span></div>
+    <div class="tl-dir"><span class="dot green">↓</span><span class="label">南直</span></div>
+    <div class="tl-dir"><span class="dot green">↑</span><span class="label">北直</span></div>
+  </div>
+  <div class="tl-footer"><span class="status-dot"></span>黄陂南路-淮海中路</div>
+</div>
+
+<!-- 4. 南北左转，3s 剩余（急闪） -->
+<div class="tl-card">
+  <div class="tl-phase">🚥 南北左转</div>
+  <div class="tl-countdown urgent">3</div>
+  <div class="tl-grid">
+    <div class="tl-dir"><span class="dot red">→</span><span class="label">东</span></div>
+    <div class="tl-dir"><span class="dot red">←</span><span class="label">西</span></div>
+    <div class="tl-dir"><span class="dot yellow">↲</span><span class="label">南左</span></div>
+    <div class="tl-dir"><span class="dot yellow">↳</span><span class="label">北左</span></div>
+  </div>
+  <div class="tl-footer"><span class="status-dot"></span>瑞金二路-淮海中路</div>
+</div>
+
+<!-- 5. all_red 全红 -->
+<div class="tl-card">
+  <div class="tl-phase">⏳ 全向红灯</div>
+  <div class="tl-countdown">5</div>
+  <div class="tl-grid">
+    <div class="tl-dir"><span class="dot red">→</span><span class="label">东</span></div>
+    <div class="tl-dir"><span class="dot red">←</span><span class="label">西</span></div>
+    <div class="tl-dir"><span class="dot red">↓</span><span class="label">南</span></div>
+    <div class="tl-dir"><span class="dot red">↑</span><span class="label">北</span></div>
+  </div>
+  <div class="tl-footer"><span class="status-dot"></span>常熟路-淮海中路</div>
+</div>
+
+<!-- 6. 设备故障 -->
+<div class="tl-card">
+  <div class="tl-phase">⚠ 设备故障</div>
+  <div class="tl-countdown" style="color:#5a7595">--</div>
+  <div class="tl-grid">
+    <div class="tl-dir"><span class="dot red">→</span><span class="label">东</span></div>
+    <div class="tl-dir"><span class="dot red">←</span><span class="label">西</span></div>
+    <div class="tl-dir"><span class="dot red">↓</span><span class="label">南</span></div>
+    <div class="tl-dir"><span class="dot red">↑</span><span class="label">北</span></div>
+  </div>
+  <div class="tl-footer"><span class="status-dot fault"></span>常德路-南京西路</div>
+</div>
+
+<!-- 7. 应急绿波 -->
+<div class="tl-card emergency">
+  <div class="tl-phase">🚑 应急绿波</div>
+  <div class="tl-countdown" style="color:#00e5ff">放行</div>
+  <div class="tl-grid">
+    <div class="tl-dir"><span class="dot green">→</span><span class="label">东</span></div>
+    <div class="tl-dir"><span class="dot green">←</span><span class="label">西</span></div>
+    <div class="tl-dir"><span class="dot red">↓</span><span class="label">南</span></div>
+    <div class="tl-dir"><span class="dot red">↑</span><span class="label">北</span></div>
+  </div>
+  <div class="tl-footer"><span class="status-dot"></span>西藏南路-建国东路</div>
+</div>
+
+</body>
+</html>
