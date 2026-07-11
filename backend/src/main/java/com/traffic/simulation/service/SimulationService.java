@@ -14,6 +14,7 @@ import com.traffic.simulation.session.SimulationSessionRegistry;
 import com.traffic.simulation.session.SimulationSessionState;
 import com.traffic.simulation.websocket.SimulationWebSocketHandler;
 import com.traffic.strategy.TrafficSignalControllerType;
+import com.traffic.strategy.dto.AppliedControlResult;
 import com.traffic.strategy.service.TrafficSignalControllerRegistry;
 import com.traffic.strategy.service.StrategyDispatchService;
 import org.slf4j.Logger;
@@ -21,6 +22,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -54,7 +56,6 @@ public class SimulationService {
     public CreateSimulationResponse createSimulation(CreateSimulationRequest request) {
         String controllerType = TrafficSignalControllerType.fromCode(request.controllerType()).code();
         controllerRegistry.get(controllerType);
-        destroyExistingSessionsBeforeCreate();
         var cityFlowResponse = cityFlowClient.createSimulation(
                 new CityFlowCreateSimulationRequest(request.sceneId(), request.speed(), request.warmupSeconds())
         );
@@ -83,6 +84,7 @@ public class SimulationService {
         SimulationRuntimeSession session = findSession(sid);
         forwardLifecycleToCityFlow("stop", sid);
         session.setState(SimulationSessionState.FINISHED);
+        releaseSessionState(sid);
     }
 
     public Map<String, Object> dispatchEv(String sid, EvDispatchRequest request) {
@@ -121,8 +123,11 @@ public class SimulationService {
         long cityFlowStart = System.nanoTime();
         SimFrameData frameData = cityFlowClient.nextFrame(session.getSid());
         long cityFlowMs = elapsedMs(cityFlowStart);
+        boolean finished = "finished".equalsIgnoreCase(frameData.status());
         long strategyStart = System.nanoTime();
-        var controlResult = strategyDispatchService.decideAndApply(session, frameData);
+        var controlResult = finished
+                ? new AppliedControlResult(List.of(), null)
+                : strategyDispatchService.decideAndApply(session, frameData);
         long strategyMs = elapsedMs(strategyStart);
         var decisions = controlResult.decisions();
         SimFrameData publishFrame = controlResult.frameAfterApply() == null ? frameData : controlResult.frameAfterApply();
@@ -189,6 +194,11 @@ public class SimulationService {
                     decisions.size()
             );
         }
+        if (finished) {
+            session.setState(SimulationSessionState.FINISHED);
+            releaseSessionState(session.getSid());
+            log.info("simulation finished and released. sid={}, simTime={}", session.getSid(), publishFrame.simTime());
+        }
     }
 
     private long elapsedMs(long startNanos) {
@@ -213,25 +223,9 @@ public class SimulationService {
         }
     }
 
-    private void destroyExistingSessionsBeforeCreate() {
-        var existingSessions = sessionRegistry.findAllSnapshot();
-        if (existingSessions.isEmpty()) {
-            return;
-        }
-        log.info("destroying existing simulation sessions before creating a new one. count={}", existingSessions.size());
-        for (SimulationRuntimeSession existingSession : existingSessions) {
-            try {
-                existingSession.setState(SimulationSessionState.FINISHED);
-                cityFlowClient.stopSimulation(existingSession.getSid());
-            } catch (RuntimeException ex) {
-                log.warn(
-                        "failed to stop existing CityFlow session before creating a new one. sid={}, error={}",
-                        existingSession.getSid(),
-                        ex.getMessage()
-                );
-            }
-        }
-        sessionRegistry.clear();
+    private void releaseSessionState(String sid) {
+        strategyDispatchService.releaseSession(sid);
+        sessionRegistry.remove(sid);
     }
 
     private SimulationRuntimeSession findSession(String sid) {

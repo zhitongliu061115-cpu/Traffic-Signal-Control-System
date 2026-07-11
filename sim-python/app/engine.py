@@ -4,11 +4,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import json
 import math
+import shutil
 import tempfile
 import time
 import uuid
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread, current_thread
 
 from app.config import (
     AUTO_SIGNAL_CYCLE,
@@ -16,6 +17,7 @@ from app.config import (
     DEFAULT_REALTIME_TICK_SECONDS,
     DEFAULT_VISIBLE_VEHICLE_LIMIT,
     MAX_ACTIVE_SESSIONS,
+    SESSION_DRAIN_TIMEOUT_SECONDS,
 )
 from app.errors import ApiError
 from app.ev_service import EVPriorityService
@@ -61,6 +63,10 @@ class RealCityFlowEngine(SimulationEngine):
         self.cityflow = cityflow
         self.scene_registry = scene_registry
         self.sessions: dict[str, CityFlowEngineSession] = {}
+        self.terminal_frames: dict[str, JsonDict] = {}
+        self.sessions_lock = RLock()
+        self.creating_sessions = 0
+        self.ev_service_lock = RLock()
         self.parsers: dict[str, RoadnetParser] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
         self.phase_indexes: dict[str, dict[str, list[int]]] = {}
@@ -68,31 +74,16 @@ class RealCityFlowEngine(SimulationEngine):
         self.ev_service = EVPriorityService()
 
     def active_session_count(self) -> int:
-        return len(self.sessions)
+        with self.sessions_lock:
+            return len(self.sessions)
 
     def destroy_all_sessions(self) -> None:
-        old_sessions = list(self.sessions.values())
-        self._stop_and_join_sessions(old_sessions)
-        self.sessions.clear()
-
-    def destroy_sessions_for_owner(self, owner_id: str) -> None:
-        old_sessions = [
-            session for session in self.sessions.values()
-            if session.owner_id == owner_id
-        ]
-        self._stop_and_join_sessions(old_sessions)
+        with self.sessions_lock:
+            old_sessions = list(self.sessions.values())
         for session in old_sessions:
-            self.sessions.pop(session.sid, None)
-
-    def _stop_and_join_sessions(self, old_sessions: list["CityFlowEngineSession"]) -> None:
-        for session in old_sessions:
-            with session.state_lock:
-                session.running = False
-                session.stopped = True
-        for session in old_sessions:
-            worker = session.worker
-            if worker is not None and worker.is_alive():
-                worker.join(timeout=1.0)
+            self._release_session(session, terminal_frame=None, join_worker=True)
+        with self.sessions_lock:
+            self.terminal_frames.clear()
 
     def create_session(
             self,
@@ -101,21 +92,26 @@ class RealCityFlowEngine(SimulationEngine):
             warmup_seconds: float = 0.0,
             owner_id: str = "default",
     ) -> JsonDict:
-        self.destroy_sessions_for_owner(owner_id)
-        if len(self.sessions) >= MAX_ACTIVE_SESSIONS:
-            raise ApiError(
-                status=429,
-                code="SESSION_LIMIT_EXCEEDED",
-                message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
-                retryable=True,
-            )
         scene = self.scene_registry.get(scene_id)
         self._load_scene(scene)
         config_path = self._write_cityflow_config(scene)
+        with self.sessions_lock:
+            if len(self.sessions) + self.creating_sessions >= MAX_ACTIVE_SESSIONS:
+                shutil.rmtree(config_path.parent, ignore_errors=True)
+                raise ApiError(
+                    status=429,
+                    code="SESSION_LIMIT_EXCEEDED",
+                    message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
+                    retryable=True,
+                )
+            self.creating_sessions += 1
 
         try:
             engine = self.cityflow.Engine(str(config_path), thread_num=1)
         except Exception as ex:
+            with self.sessions_lock:
+                self.creating_sessions -= 1
+            shutil.rmtree(config_path.parent, ignore_errors=True)
             raise ApiError(
                 status=500,
                 code="CITYFLOW_ENGINE_CREATE_FAILED",
@@ -123,20 +119,28 @@ class RealCityFlowEngine(SimulationEngine):
                 retryable=False,
             ) from ex
 
-        sid = f"run_{uuid.uuid4().hex[:8]}"
-        self.sessions[sid] = CityFlowEngineSession(
+        sid = f"run_{uuid.uuid4().hex[:16]}"
+        session = CityFlowEngineSession(
             sid=sid,
             scene_id=scene_id,
             speed=speed,
-            owner_id=owner_id,
             total_vehicle_count=scene.total_vehicle_count,
+            flow_end_time=scene.flow_end_time,
+            hard_end_time=scene.flow_end_time + SESSION_DRAIN_TIMEOUT_SECONDS,
             engine=engine,
             config_path=config_path,
         )
-        self._initialize_signal_phases(self.sessions[sid])
-        if warmup_seconds > 0:
-            self._warmup_session(self.sessions[sid], warmup_seconds)
-        self._refresh_latest_frame(self.sessions[sid], advance=False)
+        with self.sessions_lock:
+            self.sessions[sid] = session
+            self.creating_sessions -= 1
+        try:
+            self._initialize_signal_phases(session)
+            if warmup_seconds > 0:
+                self._warmup_session(session, warmup_seconds)
+            self._refresh_latest_frame(session, advance=False)
+        except Exception:
+            self._release_session(session, terminal_frame=None, join_worker=False)
+            raise
         return {
             "sid": sid,
             "sceneId": scene_id,
@@ -173,12 +177,14 @@ class RealCityFlowEngine(SimulationEngine):
 
     def stop_session(self, sid: str, owner_id: str = "default") -> JsonDict:
         session = self._session(sid, owner_id)
-        with session.state_lock:
-            session.running = False
-            session.stopped = True
+        self._release_session(session, terminal_frame=None, join_worker=True)
         return {"sid": sid, "status": "stopped"}
 
     def next_frame(self, sid: str, owner_id: str = "default") -> JsonDict:
+        with self.sessions_lock:
+            terminal_frame = self.terminal_frames.pop(sid, None)
+        if terminal_frame is not None:
+            return terminal_frame
         session = self._session(sid, owner_id)
         with session.frame_lock:
             if session.latest_frame is not None:
@@ -190,6 +196,13 @@ class RealCityFlowEngine(SimulationEngine):
         session = self._session(sid, owner_id)
         applied = []
         with session.engine_lock:
+            if session.stopped:
+                raise ApiError(
+                    status=409,
+                    code="SESSION_STOPPED",
+                    message=f"simulation session has already stopped: {sid}",
+                    retryable=False,
+                )
             for decision in decisions:
                 intersection_id = decision["intersectionId"]
                 phase_index = self._normalize_control_phase(decision)
@@ -227,19 +240,13 @@ class RealCityFlowEngine(SimulationEngine):
         }
 
     def _session(self, sid: str, owner_id: str = "default") -> "CityFlowEngineSession":
-        if sid not in self.sessions:
+        with self.sessions_lock:
+            session = self.sessions.get(sid)
+        if session is None:
             raise ApiError(
                 status=404,
                 code="SESSION_NOT_FOUND",
                 message=f"simulation session not found: {sid}",
-                retryable=False,
-            )
-        session = self.sessions[sid]
-        if session.owner_id != owner_id:
-            raise ApiError(
-                status=403,
-                code="SESSION_OWNER_MISMATCH",
-                message=f"simulation session does not belong to client: {owner_id}",
                 retryable=False,
             )
         return session
@@ -253,11 +260,14 @@ class RealCityFlowEngine(SimulationEngine):
             if running:
                 started_at = time.perf_counter()
                 try:
-                    self._refresh_latest_frame(session, advance=True)
+                    frame = self._refresh_latest_frame(session, advance=True)
                 except Exception as ex:
                     with session.state_lock:
                         session.running = False
                         session.last_error = str(ex)
+                    return
+                if frame.get("status") == "finished":
+                    self._release_session(session, terminal_frame=frame, join_worker=False)
                     return
                 elapsed = time.perf_counter() - started_at
                 time.sleep(max(0.0, self._snapshot_interval_seconds(session) - elapsed))
@@ -282,20 +292,22 @@ class RealCityFlowEngine(SimulationEngine):
                 self._advance_signal_phases(session, sim_time)
             ev_events: list[dict] = []
             ev_status: list[dict] = []
-            if self.ev_service.has_evs(session.sid):
-                ev_overrides, ev_events, ev_status = self.ev_service.step(session.sid, session.engine, sim_time)
-                for intersection_id, phase_index in ev_overrides.items():
-                    try:
-                        session.engine.set_tl_phase(intersection_id, phase_index - 1)
-                        session.current_phases[intersection_id] = phase_index
-                    except Exception:
-                        continue
+            with self.ev_service_lock:
+                if self.ev_service.has_evs(session.sid):
+                    ev_overrides, ev_events, ev_status = self.ev_service.step(session.sid, session.engine, sim_time)
+                    for intersection_id, phase_index in ev_overrides.items():
+                        try:
+                            session.engine.set_tl_phase(intersection_id, phase_index - 1)
+                            session.current_phases[intersection_id] = phase_index
+                        except Exception:
+                            continue
             vehicles = self._vehicle_states(session, road_by_id)
             lane_states = self._lane_states(session, road_by_id)
             roads = self._road_states(session, vehicles, road_by_id)
             intersections = self._intersection_states(session.scene_id, roads)
             signals = self._signal_states(session.scene_id, session.current_phases)
             metrics = self._metrics(session, vehicles, roads)
+            status = "finished" if self._simulation_complete(session, sim_time, metrics) else "running"
 
             return {
                 "sid": session.sid,
@@ -303,6 +315,7 @@ class RealCityFlowEngine(SimulationEngine):
                 "seq": session.seq,
                 "simTime": round(sim_time, 3),
                 "engineMode": "cityflow",
+                "status": status,
                 "vehicles": vehicles,
                 "roads": roads,
                 "laneStates": lane_states,
@@ -312,6 +325,42 @@ class RealCityFlowEngine(SimulationEngine):
                 "evEvents": ev_events,
                 "evStatus": ev_status,
             }
+
+    def _simulation_complete(self, session: "CityFlowEngineSession", sim_time: float, metrics: JsonDict) -> bool:
+        return (
+            (
+                sim_time >= session.flow_end_time
+                and int(metrics.get("activeVehicleCount", 0)) == 0
+            )
+            or sim_time >= session.hard_end_time
+        )
+
+    def _release_session(
+            self,
+            session: "CityFlowEngineSession",
+            terminal_frame: JsonDict | None,
+            join_worker: bool,
+    ) -> None:
+        with session.state_lock:
+            session.running = False
+            session.stopped = True
+        with self.sessions_lock:
+            if self.sessions.get(session.sid) is session:
+                self.sessions.pop(session.sid, None)
+            if terminal_frame is not None:
+                self.terminal_frames[session.sid] = terminal_frame
+                while len(self.terminal_frames) > 64:
+                    self.terminal_frames.pop(next(iter(self.terminal_frames)))
+        worker = session.worker
+        if join_worker and worker is not None and worker.is_alive() and worker is not current_thread():
+            worker.join()
+        with session.engine_lock:
+            with self.ev_service_lock:
+                self.ev_service.release_session(session.sid)
+        try:
+            shutil.rmtree(session.config_path.parent)
+        except OSError:
+            pass
 
     def _snapshot_interval_seconds(self, session: "CityFlowEngineSession") -> float:
         speed = max(1.0, float(session.speed))
@@ -660,8 +709,9 @@ class CityFlowEngineSession:
     sid: str
     scene_id: str
     speed: float
-    owner_id: str
     total_vehicle_count: int
+    flow_end_time: float
+    hard_end_time: float
     engine: object
     config_path: Path
     seq: int = 0

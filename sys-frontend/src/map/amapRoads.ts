@@ -11,9 +11,9 @@ const AMAP_RED   = '#e65c4c'
 const AMAP_DARK  = '#cc0000'
 
 function ciColor(ci: number): string {
-  if (ci <= 30) return AMAP_GREEN
-  if (ci <= 60) return AMAP_AMBER
-  if (ci <= 80) return AMAP_RED
+  if (ci <= 25) return '#5ebf49'
+  if (ci <= 50) return AMAP_AMBER
+  if (ci <= 70) return AMAP_RED
   return AMAP_DARK
 }
 
@@ -37,6 +37,8 @@ export function addAMapRoadLayer(
 } {
   const entries: RoadEntry[] = []
   const lookup = new Map<string, RoadEntry>()
+  /** 缓存上次颜色，避免 congestionIndex 微量变化触发无意义 setOptions */
+  const lastColor = new Map<string, string>()
 
   for (const r of roads) {
     const from = intersections.find((i) => i.id === r.from)
@@ -82,7 +84,12 @@ export function addAMapRoadLayer(
           ? r.path
           : [[from.lng, from.lat], [to.lng, to.lat]]
         e.polyline.setPath(path)
-        e.polyline.setOptions({ strokeColor: ciColor(r.congestionIndex) })
+        // 脏检查：只在颜色实际变化时才调 setOptions
+        const newColor = ciColor(r.congestionIndex)
+        if (lastColor.get(r.id) !== newColor) {
+          lastColor.set(r.id, newColor)
+          e.polyline.setOptions({ strokeColor: newColor })
+        }
       }
     },
     /** 用真实道路 path 替换手写 mock path */

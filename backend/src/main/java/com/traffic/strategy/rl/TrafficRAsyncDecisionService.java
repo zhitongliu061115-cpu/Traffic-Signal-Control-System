@@ -68,6 +68,10 @@ public class TrafficRAsyncDecisionService {
         }
     }
 
+    public void releaseSession(String sid) {
+        slots.remove(sid);
+    }
+
     private boolean shouldSubmit(DecisionSlot slot, double simTime) {
         if (slot.inFlight) {
             return false;

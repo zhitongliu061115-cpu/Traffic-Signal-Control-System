@@ -78,6 +78,12 @@ public class StrategyDispatchService {
         return new AppliedControlResult(List.of(), null);
     }
 
+    public void releaseSession(String sid) {
+        lastSynchronousDecisionSimTime.remove(sid);
+        pendingActionKeys.removeIf(key -> key.startsWith(sid + ":"));
+        trafficRAsyncDecisionService.releaseSession(sid);
+    }
+
     private void submitApplyActions(SimulationRuntimeSession session, SimFrameData frame, List<ControlDecision> decisions) {
         actionExecutor.submit(() -> {
             try {

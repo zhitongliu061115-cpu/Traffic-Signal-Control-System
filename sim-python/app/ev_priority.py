@@ -517,7 +517,7 @@ class ConflictResolver:
 
     def register(self, request: EVRequest):
         self.active_requests.append(request)
-        self.active_requests.sort(key=lambda r: (-r.priority, r.trigger_time))
+        self.active_requests.sort(key=lambda r: (r.priority, r.trigger_time))
 
     def resolve_at_intersection(self, intersection_id: str,
                                  current_time: float) -> Optional[EVRequest]:
@@ -525,7 +525,7 @@ class ConflictResolver:
                       if intersection_id in r.path]
         if not candidates:
             return None
-        candidates.sort(key=lambda r: (-r.priority, r.trigger_time))
+        candidates.sort(key=lambda r: (r.priority, r.trigger_time))
         return candidates[0]
 
     def remove(self, ev_id: str):

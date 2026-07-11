@@ -13,7 +13,6 @@ class SimulationSession:
     sim_time: float = 0.0
     seq: int = 0
     engine_mode: str = "mock"
-    owner_id: str = "default"
     running: bool = False
     stopped: bool = False
     latest_frame: dict[str, Any] | None = None

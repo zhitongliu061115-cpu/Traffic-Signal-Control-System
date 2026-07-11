@@ -13,7 +13,7 @@
 | Python 服务入口 | `/opt/Traffic-Signal-Control-System/sim-python/app/server.py` |
 | Conda 环境 | `cityflow39` |
 | Spring Boot 默认 CityFlow 地址 | `http://39.105.75.87:9000` |
-| Spring Boot 默认 client id | `hcj` |
+| 会话标识 | Python 创建并返回的唯一 `sid` |
 | 当前团队 token | `jLEc-o3L16migUKQ7f_OlH94qsjEstFf` |
 
 当前云端目录应至少包含：
@@ -28,7 +28,28 @@
     ALIYUN_CITYFLOW_DEPLOYMENT.md
 ```
 
-## 2. 云端 Python 环境
+## 2. 2026-07-11 云端更新记录
+
+本次更新用于修复应急绿波结束后继续覆盖 RL 相位的问题，并调整 CityFlow 会话生命周期：
+
+- 应急车辆完成、离开 CityFlow 或注入失败后，释放该车辆持有的全部信号覆盖，后续 RL 可以继续控制路口。
+- 应急调度、CityFlow step 和 RL action 通过一致的引擎锁访问 CityFlow，避免并发修改引擎状态。
+- 创建新仿真不再停止已有仿真，不再按 `X-CityFlow-Client` 区分会话归属；所有操作统一通过 `sid` 定位。
+- 同时运行的会话数量仍由 `SIM_MAX_ACTIVE_SESSIONS` 控制，4 核 8G 服务器建议保持为 `4`。
+- 调用 stop 时释放 worker、CityFlow Engine、应急状态和临时配置目录。
+- 最后一批车辆已经发出且路网车辆清空后自动释放会话；如果车辆始终无法排空，超过 `SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600` 后强制释放。
+- 最后一帧返回 `status=finished`，Spring Boot 收到后停止轮询并清理策略运行状态。
+
+本次需要更新的云端目录为：
+
+```text
+/opt/Traffic-Signal-Control-System/sim-python/app
+/opt/Traffic-Signal-Control-System/sim-python/data
+/opt/Traffic-Signal-Control-System/sim-python/tests
+/opt/Traffic-Signal-Control-System/sim-python/README.md
+```
+
+## 3. 云端 Python 环境
 
 CityFlow 不应使用 Python 3.14 环境。当前建议使用 Conda 创建 Python 3.9 环境：
 
@@ -69,7 +90,7 @@ pip install .
 python -c "import cityflow; print('cityflow import ok'); print(cityflow.Engine)"
 ```
 
-## 3. 手动启动 CityFlow 服务
+## 4. 手动启动 CityFlow 服务
 
 进入云端服务目录：
 
@@ -84,6 +105,7 @@ conda activate cityflow39
 SIM_ENGINE_MODE=cityflow \
 CITYFLOW_API_TOKEN="jLEc-o3L16migUKQ7f_OlH94qsjEstFf" \
 SIM_MAX_ACTIVE_SESSIONS=4 \
+SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600 \
 SIM_MAX_SPEED=10 \
 SIM_VISIBLE_VEHICLE_LIMIT=300 \
 SIM_MAX_REQUEST_BYTES=1048576 \
@@ -97,8 +119,11 @@ python app/server.py --host 0.0.0.0 --port 9000
 - `--host` 必须是 `0.0.0.0`，不能是 `127.0.0.1`，否则公网无法访问。
 - `CITYFLOW_API_TOKEN` 必须和本地 Spring Boot 配置一致。
 - `SIM_MAX_ACTIVE_SESSIONS=4` 是为 4 核 8G 服务器设置的资源上限。
+- `SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600` 表示最后发车后最多再等待 600 秒仿真时间排空路网，避免死锁车辆永久占用 Engine。
+- 创建新仿真不会清理已有仿真；每个 `sid` 持有独立 CityFlow Engine。
+- 调用 stop 或场景自然结束后，服务会释放 worker、Engine、应急状态和临时配置目录，`/health.activeSessions` 随之减少。
 
-## 4. 云端本机验证
+## 5. 云端本机验证
 
 查看服务是否监听公网地址：
 
@@ -124,6 +149,9 @@ curl http://127.0.0.1:9000/health
 {
   "status": "UP",
   "engineMode": "cityflow",
+  "maxActiveSessions": 4,
+  "sessionDrainTimeoutSeconds": 600,
+  "activeSessions": 0,
   "sceneIds": ["jinan_3x4", "jinan_3x4_stress"]
 }
 ```
@@ -137,7 +165,7 @@ curl \
   http://127.0.0.1:9000/cityflow/scenes/jinan_3x4/roadnet
 ```
 
-## 5. 本地公网验证
+## 6. 本地公网验证
 
 在 Windows PowerShell 中测试端口：
 
@@ -170,7 +198,7 @@ Invoke-RestMethod `
 
 如果本地 `Test-NetConnection` 失败，但云端 `curl 127.0.0.1:9000/health` 成功，优先检查阿里云安全组和系统防火墙。
 
-## 6. 阿里云安全组与防火墙
+## 7. 阿里云安全组与防火墙
 
 阿里云 ECS 安全组入方向需要允许：
 
@@ -197,7 +225,7 @@ firewall-cmd --permanent --add-port=9000/tcp
 firewall-cmd --reload
 ```
 
-## 7. Spring Boot 当前配置
+## 8. Spring Boot 当前配置
 
 本地 Spring Boot 当前默认已经写入云端 CityFlow：
 
@@ -215,13 +243,42 @@ cd D:\Github\Traffic-Signal-Control-System\backend
 mvn spring-boot:run
 ```
 
-如果某个成员要使用自己的 client id，可以在启动前覆盖：
+`CITYFLOW_CLIENT_ID` 当前仅为兼容保留，可以继续配置，但不会用于会话隔离或权限判断：
 
 ```powershell
 $env:CITYFLOW_CLIENT_ID="your-name"
 ```
 
-## 8. systemd 方式 24 小时运行
+## 9. systemd 方式 24 小时运行
+
+先创建环境变量文件，沿用当前团队 token：
+
+```bash
+mkdir -p /etc/traffic-signal
+chmod 700 /etc/traffic-signal
+vim /etc/traffic-signal/cityflow.env
+```
+
+写入：
+
+```ini
+SIM_ENGINE_MODE=cityflow
+CITYFLOW_API_TOKEN=当前团队token
+SIM_MAX_ACTIVE_SESSIONS=4
+SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600
+SIM_MAX_SPEED=10
+SIM_VISIBLE_VEHICLE_LIMIT=300
+SIM_MAX_REQUEST_BYTES=1048576
+SIM_REALTIME_TICK_SECONDS=0.1
+SIM_MIN_REALTIME_TICK_SECONDS=0.02
+SIM_AUTO_SIGNAL_CYCLE=false
+```
+
+限制文件权限：
+
+```bash
+chmod 600 /etc/traffic-signal/cityflow.env
+```
 
 创建服务文件：
 
@@ -234,22 +291,22 @@ vim /etc/systemd/system/cityflow-sim.service
 ```ini
 [Unit]
 Description=Traffic Signal CityFlow Simulation Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
 WorkingDirectory=/opt/Traffic-Signal-Control-System/sim-python
-Environment=SIM_ENGINE_MODE=cityflow
-Environment=CITYFLOW_API_TOKEN=jLEc-o3L16migUKQ7f_OlH94qsjEstFf
-Environment=SIM_MAX_ACTIVE_SESSIONS=4
-Environment=SIM_MAX_SPEED=10
-Environment=SIM_VISIBLE_VEHICLE_LIMIT=300
-Environment=SIM_MAX_REQUEST_BYTES=1048576
-Environment=SIM_REALTIME_TICK_SECONDS=0.1
-Environment=SIM_MIN_REALTIME_TICK_SECONDS=0.02
-ExecStart=/root/miniconda3/envs/cityflow39/bin/python app/server.py --host 0.0.0.0 --port 9000
-Restart=always
-RestartSec=5
+EnvironmentFile=/etc/traffic-signal/cityflow.env
+ExecStart=/root/miniconda3/envs/cityflow39/bin/python /opt/Traffic-Signal-Control-System/sim-python/app/server.py --host 0.0.0.0 --port 9000
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillSignal=SIGTERM
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -260,7 +317,7 @@ WantedBy=multi-user.target
 ```bash
 systemctl daemon-reload
 systemctl enable --now cityflow-sim
-systemctl status cityflow-sim
+systemctl status cityflow-sim --no-pager -l
 ```
 
 查看日志：
@@ -281,44 +338,81 @@ systemctl restart cityflow-sim
 systemctl stop cityflow-sim
 ```
 
-## 9. 更新云端 CityFlow 代码
+## 10. 更新云端 CityFlow 代码
 
-本地修改 `sim-python/app` 或 `sim-python/data` 后，只需要上传精简包，不要上传整个项目。
+本地修改 `sim-python/app` 或 `sim-python/data` 后，只上传精简包，不要上传整个项目。以下命令适用于当前未依赖 Git 提交、直接发布工作区代码的情况。
 
-本地 PowerShell 打包：
+本地 PowerShell 在项目根目录打包：
 
 ```powershell
-$src = "D:\Github\Traffic-Signal-Control-System"
-$pkg = "$env:TEMP\cityflow-deploy"
-$zip = "$env:TEMP\cityflow-deploy.zip"
-
-Remove-Item -Recurse -Force $pkg, $zip -ErrorAction SilentlyContinue
-
-New-Item -ItemType Directory -Force "$pkg\sim-python" | Out-Null
-Copy-Item -Recurse "$src\sim-python\app" "$pkg\sim-python\app"
-Copy-Item -Recurse "$src\sim-python\data" "$pkg\sim-python\data"
-Copy-Item "$src\sim-python\README.md" "$pkg\sim-python\README.md"
-
-Compress-Archive -Path "$pkg\*" -DestinationPath $zip -Force
+cd D:\Github\Traffic-Signal-Control-System
+tar.exe -czf cityflow-update.tar.gz sim-python/app sim-python/data sim-python/tests sim-python/README.md
 ```
 
 上传：
 
 ```powershell
-scp "$env:TEMP\cityflow-deploy.zip" root@39.105.75.87:/root/
+scp .\cityflow-update.tar.gz root@39.105.75.87:/tmp/
 ```
 
-云端解压并重启：
+云端停止服务、备份、解压并验证：
 
 ```bash
-mkdir -p /opt/Traffic-Signal-Control-System
-unzip -o /root/cityflow-deploy.zip -d /opt/Traffic-Signal-Control-System
+systemctl stop cityflow-sim
+cd /opt/Traffic-Signal-Control-System
+cp -a sim-python "sim-python.backup.$(date +%Y%m%d_%H%M%S)"
+tar -xzf /tmp/cityflow-update.tar.gz -C /opt/Traffic-Signal-Control-System
+cd /opt/Traffic-Signal-Control-System/sim-python
+/root/miniconda3/envs/cityflow39/bin/python -m compileall -q app
+/root/miniconda3/envs/cityflow39/bin/python -c "import cityflow; print('CityFlow import OK')"
+systemctl daemon-reload
 systemctl restart cityflow-sim
+systemctl status cityflow-sim --no-pager -l
+journalctl -u cityflow-sim -n 100 --no-pager
 ```
 
-如果没有使用 systemd，而是手动启动，则需要先停止原 Python 进程，再重新执行手动启动命令。
+确认新服务稳定后，先查询备份的准确名称，再删除指定备份：
 
-## 10. 常见问题
+```bash
+ls -ld /opt/Traffic-Signal-Control-System/sim-python.backup.*
+rm -rf -- /opt/Traffic-Signal-Control-System/sim-python.backup.YYYYMMDD_HHMMSS
+```
+
+禁止删除当前运行目录 `/opt/Traffic-Signal-Control-System/sim-python`。
+
+## 11. 多会话与释放验证
+
+连续创建两个会话后，`/health.activeSessions` 应为 `2`。停止其中一个后应降为 `1`：
+
+```bash
+TOKEN='当前团队token'
+
+R1=$(curl -s -X POST http://127.0.0.1:9000/cityflow/simulations \
+  -H "X-CityFlow-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sceneId":"jinan_3x4","speed":1}')
+
+R2=$(curl -s -X POST http://127.0.0.1:9000/cityflow/simulations \
+  -H "X-CityFlow-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sceneId":"jinan_3x4","speed":1}')
+
+echo "$R1"
+echo "$R2"
+curl -s http://127.0.0.1:9000/health
+
+SID=$(echo "$R1" | /root/miniconda3/envs/cityflow39/bin/python \
+  -c "import sys,json; print(json.load(sys.stdin)['sid'])")
+
+curl -X POST "http://127.0.0.1:9000/cityflow/simulations/$SID/stop" \
+  -H "X-CityFlow-Token: $TOKEN"
+
+curl -s http://127.0.0.1:9000/health
+```
+
+注意：只有 Python 云端更新还不够。Spring Boot 也必须运行包含多会话修改的最新代码，否则旧后端仍可能在创建新仿真前主动停止已有会话。
+
+## 12. 常见问题
 
 ### 本地 `Test-NetConnection` 失败
 

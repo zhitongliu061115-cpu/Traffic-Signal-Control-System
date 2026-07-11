@@ -1,4 +1,4 @@
-﻿package com.traffic.simulation.controller;
+package com.traffic.simulation.controller;
 
 import com.traffic.common.response.ApiResponse;
 import com.traffic.simulation.dto.CreateSimulationRequest;

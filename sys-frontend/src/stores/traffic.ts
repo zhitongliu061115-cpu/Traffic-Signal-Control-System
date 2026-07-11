@@ -24,6 +24,7 @@ import type {
   SimSignalState,
   SimIntersectionState,
   SimMetrics,
+  SimRoadnetResponse,
 } from '@/types/traffic'
 import {
   mockIntersections,
@@ -46,8 +47,9 @@ import {
   pauseSimulation,
   stopSimulation,
   fetchRoadnet,
+  dispatchEmergency,
 } from '@/api/simulation'
-import type { CreateSimulationResponse } from '@/types/traffic'
+import type { CreateSimulationResponse, DispatchResponse, EmergencyEvType } from '@/types/traffic'
 
 type DataSourceStatus = 'loading' | 'database' | 'mock'
 
@@ -100,7 +102,7 @@ export const useTrafficStore = defineStore('traffic', () => {
   const simulationSid = ref<string | null>(null)
   const simulationSceneId = ref('jinan_3x4')
   const simulationSpeed = ref(1.0)
-  const simulationControllerType = ref('fixed')
+  const simulationControllerType = ref('fixed-time')
   const simulationSimTime = ref(0)
   const simulationFrameCount = ref(0)
   const simulationLastFrameAt = ref(0)
@@ -110,6 +112,10 @@ export const useTrafficStore = defineStore('traffic', () => {
   const simulationIntersections = ref<SimIntersectionState[]>([])
   const simulationMetrics = ref<SimMetrics | null>(null)
   const simulationErrorMessage = ref<string | null>(null)
+  // CityFlow 静态路网（用于车辆坐标 → 地图经纬度 的仿射变换）
+  const simRoadnet = ref<SimRoadnetResponse | null>(null)
+  /** 道路拥堵指数 EMA 平滑（key=roadId, value=smoothed value），避免帧间跳动 */
+  const roadCongestionSmooth = new Map<string, number>()
 
   // ================================================================
   // 2. Getters
@@ -192,41 +198,180 @@ export const useTrafficStore = defineStore('traffic', () => {
   // 4. Actions — 应急绿波
   // ================================================================
 
-  /** 模拟应急车辆出发 */
-  function simulateEmergencyVehicle(): void {
-    const ev = emergencyVehicle.value
-    ev.greenWaveActive = true
-    const startNode = emergencyRoute.value[0]
+  /**
+   * 调度应急车辆（优先调用后端 API，失败降级到 mock）
+   * @returns 调度结果，失败时返回 null
+   */
+  async function dispatchEmergencyVehicle(params: {
+    startIntersection: string
+    endIntersection: string
+    evType: EmergencyEvType
+    priority: number
+  }): Promise<{ evId: string; route: string[]; routeRoads: string[]; estimatedTravelTime: number; startName: string; endName: string } | null> {
+    const evId = `EV-${Date.now()}`
+    const startInter = intersections.value.find((it) => it.id === params.startIntersection)
+    const endInter = intersections.value.find((it) => it.id === params.endIntersection)
 
-    if (startNode) {
-      ev.currentIntersectionId = startNode
+    if (!startInter || !endInter) {
+      console.error('[TrafficStore] Invalid intersection IDs for dispatch')
+      return null
     }
 
-    // 将 E001 车辆类型设为救护车并放置于应急路线首段
-    const amber = vehicles.value.find((v) => v.id === emergencyVehicle.value.id)
-    if (amber) {
-      amber.type = 'ambulance'
-      amber.speed = 62
-      amber.progress = 0.05
-      // 找到从 startNode 出发的道路
-      const routeRoad = roads.value.find(
-        (r) => r.from === emergencyRoute.value[0] && r.to === emergencyRoute.value[1],
-      )
-      if (routeRoad) {
-        amber.roadId = routeRoad.id
+    // 优先调用后端 API
+    if (simulationSid.value) {
+      try {
+        const result = await dispatchEmergency(simulationSid.value, {
+          startIntersection: params.startIntersection,
+          endIntersection: params.endIntersection,
+          evId,
+          evType: params.evType,
+          priority: params.priority,
+        })
+
+        applyDispatchResult(result, startInter.name, endInter.name)
+        return {
+          evId: result.evId,
+          route: result.route,
+          routeRoads: result.routeRoads,
+          estimatedTravelTime: result.estimatedTravelTime,
+          startName: startInter.name,
+          endName: endInter.name,
+        }
+      } catch (err) {
+        console.warn('[TrafficStore] Backend dispatch API failed, falling back to mock', err)
       }
     }
 
+    // 降级：mock 路径
+    const mockRoute = buildMockRoute(params.startIntersection, params.endIntersection)
+    applyMockDispatchResult(mockRoute, params.evType, evId, startInter.name, endInter.name)
+    return {
+      evId,
+      route: mockRoute,
+      routeRoads: [],
+      estimatedTravelTime: mockRoute.length * 2.5,
+      startName: startInter.name,
+      endName: endInter.name,
+    }
+  }
+
+  /** 将后端 dispatch 响应应用到 store */
+  function applyDispatchResult(
+    result: DispatchResponse,
+    startName: string,
+    endName: string,
+  ): void {
+    emergencyVehicle.value = {
+      id: result.evId,
+      type: result.evType as 'ambulance' | 'firetruck',
+      currentIntersectionId: result.route[0] ?? '',
+      destination: result.evType === 'firetruck'
+        ? `${endName} (火警)`
+        : `${endName} (医院)`,
+      greenWaveActive: true,
+      eta: +(result.estimatedTravelTime / 60).toFixed(1),
+    }
+    emergencyRoute.value = result.route
     activeGreenWaveIndex.value = 0
     systemMode.value = 'emergency'
+
     generateMockAlert(
       'emergency_vehicle_enter',
       'emergency',
-      '应急绿波通道已激活',
-      `${emergencyRoute.value.join(' → ')}`,
-      emergencyRoute.value[0],
+      `应急车辆 ${result.evId} 已调度 — ${result.evType === 'firetruck' ? '消防车' : '救护车'}进入路网`,
+      `${startName} → ${endName}`,
+      result.route[0] ?? '',
     )
-    // 应急车辆已出发，绿波通道激活
+  }
+
+  /** Mock 降级：将本地生成的路线应用到 store */
+  function applyMockDispatchResult(
+    route: string[],
+    evType: EmergencyEvType,
+    evId: string,
+    startName: string,
+    endName: string,
+  ): void {
+    emergencyVehicle.value = {
+      id: evId,
+      type: evType,
+      currentIntersectionId: route[0] ?? '',
+      destination: evType === 'firetruck'
+        ? `${endName} (火警)`
+        : `${endName} (医院)`,
+      greenWaveActive: true,
+      eta: route.length * 1.8,
+    }
+    emergencyRoute.value = route
+    activeGreenWaveIndex.value = 0
+    systemMode.value = 'emergency'
+
+    // 将应急车辆放置于路线首段
+    if (route.length >= 2) {
+      const routeRoad = roads.value.find(
+        (r) => r.from === route[0] && r.to === route[1],
+      )
+      const existingVeh = vehicles.value.find((v) => v.id === 'E001')
+      if (existingVeh) {
+        existingVeh.type = evType
+        existingVeh.speed = evType === 'ambulance' ? 62 : 55
+        existingVeh.progress = 0.05
+        if (routeRoad) existingVeh.roadId = routeRoad.id
+      }
+    }
+
+    generateMockAlert(
+      'emergency_vehicle_enter',
+      'emergency',
+      `应急车辆 ${evId} 已调度（本地模拟）— ${evType === 'firetruck' ? '消防车' : '救护车'}进入路网`,
+      `${startName} → ${endName}`,
+      route[0] ?? '',
+    )
+  }
+
+  /**
+   * Mock 路径构建：Manhattan 网格路由
+   * 按路口网格 row/col 行走，生成从起点到终点的路口 ID 序列
+   */
+  function buildMockRoute(fromId: string, toId: string): string[] {
+    const from = intersections.value.find((it) => it.id === fromId)
+    const to = intersections.value.find((it) => it.id === toId)
+    if (!from || !to) return [fromId, toId]
+
+    const route: string[] = [fromId]
+    let cr = from.row
+    let cc = from.col
+    const tr = to.row
+    const tc = to.col
+
+    // 先走列，再走行
+    while (cc !== tc) {
+      cc += cc < tc ? 1 : -1
+      const node = intersections.value.find((it) => it.row === cr && it.col === cc)
+      if (node) route.push(node.id)
+    }
+    while (cr !== tr) {
+      cr += cr < tr ? 1 : -1
+      const node = intersections.value.find((it) => it.row === cr && it.col === cc)
+      if (node) route.push(node.id)
+    }
+    return route
+  }
+
+  /**
+   * 模拟应急车辆出发（保留为本地快捷触发，供 UI 直接调用）
+   * 使用当前 emergencyRoute 的起点/终点，默认救护车 + 优先级 3
+   */
+  function simulateEmergencyVehicle(): void {
+    const startId = emergencyRoute.value[0] ?? intersections.value[0]?.id
+    const endId = emergencyRoute.value[emergencyRoute.value.length - 1] ?? intersections.value[intersections.value.length - 1]?.id
+    if (!startId || !endId) return
+    void dispatchEmergencyVehicle({
+      startIntersection: startId,
+      endIntersection: endId,
+      evType: 'ambulance',
+      priority: 3,
+    })
   }
 
   /** 启动应急绿波 */
@@ -234,7 +379,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     systemMode.value = 'emergency'
     activeGreenWaveIndex.value = 0
     emergencyVehicle.value.greenWaveActive = true
-    // 应急绿波模式启用
   }
 
   /** 恢复正常模式 */
@@ -244,14 +388,11 @@ export const useTrafficStore = defineStore('traffic', () => {
     emergencyVehicle.value.eta = 8
     activeGreenWaveIndex.value = -1
 
-    // 将应急车辆还原为普通车辆
     const ev = vehicles.value.find((v) => v.id === emergencyVehicle.value.id)
     if (ev) {
       ev.type = 'normal'
       ev.speed = 30 + Math.random() * 30
     }
-
-    // 已恢复正常信号模式，应急车辆已清除
   }
 
   // ================================================================
@@ -294,6 +435,48 @@ export const useTrafficStore = defineStore('traffic', () => {
    * 中频更新：道路指数、信号灯、统计指标（2s 间隔）
    */
   function updateTrafficIndicators(deltaMs: number = 2000): void {
+    // ================================================================
+    // 仿真运行中：使用 CityFlow / WebSocket 真实数据，不添加本地噪声
+    // （intersections / roads / vehicles 已由 applySimFrameToTrafficData 更新）
+    // ================================================================
+    if (
+      simulationSid.value !== null &&
+      simulationFrameCount.value > 0 &&
+      simulationStatus.value !== 'finished'
+    ) {
+      const m = simulationMetrics.value
+      if (m) {
+        statistics.value.totalFlow = m.vehicleCount
+        statistics.value.averageSpeed = m.avgSpeed
+        statistics.value.averageWaitTime = m.avgWait
+        statistics.value.throughput = m.throughput
+      }
+
+      const simRoads = simulationRoads.value
+      if (simRoads.length > 0) {
+        const jammed = simRoads.filter((r) => r.level === 'jammed').length
+        const slow = simRoads.filter((r) => r.level === 'slow').length
+        statistics.value.congestedRoadCount = jammed
+        statistics.value.congestionIndex = +(((jammed * 85 + slow * 45) / simRoads.length) || 0).toFixed(1)
+      }
+
+      statistics.value.optimizedIntersectionCount = simulationIntersections.value.filter(
+        (it) => it.level !== 'free',
+      ).length
+      statistics.value.emergencyVehicleCount = vehicles.value.filter(
+        (v) => v.type !== 'normal',
+      ).length
+      statistics.value.deviceOnlineRate = 100
+      statistics.value.greenWaveCount = systemMode.value === 'emergency' ? 1 : 0
+      statistics.value.todayAlertCount = alerts.value.length
+
+      updateSystemLatency()
+      return
+    }
+
+    // ================================================================
+    // 无仿真：本地 mock / 后端 DB 数据 + 轻微随机噪声（演示用）
+    // ================================================================
     // ---- 道路拥堵波动 ----
     for (const r of roads.value) {
       const drift = (Math.random() - 0.5) * 4
@@ -633,6 +816,9 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationMetrics.value = frame.metrics ?? null
     simulationFrameCount.value++
     simulationLastFrameAt.value = Date.now()
+    if (frame.status === 'finished') {
+      simulationStatus.value = 'finished'
+    }
 
     // 用仿真数据同步刷新前端路口/道路/车辆状态
     applySimFrameToTrafficData(frame)
@@ -651,28 +837,44 @@ export const useTrafficStore = defineStore('traffic', () => {
 
   /** 将仿真帧数据同步到现有的 traffic 数据结构（渐进式替换 mock） */
   function applySimFrameToTrafficData(frame: SimFrameData): void {
-    // ---- 信号灯 → 路口相位 ----
-    for (const sig of frame.signals) {
-      const it = intersections.value.find((i) => i.id === sig.intersectionId)
-      if (!it) continue
-
-      // 映射 phaseCode → SignalPhase
-      // CFRP 1.0: ETWT=东西直行, NTST=南北直行, ELWL=东西左转, NLSL=南北左转
-      const phaseMap: Record<string, SignalPhase> = {
-        ETWT: 'eastwest_straight', ew_straight: 'eastwest_straight',
-        NTST: 'northsouth_straight', ns_straight: 'northsouth_straight',
-        ELWL: 'eastwest_left', ew_left: 'eastwest_left',
-        NLSL: 'northsouth_left', ns_left: 'northsouth_left',
-        all_red: 'all_red',
-      }
-      it.currentPhase = phaseMap[sig.phaseCode] ?? it.currentPhase
-      // 标记设备在线
-      it.deviceStatus = 'online'
+    // ---- 建立 CityFlow ID → 上海路口 的映射 ----
+    // CityFlow 网格是转置的：intersection_R_C 中 R=上海col，C=上海row
+    // 所以上海 (row, col) 对应 CityFlow intersection_{col}_{row}
+    const itBySimKey = new Map<string, Intersection>()
+    for (const it of intersections.value) {
+      itBySimKey.set(`${it.col}_${it.row}`, it) // key = "R_C"（R=col, C=row）
+    }
+    // 从 CityFlow ID 取出匹配键（去掉 intersection_ 前缀即为 "R_C"）
+    function simKeyOf(id: string): string | null {
+      const m = id.match(/^intersection_(\d+)_(\d+)$/)
+      return m ? `${m[1]}_${m[2]}` : null
     }
 
-    // ---- 路口排队/延误 ----
+    const phaseMap: Record<string, SignalPhase> = {
+      ETWT: 'eastwest_straight', ew_straight: 'eastwest_straight',
+      NTST: 'northsouth_straight', ns_straight: 'northsouth_straight',
+      ELWL: 'eastwest_left', ew_left: 'eastwest_left',
+      NLSL: 'northsouth_left', ns_left: 'northsouth_left',
+      all_red: 'all_red',
+    }
+
+    // ---- 信号灯 → 路口相位（按转置键精确匹配）----
+    for (const sig of frame.signals) {
+      const key = simKeyOf(sig.intersectionId)
+      const it = key ? itBySimKey.get(key) : undefined
+      if (!it) continue
+      it.currentPhase = phaseMap[sig.phaseCode] ?? it.currentPhase
+      it.deviceStatus = 'online'
+      // 每个路口按 phaseIndex 错开倒计时，避免全部同步
+      const phaseDuration = 40  // 每个相位持续 40s
+      const offset = sig.phaseIndex * (phaseDuration / 4)
+      it.greenRemain = phaseDuration - ((frame.simTime + offset) % phaseDuration)
+    }
+
+    // ---- 路口排队/延误（按转置键精确匹配）----
     for (const istate of frame.intersections) {
-      const it = intersections.value.find((i) => i.id === istate.id)
+      const key = simKeyOf(istate.id)
+      const it = key ? itBySimKey.get(key) : undefined
       if (!it) continue
       it.queueLength = istate.queueCount
       it.averageDelay = Math.round(istate.avgWait)
@@ -681,17 +883,62 @@ export const useTrafficStore = defineStore('traffic', () => {
         : 25
     }
 
-    // ---- 道路状态 ----
-    for (const roadState of frame.roads) {
-      const r = roads.value.find((rd) => rd.id === roadState.id)
-      if (!r) continue
-      r.flow = roadState.vehicleCount * 60 // 粗略换算 veh/h
-      r.speed = roadState.avgSpeed
-      r.queueLength = roadState.queueCount
-      r.congestionIndex =
-        roadState.level === 'jammed' ? 90
-        : roadState.level === 'slow' ? 55
-        : 20
+    // ---- 道路状态：按端点对匹配（用 CityFlow 静态路网的 from/to 拓扑）----
+    // 上海道路 DB-R01 的 from/to 是路口 ID；CityFlow 道路 road_x 的 from/to 是 intersection_R_C。
+    // 两端都换算成转置键，用无序端点对做匹配，双向道路取聚合。
+    if (simRoadnet.value) {
+      // 上海路口 ID → 转置键 "col_row"
+      const shIdToKey = new Map<string, string>()
+      for (const it of intersections.value) shIdToKey.set(it.id, `${it.col}_${it.row}`)
+
+      // CityFlow 路口 ID → 键（去掉 intersection_ 前缀即为 "R_C"）
+      const simIdToKey = (id: string): string | null => {
+        const m = id.match(/^intersection_(\d+)_(\d+)$/)
+        return m ? `${m[1]}_${m[2]}` : null
+      }
+
+      // CityFlow roadId → 无序端点对键 "a|b"
+      const simRoadPairKey = new Map<string, string>()
+      for (const sr of simRoadnet.value.roads) {
+        const a = simIdToKey(sr.from)
+        const b = simIdToKey(sr.to)
+        if (!a || !b) continue
+        simRoadPairKey.set(sr.id, [a, b].sort().join('|'))
+      }
+
+      // 端点对 → 聚合帧状态（同一对的正反向道路合并）
+      const pairState = new Map<string, { veh: number; queue: number; speed: number; n: number }>()
+      for (const rs of frame.roads) {
+        const pk = simRoadPairKey.get(rs.id)
+        if (!pk) continue
+        const cur = pairState.get(pk) ?? { veh: 0, queue: 0, speed: 0, n: 0 }
+        cur.veh += rs.vehicleCount
+        cur.queue += rs.queueCount
+        cur.speed += rs.avgSpeed
+        cur.n += 1
+        pairState.set(pk, cur)
+      }
+
+      // 写回上海道路
+      for (const r of roads.value) {
+        const ka = shIdToKey.get(r.from)
+        const kb = shIdToKey.get(r.to)
+        if (!ka || !kb) continue
+        const st = pairState.get([ka, kb].sort().join('|'))
+        if (!st || st.n === 0) continue
+        const avgSpeed = st.speed / st.n
+        r.flow = st.veh * 60
+        r.speed = avgSpeed
+        r.queueLength = st.queue
+        // 拥堵指数：0-1→5  2-3→15-25  4-6→30-50  7-9→55-70  10+→75-100
+        const base = st.veh <= 1 ? st.veh * 5 : st.veh <= 3 ? 5 + st.veh * 7 : st.veh <= 6 ? 10 + st.veh * 6 : 20 + st.veh * 5
+        const rawCi = Math.min(100, base + st.queue * 3)
+        // EMA 平滑：新值 30% + 旧值 70%，避免颜色跳动
+        const prev = roadCongestionSmooth.get(r.id) ?? rawCi
+        const smoothed = +(prev * 0.7 + rawCi * 0.3).toFixed(1)
+        roadCongestionSmooth.set(r.id, smoothed)
+        r.congestionIndex = smoothed
+      }
     }
 
     // ---- 车辆：将 SimVehicleState[] 注入到 vehicles[] ----
@@ -703,6 +950,9 @@ export const useTrafficStore = defineStore('traffic', () => {
         speed: sv.speed,
         type: 'normal' as const,
         laneIndex: sv.lane,
+        x: sv.x,
+        y: sv.y,
+        angle: sv.angle,
       }))
       const specialVehicles = vehicles.value.filter((v) => v.type !== 'normal')
       vehicles.value = [...newVehicles, ...specialVehicles]
@@ -710,7 +960,7 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     // ---- 全局统计 ----
     if (frame.metrics) {
-      statistics.value.totalFlow = frame.metrics.throughput ?? statistics.value.totalFlow
+      statistics.value.totalFlow = frame.metrics.vehicleCount ?? statistics.value.totalFlow
       statistics.value.averageSpeed = frame.metrics.avgSpeed ?? statistics.value.averageSpeed
       statistics.value.averageWaitTime = frame.metrics.avgWait ?? statistics.value.averageWaitTime
     }
@@ -731,6 +981,15 @@ export const useTrafficStore = defineStore('traffic', () => {
       simulationSid.value = result.sid
       simulationStatus.value = 'paused'
       console.log('[TrafficStore] simulation created', result)
+
+      // 拉取 CityFlow 静态路网，供车辆坐标映射使用
+      try {
+        simRoadnet.value = await fetchRoadnet(simulationSceneId.value)
+        console.log('[TrafficStore] sim roadnet loaded', simRoadnet.value.intersections.length, 'intersections')
+      } catch (e) {
+        console.warn('[TrafficStore] sim roadnet fetch failed', e)
+      }
+
       return result
     } catch (err) {
       simulationStatus.value = 'finished'
@@ -780,6 +1039,34 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
   }
 
+  /** 切换控制策略：停旧仿真 → 换 controllerType → 建新仿真 → 返回新 sid */
+  async function recreateSimulation(controllerType: string): Promise<string | null> {
+    simulationErrorMessage.value = null
+
+    // 1. 停掉当前仿真
+    if (simulationSid.value && simulationStatus.value !== 'finished') {
+      try {
+        await stopSimulation(simulationSid.value)
+      } catch {
+        // 后端可能已清理，忽略错误
+      }
+    }
+
+    // 2. 更新策略类型 + 重置状态
+    simulationControllerType.value = controllerType
+    resetSimulationState()
+
+    // 3. 创建新仿真
+    const result = await initSimulationSession()
+    if (!result?.sid) {
+      simulationStatus.value = 'finished'
+      return null
+    }
+
+    console.log('[TrafficStore] recreated with controller:', controllerType, 'sid:', result.sid)
+    return result.sid
+  }
+
   /** 重置仿真状态（不操作后端） */
   function resetSimulationState(): void {
     simulationStatus.value = 'booting'
@@ -793,6 +1080,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationIntersections.value = []
     simulationMetrics.value = null
     simulationErrorMessage.value = null
+    roadCongestionSmooth.clear()
   }
 
   /** 重置所有数据到初始状态 */
@@ -859,6 +1147,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationIntersections,
     simulationMetrics,
     simulationErrorMessage,
+    simRoadnet,
 
     // getters
     selectedIntersection,
@@ -876,6 +1165,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     switchPhase,
     selectIntersection,
     updateMapZoom,
+    dispatchEmergencyVehicle,
     simulateEmergencyVehicle,
     startEmergencyGreenWave,
     restoreNormalMode,
@@ -898,6 +1188,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     resumeSimulation,
     pauseSimulationSession,
     stopSimulationSession,
+    recreateSimulation,
     resetSimulationState,
   }
 })

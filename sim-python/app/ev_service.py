@@ -42,6 +42,10 @@ class EVSession:
     max_speed: float = 20.0
     dispatch_time: float = 0.0
     cf_vehicle_id: str = ""          # CityFlow internal vehicle ID after push
+    start_road: str = ""
+    pre_dispatch_vehicle_ids: set = field(default_factory=set)
+    seen_in_engine: bool = False
+    missing_since: Optional[float] = None
     route: List[str] = field(default_factory=list)
     route_roads: List[str] = field(default_factory=list)
     passed_intersections: set = field(default_factory=set)
@@ -59,6 +63,7 @@ class EVPriorityService:
         self.strategy = SignalStrategy(self.lwr_model)
         self.conflict_resolver = ConflictResolver()
         self._active_overrides: Dict[str, Dict[str, int]] = {}  # sid -> {inter_id: phase}
+        self._override_owners: Dict[str, Dict[str, str]] = {}  # sid -> {inter_id: ev_id}
         self.logger = EVLogger()
         self.ev_sessions: Dict[str, Dict[str, EVSession]] = {}
         self.road_index: Dict[str, Dict[str, Any]] = {}
@@ -182,9 +187,7 @@ class EVPriorityService:
             except Exception:
                 pass
             push_result = engine.push_vehicle(veh_info, road_route)
-            engine.next_step()  # Let CityFlow process the push
             print(f'[dispatch] push_vehicle returned: {push_result} type={type(push_result).__name__}', flush=True)
-            print(f'[dispatch] after next_step vehicle_count={engine.get_vehicle_count()}', flush=True)
         except Exception as ex:
             raise ApiError(
                 status=500, code="CITYFLOW_PUSH_FAILED",
@@ -193,7 +196,7 @@ class EVPriorityService:
             ) from ex
 
         # Find the vehicle ID CityFlow assigned
-        cf_vehicle_id = str(push_result) if push_result else self._find_pushed_vehicle(engine, road_route[0], before_ids, sid)
+        cf_vehicle_id = push_result.strip() if isinstance(push_result, str) and push_result.strip() else self._find_pushed_vehicle(engine, road_route[0], before_ids, sid)
 
         self.ev_sessions[sid][ev_id] = EVSession(
             ev_id=ev_id,
@@ -202,6 +205,8 @@ class EVPriorityService:
             max_speed=max_speed,
             dispatch_time=sim_time,
             cf_vehicle_id=cf_vehicle_id,
+            start_road=road_route[0],
+            pre_dispatch_vehicle_ids=before_ids,
             route=path,
             route_roads=road_route,
         )
@@ -249,11 +254,14 @@ class EVPriorityService:
 
             vehicle_info = self._get_vehicle_info(engine, ev_session)
             if not vehicle_info:
-                # EV may have finished its route 闂?mark complete
-                if ev_session.cf_vehicle_id:
-                    # Check if vehicle still exists
-                    pass
+                if ev_session.missing_since is None:
+                    ev_session.missing_since = sim_time
+                grace_seconds = 1.0 if ev_session.seen_in_engine else 5.0
+                if sim_time - ev_session.missing_since >= grace_seconds:
+                    self._complete_ev(sid, ev_session, sim_time)
                 continue
+            ev_session.seen_in_engine = True
+            ev_session.missing_since = None
 
             current_road = str(vehicle_info.get("road", ""))
             distance = float(vehicle_info.get("distance", 0))
@@ -275,12 +283,6 @@ class EVPriorityService:
             if handle_key in self.handled[sid]:
                 continue
 
-            # Check if EV has reached its destination
-            end_inter = ev_session.route[-1] if ev_session.route else ""
-            if inter_id == end_inter:
-                ev_session.completed = True
-                ev_session.completion_time = sim_time
-
             detections.append({
                 "ev_id": ev_id,
                 "ev_session": ev_session,
@@ -298,6 +300,7 @@ class EVPriorityService:
             by_intersection.setdefault(d["detection"]["intersection_id"], []).append(d)
 
         signal_overrides: Dict[str, int] = {}
+        signal_override_owners: Dict[str, str] = {}
         ev_events: List[dict] = []
 
         for inter_id, group in by_intersection.items():
@@ -345,6 +348,10 @@ class EVPriorityService:
                         intersection_id=inter_id, current_phase=current_phase,
                         phase_count=pc, phase_durations=[30] * pc,
                         phase_elapsed=0.0,
+                        approach_phases={
+                            road_id: [phase + 1 for phase in phases]
+                            for road_id, phases in approach_phases.get(inter_id, {}).get("by_road", {}).items()
+                        },
                     )
 
                     ta = detection["distance_to_stop"] / max(detection["speed"], 0.1)
@@ -371,6 +378,7 @@ class EVPriorityService:
                         resolved = pri_green[0] if pri_green else current_phase
 
                     signal_overrides[inter_id] = resolved
+                    signal_override_owners[inter_id] = ev_id
 
                     self.logger.log(
                         timestamp=sim_time, ev_id=ev_id, event_type="detection",
@@ -414,7 +422,10 @@ class EVPriorityService:
         # Persist overrides: keep overriding until EV passes the intersection
         if sid not in self._active_overrides:
             self._active_overrides[sid] = {}
+        if sid not in self._override_owners:
+            self._override_owners[sid] = {}
         self._active_overrides[sid].update(signal_overrides)
+        self._override_owners[sid].update(signal_override_owners)
 
         # Clear overrides for intersections the EV has already passed
         for ev_id, ev in self.ev_sessions.get(sid, {}).items():
@@ -438,6 +449,7 @@ class EVPriorityService:
                                      if iid in passed]
                             for iid in stale:
                                 del self._active_overrides[sid][iid]
+                                self._override_owners.get(sid, {}).pop(iid, None)
                             break
             except Exception:
                 pass
@@ -468,7 +480,38 @@ class EVPriorityService:
         return result
 
     def has_evs(self, sid: str) -> bool:
-        return sid in self.ev_sessions and len(self.ev_sessions[sid]) > 0
+        return any(not ev.completed for ev in self.ev_sessions.get(sid, {}).values()) or bool(
+            self._active_overrides.get(sid)
+        )
+
+    def release_session(self, sid: str) -> None:
+        self.ev_sessions.pop(sid, None)
+        self.road_index.pop(sid, None)
+        self.handled.pop(sid, None)
+        self.phase_counts.pop(sid, None)
+        self.approach_phases.pop(sid, None)
+        self._active_overrides.pop(sid, None)
+        self._override_owners.pop(sid, None)
+
+    def _complete_ev(self, sid: str, ev: EVSession, sim_time: float) -> None:
+        if ev.completed:
+            return
+        ev.completed = True
+        ev.completion_time = sim_time
+        owned_intersections = [
+            intersection_id
+            for intersection_id, ev_id in self._override_owners.get(sid, {}).items()
+            if ev_id == ev.ev_id
+        ]
+        for intersection_id in owned_intersections:
+            self._active_overrides.get(sid, {}).pop(intersection_id, None)
+            self._override_owners.get(sid, {}).pop(intersection_id, None)
+        self.logger.log(
+            timestamp=sim_time,
+            ev_id=ev.ev_id,
+            event_type="completed",
+            detail="vehicle left CityFlow; signal overrides released",
+        )
 
     # ================================================================
     #  Internal helpers
@@ -514,6 +557,12 @@ class EVPriorityService:
         return ""
 
     def _get_vehicle_info(self, engine: Any, ev: EVSession) -> Optional[dict]:
+        if not ev.cf_vehicle_id:
+            ev.cf_vehicle_id = self._find_pushed_vehicle(
+                engine,
+                ev.start_road,
+                ev.pre_dispatch_vehicle_ids,
+            )
         if ev.cf_vehicle_id:
             try:
                 return engine.get_vehicle_info(ev.cf_vehicle_id)

@@ -218,7 +218,7 @@ SimulationService
 
 当前联调模式限制为单活跃仿真 session：Spring Boot 创建新仿真前会停止并清空 `SimulationSessionRegistry` 中已有 session；Python CityFlow 创建新 session 前也会停止后台 worker 并清空旧 `RealCityFlowEngine.sessions`。这样可以避免多个高车流 CityFlow Engine 同时后台 step，导致新仿真帧率被旧 session 拖慢。后续如需多用户并发实验，需要改为用户级隔离、资源配额和显式 session 回收机制。
 
-云端多人开发时，Python CityFlow 按 `X-CityFlow-Client` 进行会话归属校验；同一 client 新建会话会清理该 client 旧会话。Spring Boot 本地仍默认 `CITYFLOW_CLIENT_ID=hcj`，多人同时联调时应为每个成员配置不同 client id，避免互相清理会话。
+云端多人开发时，Python CityFlow 以唯一 `sid` 定位会话，不再按 `X-CityFlow-Client` 判断归属，也不会在创建新会话时清理已有会话。多个 CityFlow Engine 可并行运行，但受 `SIM_MAX_ACTIVE_SESSIONS` 约束；显式停止或场景自然结束后自动释放对应 worker、Engine 和策略运行态。
 
 为了避免高倍速下一次后台循环推进过多 step 导致快照长时间不更新，真实 CityFlow 后台 worker 每次只执行一个 `engine.next_step()` 并生成缓存快照；`speed` 用于缩短后台循环间隔，而不是在单次快照中连续推进大量 step。前端等待状态以 WebSocket 消息接收时间为准，重复缓存帧不会被误判为断流，但车辆目标位置只在 `simTime` 变化时更新。
 

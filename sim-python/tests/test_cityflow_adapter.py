@@ -117,22 +117,35 @@ class CityFlowAdapterTest(unittest.TestCase):
         self.assertEqual(400, context.exception.status)
         self.assertEqual("INVALID_REQUEST", context.exception.code)
 
-    def test_sessions_are_isolated_by_owner(self):
+    def test_multiple_sessions_coexist_without_owner_isolation(self):
         adapter = CityFlowAdapter(DATA_DIR)
-        alice_old = adapter.create_simulation("jinan_3x4", 1.0, owner_id="alice")
+        alice = adapter.create_simulation("jinan_3x4", 1.0, owner_id="alice")
         bob = adapter.create_simulation("jinan_3x4", 1.0, owner_id="bob")
-        alice_new = adapter.create_simulation("jinan_3x4", 1.0, owner_id="alice")
 
+        self.assertEqual(1, adapter.next_frame(alice["sid"], owner_id="bob")["seq"])
+        self.assertEqual(1, adapter.next_frame(bob["sid"], owner_id="bob")["seq"])
+        self.assertEqual(2, adapter.health()["activeSessions"])
+
+    def test_stop_releases_mock_session(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        session = adapter.create_simulation("jinan_3x4", 1.0)
+
+        self.assertEqual("stopped", adapter.stop_simulation(session["sid"])["status"])
+        self.assertEqual(0, adapter.health()["activeSessions"])
         with self.assertRaises(ApiError) as context:
-            adapter.next_frame(alice_old["sid"], owner_id="alice")
+            adapter.next_frame(session["sid"])
         self.assertEqual(404, context.exception.status)
 
-        self.assertEqual(1, adapter.next_frame(bob["sid"], owner_id="bob")["seq"])
-        self.assertEqual(1, adapter.next_frame(alice_new["sid"], owner_id="alice")["seq"])
+    def test_mock_session_releases_after_natural_completion(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        created = adapter.create_simulation("jinan_3x4", 1.0)
+        session = adapter._mock_session(created["sid"])
+        session.sim_time = 100000.0
 
-        with self.assertRaises(ApiError) as owner_context:
-            adapter.next_frame(bob["sid"], owner_id="alice")
-        self.assertEqual(403, owner_context.exception.status)
+        frame = adapter.next_frame(created["sid"])
+
+        self.assertEqual("finished", frame["status"])
+        self.assertEqual(0, adapter.health()["activeSessions"])
 
     def test_same_session_frame_sequence_is_thread_safe(self):
         adapter = CityFlowAdapter(DATA_DIR)

@@ -122,6 +122,8 @@ curl http://127.0.0.1:9000/cityflow/simulations/{sid}/frame
 - 前端仍然不能直连 Python 服务。
 - 真实模式会读取 `data/scenes.json` 中的 roadnet/flow 文件，并为每个仿真会话生成临时 CityFlow config。
 - CityFlow 0.1 没有 `get_tl_phase`，后续接入控制策略时需要由 Python session 自己记录当前设置过的相位。
+- 创建请求始终生成新的独立 `sid`，多个会话可并行运行，数量受 `SIM_MAX_ACTIVE_SESSIONS` 限制；不再按 `X-CityFlow-Client` 区分归属或清理旧会话。
+- `stop` 会释放对应 worker、CityFlow Engine、EV 状态和临时配置。最后发车时间已到且活跃车辆数归零时也会自动释放；若车辆无法排空，超过 `SIM_SESSION_DRAIN_TIMEOUT_SECONDS`（默认 600 秒仿真时间）后强制释放，并返回一次 `status=finished` 的终态帧。
 
 ## 场景配置
 

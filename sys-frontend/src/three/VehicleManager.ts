@@ -12,10 +12,14 @@ import {
   Object3D,
   Color,
   Vector3,
+  MathUtils,
 } from 'three'
 import type { Vehicle } from '@/types/traffic'
 import { WORLD, THEME } from './config'
 import type { RoadManager } from './RoadManager'
+
+/** CityFlow 场景坐标最大范围（jinan_3x4 = 1200），用于缩放后端坐标到 3D 世界 */
+const CF_SCENE_SPAN = 1200
 
 export class VehicleManager {
   readonly group = new Group()
@@ -62,6 +66,13 @@ export class VehicleManager {
     this.group.add(this.emergencyMesh)
   }
 
+  /** 将 CityFlow 坐标映射到 Three.js 世界坐标 */
+  private cityFlowToWorld(cfX: number, cfY: number): { wx: number; wz: number } {
+    const wx = (cfX / CF_SCENE_SPAN) * WORLD.SIZE_X - WORLD.SIZE_X / 2
+    const wz = (cfY / CF_SCENE_SPAN) * WORLD.SIZE_Z - WORLD.SIZE_Z / 2
+    return { wx, wz }
+  }
+
   /** 根据车辆数据刷新所有实例位置 */
   update(vehicles: Vehicle[]): void {
     let count = 0
@@ -69,18 +80,41 @@ export class VehicleManager {
     const end = new Vector3()
 
     for (const v of vehicles) {
+      // ---- 优先使用后端推送的精确坐标 ----
+      if (v.x !== undefined && v.y !== undefined) {
+        const { wx, wz } = this.cityFlowToWorld(v.x, v.y)
+        const height = WORLD.VEHICLE_SIZE / 2 + WORLD.ROAD_HEIGHT
+        const angleRad = v.angle !== undefined
+          ? MathUtils.degToRad(90 - v.angle)
+          : 0
+
+        if (v.type !== 'normal') {
+          this.emergencyMesh.visible = true
+          this.emergencyMesh.position.set(wx, WORLD.VEHICLE_SIZE, wz)
+          this.emergencyMesh.rotation.y = angleRad
+          continue
+        }
+
+        if (count >= WORLD.MAX_VEHICLES) continue
+        this.dummy.position.set(wx, height, wz)
+        this.dummy.rotation.y = angleRad
+        this.dummy.updateMatrix()
+        this.instanced.setMatrixAt(count, this.dummy.matrix)
+        count++
+        continue
+      }
+
+      // ---- 降级：progress 线性插值（mock 数据） ----
       const ep = this.roads.endpointsOf(v.roadId)
       if (!ep) continue
       start.copy(ep.start)
       end.copy(ep.end)
 
-      // progress 0-1 线性插值
       const p = Math.min(1, Math.max(0, v.progress))
       const px = start.x + (end.x - start.x) * p
       const pz = start.z + (end.z - start.z) * p
 
       if (v.type !== 'normal') {
-        // 应急车辆单独渲染
         this.emergencyMesh.visible = true
         this.emergencyMesh.position.set(px, WORLD.VEHICLE_SIZE, pz)
         this.emergencyMesh.rotation.y = -Math.atan2(end.z - start.z, end.x - start.x)

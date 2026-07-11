@@ -100,13 +100,19 @@ export interface Vehicle {
   id: string
   /** 所在道路 ID */
   roadId: string
-  /** 行驶进度 0-1，0 = 起点，1 = 终点 */
+  /** 行驶进度 0-1，0 = 起点，1 = 终点（mock 模式 / 降级方案） */
   progress: number
   /** 当前速度 (km/h) */
   speed: number
   type: VehicleType
   /** 车道索引 0..laneCount-1（用于横向偏移到对应车道） */
   laneIndex: number
+  /** 后端推送的精确坐标 x（CityFlow 坐标系，来自 SimVehicleState） */
+  x?: number
+  /** 后端推送的精确坐标 y（CityFlow 坐标系，来自 SimVehicleState） */
+  y?: number
+  /** 后端推送的车头朝向角度（度，来自 SimVehicleState） */
+  angle?: number
 }
 
 /** 应急车辆（继承普通车辆 + 应急元信息） */
@@ -121,6 +127,54 @@ export interface EmergencyVehicle {
   greenWaveActive: boolean
   /** 预计到达时间 (分钟) */
   eta: number
+}
+
+// ---- 应急调度 ----
+
+/** 车辆类型（调度用，不含 normal） */
+export type EmergencyEvType = 'ambulance' | 'firetruck'
+
+/** 应急调度请求（对齐后端 EvDispatchRequest，只需路口 ID） */
+export interface DispatchRequest {
+  /** 起点路口 ID（必填） */
+  startIntersection: string
+  /** 终点路口 ID（必填） */
+  endIntersection: string
+  /** 车辆 ID（可选，不填后端自动生成） */
+  evId?: string
+  /** 车辆类型 */
+  evType?: EmergencyEvType
+  /** 优先级 1-5，1 最高 */
+  priority?: number
+}
+
+/** 应急调度响应 */
+export interface DispatchResponse {
+  sid: string
+  evId: string
+  evType: string
+  priority: number
+  route: string[]
+  routeRoads: string[]
+  estimatedTravelTime: number
+}
+
+/** 应急调度表单数据（本地组件用） */
+export interface DispatchFormData {
+  startIntersectionId: string
+  endIntersectionId: string
+  evType: EmergencyEvType
+  priority: number
+}
+
+/** 应急调度结果（展示用） */
+export interface DispatchResult {
+  evId: string
+  route: string[]
+  routeRoads: string[]
+  estimatedTravelTime: number
+  startName: string
+  endName: string
 }
 
 /** 告警记录 */
@@ -302,6 +356,7 @@ export interface SimMetrics {
 /** 单帧仿真数据（后端 SimFrameData） */
 export interface SimFrameData {
   simTime: number
+  status?: 'running' | 'finished'
   vehicles: SimVehicleState[]
   roads: SimRoadState[]
   intersections: SimIntersectionState[]

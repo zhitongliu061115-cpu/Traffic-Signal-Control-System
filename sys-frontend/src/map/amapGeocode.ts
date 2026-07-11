@@ -2,7 +2,7 @@
 // amapGeocode.ts — 高德 POI 搜索，获取路口精确坐标
 // ================================================================
 
-const AMAP_WEB_KEY = (import.meta.env.VITE_AMAP_WEB_KEY as string) || (import.meta.env.VITE_AMAP_KEY as string)
+const AMAP_WEB_KEY = '4ab584658b1cdc916345e3c20bc15add'
 
 /** 请求间延迟（AMap POI API 也有 QPS 限制） */
 const DELAY_MS = 300

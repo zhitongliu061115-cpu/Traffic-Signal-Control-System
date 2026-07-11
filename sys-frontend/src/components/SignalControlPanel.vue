@@ -3,7 +3,7 @@
 // SignalControlPanel — AI 信号控制面板
 // 展示选中路口信号状态、AI 决策建议、控制按钮
 // ================================================================
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useTrafficStore } from '@/stores/traffic'
 import { PHASE_LABELS, DEVICE_STATUS_LABELS } from '@/types/traffic'
@@ -17,7 +17,61 @@ const {
   selectedIntersection,
   systemMode,
   alerts,
+  simulationControllerType,
+  simulationStatus,
 } = storeToRefs(store)
+
+// ---- 策略切换 ----
+const showControllerDialog = ref(false)
+const pendingController = ref('')
+const switching = ref(false)
+const dialogX = ref(0)
+const dialogY = ref(0)
+
+const controllerOptions = [
+  { value: 'fixed-time', label: 'Fixed-Time', desc: '固定配时，按预设周期循环' },
+  { value: 'max-pressure', label: 'Max-Pressure', desc: '最大压力算法，按排队择优' },
+  { value: 'traffic-r', label: 'Traffic-R', desc: '强化学习模型，需云端服务可用' },
+]
+
+function openControllerDialog(e: MouseEvent): void {
+  pendingController.value = simulationControllerType.value
+  // 边界检测：280px 宽 × ~240px 高，不超出视口
+  const pw = 280, ph = 240, margin = 12
+  let x = e.clientX + 10, y = e.clientY - 10
+  if (x + pw > window.innerWidth - margin) x = window.innerWidth - pw - margin
+  if (y + ph > window.innerHeight - margin) y = e.clientY - ph - 10
+  if (x < margin) x = margin
+  if (y < margin) y = margin
+  dialogX.value = x
+  dialogY.value = y
+  showControllerDialog.value = true
+}
+function selectController(value: string): void {
+  pendingController.value = value
+}
+async function confirmSwitch(): Promise<void> {
+  if (switching.value || pendingController.value === simulationControllerType.value) {
+    showControllerDialog.value = false
+    return
+  }
+  switching.value = true
+  simulationControllerType.value = pendingController.value
+  showControllerDialog.value = false
+  try {
+    await store.recreateSimulation(pendingController.value)
+  } catch {
+    // 错误已在 store 内处理
+  } finally {
+    switching.value = false
+  }
+}
+// 点击外部关闭
+function onOverlayClick(e: MouseEvent): void {
+  if ((e.target as HTMLElement).classList.contains('sc-dialog-overlay')) {
+    showControllerDialog.value = false
+  }
+}
 
 // ---- 相位循环（与 store 保持一致） ----
 const PHASE_ORDER: SignalPhase[] = [
@@ -215,6 +269,59 @@ const phaseProgressColor = computed(() => {
     </div>
 
     <div class="hud-card__content comp-card__body">
+      <!-- ===== 控制策略选择 ===== -->
+      <div class="sc-section sc-section--compact">
+        <div class="sc-section__head">
+          <span class="sc-section__label">控制策略</span>
+          <span class="sc-status-badge" :class="simulationStatus === 'running' ? 'sc-status-badge--live' : 'sc-status-badge--idle'">
+            <span class="status-dot" :class="simulationStatus === 'running' ? 'status-dot--live' : ''" />
+            {{ simulationStatus === 'running' ? '仿真中' : simulationStatus === 'paused' ? '已暂停' : '未启动' }}
+          </span>
+        </div>
+        <div class="sc-controller-row">
+          <span class="sc-current-strategy">{{ controllerOptions.find(o => o.value === simulationControllerType)?.label ?? simulationControllerType }}</span>
+          <button class="cyber-btn sc-controller-trigger" :disabled="switching" @click="openControllerDialog">
+            {{ switching ? '⏳ 切换中…' : '切换策略' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- ===== 策略选择弹窗 ===== -->
+      <Teleport to="body">
+        <div v-if="showControllerDialog" class="sc-dialog-overlay" @click="onOverlayClick">
+          <aside
+            class="hud-card data-panel-card sc-dialog-panel"
+            :style="{ left: dialogX + 'px', top: dialogY + 'px' }"
+          >
+            <header class="hud-panel-titlebar">
+              <div class="titlebar-inner">
+                <span class="titlebar-mark" />
+                <span class="titlebar-text">选择控制策略</span>
+                <div class="titlebar-deco"><i /><i /><i /></div>
+              </div>
+            </header>
+            <div class="sc-dialog-body">
+              <div
+                v-for="opt in controllerOptions"
+                :key="opt.value"
+                class="sc-strategy-card"
+                :class="{ 'sc-strategy-card--selected': pendingController === opt.value }"
+                @click="selectController(opt.value)"
+              >
+                <div class="sc-strategy-card__name">{{ opt.label }}</div>
+                <div class="sc-strategy-card__desc">{{ opt.desc }}</div>
+              </div>
+            </div>
+            <div class="sc-dialog-footer">
+              <button class="cyber-btn sc-dialog-btn sc-dialog-btn--cancel" @click="showControllerDialog = false">取消</button>
+              <button class="cyber-btn sc-dialog-btn sc-dialog-btn--confirm" :disabled="switching" @click="confirmSwitch">
+                {{ switching ? '⏳ 切换中…' : '确认切换' }}
+              </button>
+            </div>
+          </aside>
+        </div>
+      </Teleport>
+
       <!-- ===== 故障/离线醒目提示 ===== -->
       <div v-if="!deviceOk" class="sc-fault-banner" :class="activeIntersection?.deviceStatus === 'fault' ? 'sc-fault-banner--fault' : 'sc-fault-banner--offline'">
         <span class="sc-fault-banner__icon">{{ activeIntersection?.deviceStatus === 'fault' ? '⚠️' : '🔌' }}</span>
@@ -670,6 +777,86 @@ const phaseProgressColor = computed(() => {
   border-color: rgba(0, 212, 255, 0.5);
   color: #00d4ff;
 }
+
+/* 策略选择 */
+.sc-controller-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sc-current-strategy {
+  font-size: 11px;
+  font-family: 'Rajdhani', 'PingFang SC', sans-serif;
+  color: #7af7ff;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+.sc-controller-trigger {
+  margin-left: auto;
+  padding: 5px 14px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.sc-status-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  padding: 2px 8px;
+}
+.sc-status-badge--live {
+  color: #22d3a0;
+  border: 1px solid rgba(34, 211, 160, 0.4);
+  background: rgba(34, 211, 160, 0.08);
+}
+.sc-status-badge--idle {
+  color: #5a7595;
+  border: 1px solid rgba(90, 117, 149, 0.3);
+}
+
+/* 策略选择弹窗 */
+.sc-dialog-overlay {
+  position: fixed; inset: 0; z-index: 300;
+}
+.sc-dialog-panel {
+  position: absolute;
+  width: 280px; display: flex; flex-direction: column; gap: 0;
+  --hud-fill: rgba(5, 19, 35, 0.96);
+}
+.sc-dialog-body {
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 8px;
+}
+.sc-strategy-card {
+  padding: 10px 14px;
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sc-strategy-card:hover {
+  border-color: rgba(0, 212, 255, 0.45);
+  background: rgba(0, 212, 255, 0.06);
+}
+.sc-strategy-card--selected {
+  border-color: rgba(0, 212, 255, 0.7);
+  background: rgba(0, 212, 255, 0.12);
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.15);
+}
+.sc-strategy-card__name {
+  font-size: 13px; font-weight: 700; color: #e8f4ff;
+  font-family: 'Rajdhani', 'PingFang SC', sans-serif;
+}
+.sc-strategy-card__desc {
+  margin-top: 3px; font-size: 10px; color: #8da8c5;
+}
+.sc-dialog-footer {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 10px 16px; border-top: 1px solid rgba(0, 212, 255, 0.12);
+}
+.sc-dialog-btn { padding: 6px 18px; font-size: 11px; }
+.sc-dialog-btn--cancel { border-color: rgba(90,117,149,0.45); color: #8da8c5; }
+.sc-dialog-btn--confirm { border-color: #00d4ff; color: #00d4ff; }
 
 .sc-action-btn--manual:hover {
   background: rgba(0, 212, 255, 0.12);
