@@ -146,9 +146,64 @@ erDiagram
 | `DashboardRepository` | `dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` |
 | `DataAnalysisRepository` | `analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` |
 | `DatabaseStatusService` | 标准核心表、`intersections`、`dashboard_intersection`、`analytics_overview` |
+| `RuntimePersistenceService` | `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link`、`simulation_session`、`simulation_frame`、`road_state_snapshot`、`intersection_movement_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event` |
+| `RuntimeQueryService` | 只读查询 `simulation_session`、`simulation_frame`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`road_state_snapshot`、`intersection_movement_state_snapshot`、`intersection_state_snapshot`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`service_health_snapshot` |
 
 ## 后续注意事项
 
 - 如果要让 PostgreSQL 自动执行这些迁移，需要先确认 `postgres` profile 的 Flyway 策略，并把 `text` 形式的 JSON/几何字段升级为真实 `jsonb` 或 PostGIS 类型。
 - 当前标准表仅完成结构定义，业务读写仍主要集中在保留表和外部 CityFlow 服务；后续接入落库时需要新增 Repository/Service。
 - `intersections` 与标准 `intersection` 暂时并存。前者服务当前 API，后者服务规范化路网模型。
+
+## 2026-07-11 Runtime Persistence Update
+
+第一阶段运行时落库已由 `RuntimePersistenceService` 接入仿真主链路：
+
+- 创建仿真时会尝试读取 CityFlow roadnet，并缓存 `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link` 基础映射。
+- `simulation_session` 在创建仿真时写入，并在 `start`、`pause`、`stop`、自然结束时更新 `status`。
+- 每帧写入 `simulation_frame`、`road_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot`。
+- CityFlow `laneStates` 是 movement-level 输入，新增 `intersection_movement_state_snapshot` 保存 `WT/WL/ST/SL/ET/EL/NT/NL` 等 movement 的 queue、wait 和 4-cell 数据，避免强行塞入 `lane_state_snapshot` 导致 lane FK 错配。
+- 控制策略输出写入 `control_decision` 和 `control_decision_trace`；Traffic-R 成功推理会从 `ControlDecision.metadata` 落入 `traffic_r_inference_log` 与 `traffic_r_inference_result`；Traffic-R fallback 到 Max-Pressure 时写入 `strategy_fallback_event`。
+
+当前边界：
+
+- `lane_state_snapshot` 仍保留给后续真实 CityFlow lane id 对齐后的 lane-level 快照；当前 Traffic-R 使用的 movement-level 状态以 `intersection_movement_state_snapshot` 为准。
+- Traffic-R 失败请求的完整 prompt/request 尚未在 client 层带 `sid`，因此当前只能持久化成功决策与 fallback 事件；若要复盘失败推理，需要后续扩展 Traffic-R 请求上下文或异步调度审计表。
+
+## 2026-07-11 Runtime Query / Agent Tool Update
+
+后端新增 `RuntimeQueryService`，作为前端和 Agent/MCP 的统一只读查询层。当前接口位于：
+
+- `/api/v1/runtime/**`：前端、运维页或调试脚本使用。
+- `/api/v1/agent/tools/**`：与 MCP 工具名保持一致，便于百炼平台注册 HTTP 工具。
+
+已支持的查询能力：
+
+| 工具名 | 主要读取表 | 说明 |
+| --- | --- | --- |
+| `get_current_simulation_state` | `simulation_session`、`simulation_frame`、`intersection_state_snapshot`、`signal_phase` | 查询指定或最近会话的最新帧、信号和会话状态。 |
+| `get_intersection_detail` | `intersection`、`signal_phase`、`road_link`、`intersection_state_snapshot`、`intersection_movement_state_snapshot` | 查询路口基础信息、相位、roadLink 和最新 movement 状态。 |
+| `get_road_detail` | `road`、`lane`、`road_state_snapshot` | 查询道路基础信息、lane 列表和最新道路快照。 |
+| `get_latest_control_decisions` | `control_decision`、`signal_phase`、`simulation_session`、`intersection` | 按会话、路口和条数限制查询最近控制决策。 |
+| `get_decision_trace` | `control_decision`、`control_decision_trace` | 查询单条控制决策的阶段追踪。 |
+| `get_system_health` | `simulation_session`、关键运行表、`service_health_snapshot` | 查询数据库视角健康摘要；不会主动探测外部服务。 |
+| `get_model_inference_log` | `traffic_r_inference_log`、`traffic_r_inference_result` | 查询已落库的 Traffic-R 推理日志与逐路口结果。 |
+| `get_fallback_events` | `strategy_fallback_event`、`simulation_session`、`intersection` | 查询策略 fallback 事件。 |
+| `get_safety_events` | `safety_constraint_event`、`control_decision`、`signal_phase` | 查询安全约束修改、拒绝或回退事件。 |
+| `get_alert_events` | `alert_event`、`simulation_session` | 查询系统告警。 |
+| `get_emergency_events` | `emergency_event`、`simulation_session` | 查询应急事件主记录。 |
+
+查询边界：
+
+- 接口全部为只读，不触发 CityFlow 推进或信号控制。
+- `limit` 默认 20，最大 100，避免 Agent 一次取回大量历史数据。
+- 路口参数支持标准 UUID、CityFlow ID 和 `map_intersection_id`；道路参数支持标准 UUID 和 CityFlow ID。
+- `/api/v1/agent/tools/**` 支持可选 `messageId`；传入后会把工具调用写入 `agent_tool_call`，不传时只查询数据。
+
+Agent 自身数据接口已由 `AgentDataService` 接入：
+
+| 接口能力 | 主要读取/写入表 | 说明 |
+| --- | --- | --- |
+| 创建/查询 Agent 会话 | `agent_conversation`、`simulation_session` | 支持关联业务 `sid` 和百炼 `external_session_id`。 |
+| 创建/查询 Agent 消息 | `agent_message`、`agent_conversation` | 保存 `user`、`assistant`、`tool` 等角色消息。 |
+| 写入/查询工具调用审计 | `agent_tool_call`、`agent_message` | 保存工具名、参数、结果摘要、状态、耗时和错误。 |

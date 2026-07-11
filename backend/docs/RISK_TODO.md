@@ -54,3 +54,7 @@
 | RISK-028 | P1 | deployment/sim-python | CityFlow 公网多人共享时，需要避免会话互相清理，同时保证接口不裸奔 | 错误的 owner 清理会终止他人仿真；缺少令牌会允许未授权调用 | 已处理 | 保留 `CITYFLOW_API_TOKEN` 认证；取消 owner/client 会话归属和自动互删，所有运行态操作按唯一 `sid` 定位 |
 | RISK-029 | P1 | deployment/performance | 阿里云 4 核 8G 同时运行多个高倍速 CityFlow session 时，CPU 和响应时间会急剧恶化 | 前端帧率下降、策略下发延迟、多人共享体验变差 | 已处理 | 增加 `SIM_MAX_ACTIVE_SESSIONS`、`SIM_MAX_SPEED`、`SIM_VISIBLE_VEHICLE_LIMIT`、`SIM_MAX_REQUEST_BYTES`，并新增 `ALIYUN_CITYFLOW_DEPLOYMENT.md` 记录推荐值 |
 | RISK-030 | P1 | emergency/strategy | 应急车完成或从 CityFlow 消失后，持久信号 override 曾可能残留并继续覆盖 RL | RL action 显示已下发但下一 tick 又被旧绿波相位覆盖 | 已处理 | override 按 EV 记录所有权；车辆离开后释放其全部 override；会话停止或自然结束时清空全部 EV 状态 |
+
+| RISK-031 | P1 | backend/database/runtime | 第一阶段已接入运行时落库，但 Traffic-R 失败请求仍只能通过日志和 fallback 事件间接复盘，尚未把失败 prompt/request 逐条写入 `traffic_r_inference_log` | Agent 能查询成功推理、控制决策、fallback 和帧快照，但对失败推理链路的精确输入输出复盘仍不完整 | 待处理 | 后续在 Traffic-R 异步调度层增加带 `sid` 的推理审计上下文，失败、超时、空响应均写入数据库 |
+| RISK-032 | P2 | backend/agent/mcp | 已新增 `/api/v1/agent/tools/**` 查询入口，但百炼 MCP 平台尚未完成工具注册，后端也尚未识别 MCP 调用身份 | 后端接口可用不等于百炼 Agent 已能自动调用；如果直接暴露公网还缺少工具级鉴权和调用边界 | 待处理 | 在百炼平台配置 MCP/HTTP 工具前，先确定网关地址、认证方式、参数 schema 和只读权限；公网暴露时必须增加鉴权或内网代理 |
+| RISK-033 | P2 | backend/agent/audit | Agent 工具调用审计已支持 `messageId` 参数写入 `agent_tool_call`，但百炼 MCP 适配层必须负责先创建 `agent_conversation` / `agent_message` 并传回 `messageId` | 如果 MCP 直接调用工具但不传 `messageId`，工具仍可返回真实数据，但业务库无法串起“用户问题 -> 工具调用 -> Agent 回答”的完整证据链 | 已缓解 | 百炼 MCP 网关配置时，把会话创建、消息写入和工具调用串起来；继续禁止保存 API Key、认证头或过大的结果 payload |

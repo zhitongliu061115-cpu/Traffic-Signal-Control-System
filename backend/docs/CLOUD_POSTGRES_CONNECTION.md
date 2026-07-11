@@ -13,13 +13,21 @@
 - 数据库名：`traffic_signal`
 - 数据库用户：`traffic_user`
 
-本地连接配置已写入：
+本地后端连接配置已按当前联调要求直接写入：
 
 ```text
-backend/.env
+backend/src/main/resources/application.yml
 ```
 
-`.env` 已被 `.gitignore` 忽略，里面包含数据库密码和云服务器 SSH 备忘信息，不应提交到 Git。
+启用 `postgres` profile 后，后端会直接访问：
+
+```text
+jdbc:postgresql://120.48.99.240:5432/traffic_signal
+username: traffic_user
+password: 123456
+```
+
+后续服务稳定后，再把这些值迁回 `.env`、环境变量或密钥管理。
 
 ## 云服务器侧必须完成的配置
 
@@ -119,6 +127,5 @@ Invoke-RestMethod http://localhost:8080/api/v1/database/status
 
 ## 注意事项
 
-- `backend/.env` 中的 `BAIDU_CLOUD_SSH_*` 只是本地备忘，不会被后端读取。
-- 后端实际使用的是 `TRAFFIC_DB_*` 配置。
-- 数据库密码建议后续改成强密码，并同步更新 `backend/.env`。
+- 当前后端实际使用的是 `application.yml` 中 `postgres` profile 的直连配置。
+- 数据库密码建议后续改成强密码，并同步迁移到 `.env`、环境变量或密钥管理。

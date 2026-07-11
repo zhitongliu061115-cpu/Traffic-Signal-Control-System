@@ -1,6 +1,7 @@
 package com.traffic.simulation.service;
 
 import com.traffic.cityflow.client.CityFlowClient;
+import com.traffic.runtime.persistence.RuntimePersistenceService;
 import com.traffic.simulation.dto.SimFrameData;
 import com.traffic.simulation.session.SimulationSessionRegistry;
 import com.traffic.simulation.session.SimulationSessionState;
@@ -28,13 +29,15 @@ class SimulationServiceTest {
         TrafficSignalControllerRegistry controllerRegistry = mock(TrafficSignalControllerRegistry.class);
         StrategyDispatchService strategyDispatchService = mock(StrategyDispatchService.class);
         SimulationFrameTimingLogger frameTimingLogger = mock(SimulationFrameTimingLogger.class);
+        RuntimePersistenceService runtimePersistenceService = mock(RuntimePersistenceService.class);
         SimulationService service = new SimulationService(
                 cityFlowClient,
                 registry,
                 webSocketHandler,
                 controllerRegistry,
                 strategyDispatchService,
-                frameTimingLogger
+                frameTimingLogger,
+                runtimePersistenceService
         );
         var session = registry.register("run_finished", "jinan_3x4", "fixed-time");
         session.setState(SimulationSessionState.RUNNING);
@@ -57,5 +60,7 @@ class SimulationServiceTest {
         assertTrue(registry.find("run_finished").isEmpty());
         verify(strategyDispatchService, never()).decideAndApply(session, finishedFrame);
         verify(strategyDispatchService).releaseSession("run_finished");
+        verify(runtimePersistenceService).persistFrame(session, 1L, finishedFrame, List.of());
+        verify(runtimePersistenceService).updateSessionStatus("run_finished", "finished");
     }
 }

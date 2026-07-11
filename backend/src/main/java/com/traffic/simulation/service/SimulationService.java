@@ -3,6 +3,7 @@ package com.traffic.simulation.service;
 import com.traffic.cityflow.client.CityFlowClient;
 import com.traffic.common.exception.BusinessException;
 import com.traffic.common.util.TimeUtils;
+import com.traffic.runtime.persistence.RuntimePersistenceService;
 import com.traffic.simulation.dto.CityFlowCreateSimulationRequest;
 import com.traffic.simulation.dto.CreateSimulationRequest;
 import com.traffic.simulation.dto.CreateSimulationResponse;
@@ -36,6 +37,7 @@ public class SimulationService {
     private final TrafficSignalControllerRegistry controllerRegistry;
     private final StrategyDispatchService strategyDispatchService;
     private final SimulationFrameTimingLogger frameTimingLogger;
+    private final RuntimePersistenceService runtimePersistenceService;
 
     public SimulationService(
             CityFlowClient cityFlowClient,
@@ -43,7 +45,8 @@ public class SimulationService {
             SimulationWebSocketHandler webSocketHandler,
             TrafficSignalControllerRegistry controllerRegistry,
             StrategyDispatchService strategyDispatchService,
-            SimulationFrameTimingLogger frameTimingLogger
+            SimulationFrameTimingLogger frameTimingLogger,
+            RuntimePersistenceService runtimePersistenceService
     ) {
         this.cityFlowClient = cityFlowClient;
         this.sessionRegistry = sessionRegistry;
@@ -51,6 +54,7 @@ public class SimulationService {
         this.controllerRegistry = controllerRegistry;
         this.strategyDispatchService = strategyDispatchService;
         this.frameTimingLogger = frameTimingLogger;
+        this.runtimePersistenceService = runtimePersistenceService;
     }
 
     public CreateSimulationResponse createSimulation(CreateSimulationRequest request) {
@@ -58,6 +62,18 @@ public class SimulationService {
         controllerRegistry.get(controllerType);
         var cityFlowResponse = cityFlowClient.createSimulation(
                 new CityFlowCreateSimulationRequest(request.sceneId(), request.speed(), request.warmupSeconds())
+        );
+        runtimePersistenceService.ensureRoadnet(
+                cityFlowResponse.sceneId(),
+                () -> cityFlowClient.getRoadnet(cityFlowResponse.sceneId())
+        );
+        runtimePersistenceService.createSession(
+                cityFlowResponse.sid(),
+                cityFlowResponse.sceneId(),
+                controllerType,
+                request.speed(),
+                request.warmupSeconds(),
+                cityFlowResponse.status()
         );
         sessionRegistry.register(cityFlowResponse.sid(), cityFlowResponse.sceneId(), controllerType);
         return new CreateSimulationResponse(
@@ -72,18 +88,21 @@ public class SimulationService {
         SimulationRuntimeSession session = findSession(sid);
         forwardLifecycleToCityFlow("start", sid);
         session.setState(SimulationSessionState.RUNNING);
+        runtimePersistenceService.updateSessionStatus(sid, "running");
     }
 
     public void pause(String sid) {
         SimulationRuntimeSession session = findSession(sid);
         forwardLifecycleToCityFlow("pause", sid);
         session.setState(SimulationSessionState.PAUSED);
+        runtimePersistenceService.updateSessionStatus(sid, "paused");
     }
 
     public void stop(String sid) {
         SimulationRuntimeSession session = findSession(sid);
         forwardLifecycleToCityFlow("stop", sid);
         session.setState(SimulationSessionState.FINISHED);
+        runtimePersistenceService.updateSessionStatus(sid, "finished");
         releaseSessionState(sid);
     }
 
@@ -194,8 +213,10 @@ public class SimulationService {
                     decisions.size()
             );
         }
+        runtimePersistenceService.persistFrame(session, seq, publishFrame, decisions);
         if (finished) {
             session.setState(SimulationSessionState.FINISHED);
+            runtimePersistenceService.updateSessionStatus(session.getSid(), "finished");
             releaseSessionState(session.getSid());
             log.info("simulation finished and released. sid={}, simTime={}", session.getSid(), publishFrame.simTime());
         }

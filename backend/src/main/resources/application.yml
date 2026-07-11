@@ -75,9 +75,9 @@ spring:
     activate:
       on-profile: postgres
   datasource:
-    url: ${TRAFFIC_DB_URL:jdbc:postgresql://${TRAFFIC_DB_HOST:localhost}:${TRAFFIC_DB_PORT:5432}/${TRAFFIC_DB_NAME:traffic_signal}}
-    username: ${TRAFFIC_DB_USERNAME:postgres}
-    password: ${TRAFFIC_DB_PASSWORD:}
+    url: jdbc:postgresql://120.48.99.240:5432/traffic_signal
+    username: traffic_user
+    password: 123456
     driver-class-name: org.postgresql.Driver
   jpa:
     database-platform: org.hibernate.dialect.PostgreSQLDialect

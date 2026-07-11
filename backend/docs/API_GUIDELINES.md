@@ -131,7 +131,203 @@ GET /api/v1/database/status
 - 验证 Spring Boot 是否能连接 PostgreSQL。
 - 返回核心业务表是否存在以及行数统计。
 
-### 3.5 路口数据读写
+### 3.5 运行时数据库查询接口
+
+这些接口只查询 Spring Boot 已落库的真实业务数据，不直接推进 CityFlow，也不下发控制动作。前端、运维页面和后续 MCP 工具应优先复用这一层，避免 Agent 直接拼 SQL。
+
+当前提供两组等价入口：
+
+- 前端/通用查询：`/api/v1/runtime/**`
+- MCP 工具名兼容入口：`/api/v1/agent/tools/**`
+
+`/api/v1/agent/tools/**` 支持可选查询参数 `messageId`。当 MCP 网关或前端已经创建 `agent_message` 后，把该消息 ID 传给工具接口，后端会自动把工具名、参数、结果摘要、状态、耗时和错误写入 `agent_tool_call`。不传 `messageId` 时只返回查询结果，不写审计。
+
+#### 当前仿真状态 / `get_current_simulation_state`
+
+```http
+GET /api/v1/runtime/simulations/current?sid={sid}
+GET /api/v1/agent/tools/get_current_simulation_state?sid={sid}
+```
+
+参数：
+
+| 参数 | 必需 | 含义 |
+|---|---:|---|
+| `sid` | 否 | 指定仿真会话；不传时返回最近创建或启动的会话 |
+
+返回内容包括会话摘要、最新 `simulation_frame`、已持久化帧数和最新帧信号状态。
+
+#### 路口详情 / `get_intersection_detail`
+
+```http
+GET /api/v1/runtime/intersections/{intersectionId}?sid={sid}&sceneCode={sceneCode}
+GET /api/v1/agent/tools/get_intersection_detail/{intersectionId}?sid={sid}&sceneCode={sceneCode}
+```
+
+`intersectionId` 可传标准表 `intersection.id`、CityFlow 路口 ID 或 `map_intersection_id`。返回路口基础信息、最新相位/排队状态、movement-level 快照、相位列表和 roadLink 列表。
+
+#### 道路详情 / `get_road_detail`
+
+```http
+GET /api/v1/runtime/roads/{roadId}?sid={sid}&sceneCode={sceneCode}
+GET /api/v1/agent/tools/get_road_detail/{roadId}?sid={sid}&sceneCode={sceneCode}
+```
+
+`roadId` 可传标准表 `road.id` 或 CityFlow 道路 ID。返回道路基础信息、最新道路快照和 lane 列表。
+
+#### 最新控制决策 / `get_latest_control_decisions`
+
+```http
+GET /api/v1/runtime/control-decisions?sid={sid}&intersectionId={intersectionId}&limit=20
+GET /api/v1/agent/tools/get_latest_control_decisions?sid={sid}&intersectionId={intersectionId}&limit=20
+```
+
+参数：
+
+| 参数 | 必需 | 含义 |
+|---|---:|---|
+| `sid` | 否 | 按仿真会话过滤 |
+| `intersectionId` | 否 | 可传标准 UUID、CityFlow 路口 ID 或地图路口 ID |
+| `limit` | 否 | 返回条数，默认 20，后端最大限制 100 |
+
+返回 `control_decision` 及关联相位 code、置信度、metadata 和错误信息。
+
+#### 决策追踪 / `get_decision_trace`
+
+```http
+GET /api/v1/runtime/control-decisions/{decisionId}/trace
+GET /api/v1/agent/tools/get_decision_trace/{decisionId}
+```
+
+`decisionId` 必须是 `control_decision.id`。返回决策摘要和 `control_decision_trace` 阶段记录。
+
+#### 系统健康 / `get_system_health`
+
+```http
+GET /api/v1/runtime/system-health?limit=20
+GET /api/v1/agent/tools/get_system_health?limit=20
+```
+
+返回数据库可访问状态、关键运行表行数、仿真会话状态分布和最近 `service_health_snapshot`。当前是数据库视角的健康摘要，不会主动探测 Python CityFlow 或 Traffic-R。
+
+#### Traffic-R 推理日志 / `get_model_inference_log`
+
+```http
+GET /api/v1/runtime/model-inferences?sid={sid}&intersectionId={intersectionId}&limit=20
+GET /api/v1/agent/tools/get_model_inference_log?sid={sid}&intersectionId={intersectionId}&limit=20
+```
+
+返回 `traffic_r_inference_log` 和每条日志下的 `traffic_r_inference_result`。当前只覆盖已落库的推理记录；Traffic-R 请求失败但尚未进入控制决策 metadata 的场景仍见 `RISK-031`。
+
+#### fallback / 安全 / 告警 / 应急事件查询
+
+```http
+GET /api/v1/runtime/fallback-events?sid={sid}&intersectionId={intersectionId}&limit=20
+GET /api/v1/agent/tools/get_fallback_events?sid={sid}&intersectionId={intersectionId}&limit=20&messageId={messageId}
+
+GET /api/v1/runtime/safety-events?sid={sid}&intersectionId={intersectionId}&decisionId={decisionId}&limit=20
+GET /api/v1/agent/tools/get_safety_events?sid={sid}&intersectionId={intersectionId}&decisionId={decisionId}&limit=20&messageId={messageId}
+
+GET /api/v1/runtime/alerts?sid={sid}&level={level}&status={status}&limit=20
+GET /api/v1/agent/tools/get_alert_events?sid={sid}&level={level}&status={status}&limit=20&messageId={messageId}
+
+GET /api/v1/runtime/emergency-events?sid={sid}&status={status}&limit=20
+GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&messageId={messageId}
+```
+
+用途：
+
+- `get_fallback_events`：查询 Traffic-R、MaxPressure 等策略 fallback 事件。
+- `get_safety_events`：查询安全约束修改、拒绝或回退决策的事件。
+- `get_alert_events`：查询系统告警。
+- `get_emergency_events`：查询应急车辆/绿波任务主事件。
+
+### 3.6 Agent 会话、消息与工具调用审计
+
+这些接口用于保存和查询 Agent 自身交互数据。百炼 MCP 工具调用前，应先创建会话和消息，再把 `messageId` 传给工具接口，以形成可复盘链路。
+
+#### 创建/查询 Agent 会话
+
+```http
+POST /api/v1/agent/conversations
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "userId": "可选 UUID",
+  "sid": "可选仿真会话 sid",
+  "externalSessionId": "可选百炼 session_id",
+  "title": "本轮诊断会话"
+}
+```
+
+查询：
+
+```http
+GET /api/v1/agent/conversations?sid={sid}&externalSessionId={externalSessionId}&userId={userId}&limit=20
+GET /api/v1/agent/conversations/{conversationId}
+```
+
+#### 创建/查询 Agent 消息
+
+```http
+POST /api/v1/agent/conversations/{conversationId}/messages
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "role": "user | assistant | tool",
+  "content": "消息内容"
+}
+```
+
+查询：
+
+```http
+GET /api/v1/agent/conversations/{conversationId}/messages?limit=20
+```
+
+#### 工具调用审计
+
+显式写入：
+
+```http
+POST /api/v1/agent/messages/{messageId}/tool-calls
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "toolName": "get_current_simulation_state",
+  "arguments": {"sid": "run_001"},
+  "result": {"summary": "工具结果摘要或完整结果"},
+  "status": "SUCCESS",
+  "latencyMs": 12,
+  "errorMessage": null
+}
+```
+
+查询：
+
+```http
+GET /api/v1/agent/messages/{messageId}/tool-calls?limit=20
+GET /api/v1/agent/tool-calls?toolName={toolName}&status={status}&limit=20
+```
+
+注意：
+
+- `agent_tool_call.result_payload` 会由后端截断到约 12,000 字符，避免 Agent 一次工具调用把过大的历史数据写入数据库。
+- 工具审计不得保存 API Key、鉴权头或百炼平台密钥。
+
+### 3.7 路口数据读写
 
 读取全部路口：
 
