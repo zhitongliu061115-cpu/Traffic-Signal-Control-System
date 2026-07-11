@@ -1,0 +1,183 @@
+package com.traffic.agent.orchestrator;
+
+import com.traffic.agent.dto.AgentDataDtos.ToolCallResponse;
+import com.traffic.agent.service.AgentDataService;
+import com.traffic.common.exception.BusinessException;
+import com.traffic.runtime.query.RuntimeQueryService;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.springframework.stereotype.Service;
+
+@Service
+public class AgentToolExecutor {
+
+    private static final int DEFAULT_LIMIT = 20;
+    private static final int MAX_LIMIT = 100;
+    private static final List<String> ALLOWED_TOOLS = List.of(
+            "get_current_simulation_state",
+            "get_intersection_detail",
+            "get_road_detail",
+            "get_latest_control_decisions",
+            "get_decision_trace",
+            "get_system_health",
+            "get_model_inference_log",
+            "get_fallback_events",
+            "get_safety_events",
+            "get_alert_events",
+            "get_emergency_events"
+    );
+
+    private final RuntimeQueryService runtimeQueryService;
+    private final AgentDataService agentDataService;
+
+    public AgentToolExecutor(RuntimeQueryService runtimeQueryService, AgentDataService agentDataService) {
+        this.runtimeQueryService = runtimeQueryService;
+        this.agentDataService = agentDataService;
+    }
+
+    public List<String> allowedTools() {
+        return ALLOWED_TOOLS;
+    }
+
+    public AgentToolExecution execute(String messageId, AgentPlan.PlannedToolCall plannedCall) {
+        String toolName = normalizeToolName(plannedCall.toolName());
+        Map<String, Object> arguments = normalizeArguments(plannedCall.arguments());
+        long startNanos = System.nanoTime();
+        try {
+            Object result = callTool(toolName, arguments);
+            int latencyMs = elapsedMs(startNanos);
+            ToolCallResponse audit = agentDataService.recordToolCall(
+                    messageId,
+                    toolName,
+                    arguments,
+                    result,
+                    "SUCCESS",
+                    latencyMs,
+                    null
+            );
+            return new AgentToolExecution(audit.id(), toolName, arguments, result, "SUCCESS", latencyMs, null);
+        } catch (RuntimeException ex) {
+            int latencyMs = elapsedMs(startNanos);
+            ToolCallResponse audit = agentDataService.recordToolCall(
+                    messageId,
+                    toolName,
+                    arguments,
+                    Map.of("error", ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()),
+                    "FAILED",
+                    latencyMs,
+                    ex.getMessage()
+            );
+            return new AgentToolExecution(audit.id(), toolName, arguments, null, "FAILED", latencyMs, ex.getMessage());
+        }
+    }
+
+    private Object callTool(String toolName, Map<String, Object> arguments) {
+        return switch (toolName) {
+            case "get_current_simulation_state" ->
+                    runtimeQueryService.getCurrentSimulationState(stringArg(arguments, "sid", false));
+            case "get_intersection_detail" -> runtimeQueryService.getIntersectionDetail(
+                    stringArg(arguments, "intersectionId", true),
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "sceneCode", false)
+            );
+            case "get_road_detail" -> runtimeQueryService.getRoadDetail(
+                    stringArg(arguments, "roadId", true),
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "sceneCode", false)
+            );
+            case "get_latest_control_decisions" -> runtimeQueryService.getLatestControlDecisions(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "intersectionId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_decision_trace" ->
+                    runtimeQueryService.getDecisionTrace(stringArg(arguments, "decisionId", true));
+            case "get_system_health" ->
+                    runtimeQueryService.getSystemHealth(intArg(arguments, "limit", DEFAULT_LIMIT));
+            case "get_model_inference_log" -> runtimeQueryService.getModelInferenceLog(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "intersectionId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_fallback_events" -> runtimeQueryService.getFallbackEvents(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "intersectionId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_safety_events" -> runtimeQueryService.getSafetyEvents(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "intersectionId", false),
+                    stringArg(arguments, "decisionId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_alert_events" -> runtimeQueryService.getAlertEvents(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "level", false),
+                    stringArg(arguments, "status", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_emergency_events" -> runtimeQueryService.getEmergencyEvents(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "status", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            default -> throw new BusinessException("不允许的 Agent 工具：" + toolName);
+        };
+    }
+
+    private String normalizeToolName(String toolName) {
+        if (toolName == null || toolName.isBlank()) {
+            throw new BusinessException("toolName 不能为空");
+        }
+        String normalized = toolName.trim();
+        if (!ALLOWED_TOOLS.contains(normalized)) {
+            throw new BusinessException("不允许的 Agent 工具：" + normalized);
+        }
+        return normalized;
+    }
+
+    private Map<String, Object> normalizeArguments(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        arguments.forEach((key, value) -> {
+            if (key != null && value != null) {
+                normalized.put(key, value);
+            }
+        });
+        return normalized;
+    }
+
+    private String stringArg(Map<String, Object> arguments, String name, boolean required) {
+        Object value = arguments.get(name);
+        if (value == null || String.valueOf(value).isBlank()) {
+            if (required) {
+                throw new BusinessException("工具参数缺失：" + name);
+            }
+            return null;
+        }
+        return String.valueOf(value).trim();
+    }
+
+    private int intArg(Map<String, Object> arguments, String name, int defaultValue) {
+        Object value = arguments.get(name);
+        if (value == null || String.valueOf(value).isBlank()) {
+            return defaultValue;
+        }
+        try {
+            int parsed = value instanceof Number number ? number.intValue() : Integer.parseInt(String.valueOf(value));
+            if (parsed <= 0) {
+                return defaultValue;
+            }
+            return Math.min(parsed, MAX_LIMIT);
+        } catch (NumberFormatException ex) {
+            throw new BusinessException("工具参数必须是整数：" + name);
+        }
+    }
+
+    private int elapsedMs(long startNanos) {
+        return (int) Math.max(0, (System.nanoTime() - startNanos) / 1_000_000);
+    }
+}

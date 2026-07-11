@@ -64,7 +64,7 @@ Agent 可见语义化工具
 
 ### 2.3 当前缺口
 
-- 还没有统一 `AgentOrchestratorService`：后端不会自动判断“该查数据库、查知识库还是直接调用模型”。
+- 已新增统一 `AgentOrchestratorService`：`/api/v1/agent/chat` 会经过编排层完成会话落库、LLM 工具规划、工具执行审计和回答生成。
 - 还没有 `search_knowledge_base`：百炼知识库 / 项目知识库尚未接入后端工具体系。
 - 还没有语义化分析工具：拥堵诊断、异常检测、溢出风险、策略对比等尚未实现。
 - `get_decision_trace` 仍偏数据库 trace，没有完整聚合 Traffic-R 原始输出、安全层、fallback 和 CityFlow 执行结果。
@@ -178,7 +178,7 @@ Agent 可见语义化工具
 
 ## 6. Agent 编排设计
 
-后续应新增 `AgentOrchestratorService`，作为 `/api/v1/agent/chat` 的新核心。
+已新增 `AgentOrchestratorService`，作为 `/api/v1/agent/chat` 的新核心。
 
 推荐流程：
 
@@ -198,6 +198,25 @@ Agent 可见语义化工具
   -> 写入 assistant agent_message
   -> 返回答案、引用证据和工具调用摘要
 ```
+
+### 6.0 当前阶段 2 落地状态
+
+当前阶段 2 已完成后端编排骨架：
+
+- `AgentController` 不再直接调用模型，而是调用 `AgentOrchestratorService`。
+- `AgentOrchestratorService` 负责创建或读取 `agent_conversation`，写入 user / assistant `agent_message`。
+- `AgentIntentClassifier` 使用 LLM 生成结构化 JSON 工具规划，不用后端硬编码规则选择工具。
+- `AgentToolExecutor` 负责后端工具白名单过滤、参数校验、调用 `RuntimeQueryService`，并把每个工具调用写入 `agent_tool_call`。
+- `AgentResponseAssembler` 将 LLM 规划、工具结果和上下文组装给模型生成最终回答。
+- LLM 规划轨迹会以 `llm_tool_plan` 写入 `agent_tool_call`，接口响应中也返回 `planTrace`。
+
+当前工具规划不是让模型直接执行 Java 方法，而是采用“LLM 输出 JSON 计划 -> 后端白名单执行”的安全模式。这样既满足由 LLM 进行工具调用决策，又避免模型越权调用未开放能力。
+
+当前仍未完成：
+
+- `search_knowledge_base` 尚未接入，所以规范/部署/算法说明类问题仍只能由模型基于已有上下文回答。
+- `diagnose_congestion`、`detect_signal_anomaly` 等语义化分析工具尚未实现。
+- 暂未开放执行类工具；策略切换、相位下发、应急绿波执行仍必须等待安全层和仲裁层。
 
 ### 6.1 意图分类
 
@@ -224,14 +243,15 @@ Agent 可见语义化工具
 
 ### 6.2.1 LangChain4j 接入状态
 
-当前已完成第一阶段依赖与配置准备：
+当前已完成第一阶段依赖与配置准备，并在第二阶段接入编排层：
 
 - 后端保持 Spring Boot `3.3.5`，不升级 Spring Boot。
 - 已在 `backend/pom.xml` 引入 `dev.langchain4j:langchain4j` 与 `dev.langchain4j:langchain4j-open-ai`。
 - 暂不引入 `langchain4j-spring-boot-starter`，避免引入 Spring Boot 版本升级风险。
 - 已在 `application.yml` 增加 `traffic.agent.langchain4j.*` 配置。
-- `traffic.agent.langchain4j.enabled` 默认是 `false`，第一阶段只完成依赖和配置入口，不会自动替换现有 `BailianAgentService`。
-- 后续第二阶段再新增 `AgentOrchestratorService`，通过普通 Java API 手动创建 ChatModel，并手动注册 Agent 工具。
+- `traffic.agent.langchain4j.enabled` 默认是 `false`，未开启时编排层会复用现有 `BailianAgentService` 调用百炼。
+- 开启 `traffic.agent.langchain4j.enabled=true` 后，会通过普通 Java API 创建 LangChain4j `ChatModel`。
+- 第二阶段采用 LLM JSON 规划模式，不依赖 `langchain4j-spring-boot-starter`。
 
 当前配置项：
 
@@ -422,11 +442,10 @@ traffic:
 下一步优先实现：
 
 1. `search_knowledge_base`
-2. `AgentOrchestratorService`
-3. `diagnose_congestion`
-4. 增强 `get_decision_trace`
-5. 增强 `get_system_health`
-6. `get_emergency_vehicle_status`
+2. `diagnose_congestion`
+3. 增强 `get_decision_trace`
+4. 增强 `get_system_health`
+5. `get_emergency_vehicle_status`
 
 暂缓：
 

@@ -351,7 +351,85 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 
 ### 3.6 Agent 会话、消息与工具调用审计
 
-这些接口用于保存和查询 Agent 自身交互数据。百炼 MCP 工具调用前，应先创建会话和消息，再把 `messageId` 传给工具接口，以形成可复盘链路。
+这些接口用于保存和查询 Agent 自身交互数据。`/api/v1/agent/chat` 会自动创建/读取会话、写入用户消息、记录 LLM 工具规划、执行工具并写入工具调用审计；外部手动调用 `/api/v1/agent/tools/**` 时，仍可传入 `messageId` 形成可复盘链路。
+
+#### Agent 聊天编排入口
+
+```http
+POST /api/v1/agent/chat
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "message": "当前仿真状态怎么样？",
+  "sid": "run_001",
+  "conversationId": "可选，继续已有 Agent 会话",
+  "sessionId": "可选，兼容百炼外部 session_id",
+  "context": {
+    "currentPage": "dashboard",
+    "intersectionId": "intersection_1_1"
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 必需 | 含义 |
+|---|---:|---|
+| `message` | 是 | 用户问题，最大 4000 字符 |
+| `sid` | 否 | 本项目仿真会话 ID，用于关联 `simulation_session` 和实时工具查询 |
+| `conversationId` | 否 | 已有 `agent_conversation.id`；不传时后端自动创建新会话 |
+| `sessionId` | 否 | 兼容百炼外部会话 ID，不等同于仿真 `sid` |
+| `context` | 否 | 前端页面上下文，如当前页面、路口 ID、道路 ID 等 |
+
+响应：
+
+```json
+{
+  "reply": "当前仿真运行正常……",
+  "sessionId": null,
+  "source": "langchain4j | bailian | config",
+  "fallback": false,
+  "conversationId": "agent_conversation UUID",
+  "messageId": "assistant agent_message UUID",
+  "toolCalls": [
+    {
+      "id": "agent_tool_call UUID",
+      "toolName": "get_current_simulation_state",
+      "arguments": {"sid": "run_001"},
+      "status": "SUCCESS",
+      "latencyMs": 12,
+      "errorMessage": null
+    }
+  ],
+  "evidence": [
+    {
+      "source": "tool",
+      "name": "get_current_simulation_state",
+      "summary": "工具 get_current_simulation_state 返回真实后端数据",
+      "value": {}
+    }
+  ],
+  "planTrace": {
+    "intent": "current_state",
+    "rationale": "需要查询真实仿真状态",
+    "needsTools": true,
+    "rawPlan": "{...LLM 输出的 JSON 规划...}",
+    "plannerSource": "langchain4j | bailian | config"
+  }
+}
+```
+
+编排规则：
+
+- `AgentController` 只调用 `AgentOrchestratorService`，不直接调用模型。
+- 工具选择由 LLM 输出格式化 JSON 规划，后端只做 JSON 解析、工具白名单过滤和参数校验。
+- 当前白名单工具均为只读工具，不下发信号控制动作。
+- LLM 规划轨迹会以 `llm_tool_plan` 写入 `agent_tool_call`；每个真实工具调用也会写入 `agent_tool_call`。
+- 涉及实时状态的问题必须基于工具结果回答；如果工具失败或没有真实数据，回答必须说明无法获取，不能编造。
 
 #### 创建/查询 Agent 会话
 
