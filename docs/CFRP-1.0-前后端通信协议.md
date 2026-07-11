@@ -287,6 +287,7 @@ wss://api.example.com/ws/v1/simulations/run_001
 | `sim.*` | CityFlow 仿真状态和实时帧 | 是 | `sim.frame` |
 | `client.*` | 前端向后端发送的订阅和控制命令 | 是 | `client.subscribe` |
 | `rl.*` | RL/LLM 模型调度和决策事件 | 预留 | `rl.decision` |
+| `control.*` | 后端策略动作提交状态 | 是 | `control.decision` |
 | `greenwave.*` | 应急绿波和特殊车辆优先通行 | 预留 | `greenwave.plan` |
 | `alert.*` | 拥堵、异常、系统告警 | 预留 | `alert.created` |
 | `agent.*` | 智能问答、解释建议、运维 Agent | 预留 | `agent.message` |
@@ -414,6 +415,20 @@ wss://api.example.com/ws/v1/simulations/run_001
         "level": "free"
       }
     ],
+    "laneStates": {
+      "intersection_1_1": {
+        "lanes": {
+          "WT": { "queue_len": 8, "avg_wait_time": 24.0, "cells": [3, 2, 1, 0] },
+          "WL": { "queue_len": 1, "avg_wait_time": 3.0, "cells": [0, 1, 0, 0] },
+          "ST": { "queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0] },
+          "SL": { "queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0] },
+          "ET": { "queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0] },
+          "EL": { "queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0] },
+          "NT": { "queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0] },
+          "NL": { "queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0] }
+        }
+      }
+    },
     "intersections": [
       {
         "id": "intersection_1_1",
@@ -431,6 +446,8 @@ wss://api.example.com/ws/v1/simulations/run_001
     ],
     "metrics": {
       "vehicleCount": 582,
+      "activeVehicleCount": 582,
+      "scheduledDepartureCount": 710,
       "queueCount": 96,
       "avgSpeed": 7.4,
       "avgWait": 35.2,
@@ -446,9 +463,12 @@ wss://api.example.com/ws/v1/simulations/run_001
 |---|---|---:|---|---|
 | `vehicles` | `VehicleState[]` | 是 | 当前帧车辆状态。前端用它更新车辆动画。 | `[{ "id": "vehicle_001", "x": 120.4, "y": 300.8 }]` |
 | `roads` | `RoadState[]` | 是 | 当前道路状态。前端用它更新道路颜色和 tooltip。 | `[{ "id": "road_1_1_0", "level": "slow" }]` |
+| `laneStates` | `Record<string, IntersectionLaneState>` | 否 | 路口 movement lane 级状态，主要供 Traffic-R 输入和调试展示。 | `{ "intersection_1_1": { "lanes": { "WT": {...} } } }` |
 | `intersections` | `IntersectionState[]` | 是 | 当前路口状态。前端用它显示路口拥堵和排队。 | `[{ "id": "intersection_1_1", "queueCount": 14 }]` |
 | `signals` | `SignalState[]` | 是 | 当前信号灯状态。前端用它高亮放行方向。 | `[{ "intersectionId": "intersection_1_1", "phaseIndex": 1 }]` |
 | `metrics` | `SimulationMetrics` | 是 | 全局指标。前端用它更新大屏指标卡。 | `{ "vehicleCount": 582, "queueCount": 96 }` |
+| `evEvents` | `EvEvent[]` | 是 | 本帧信号控制事件。应急车接近路口时产生延绿/红灯缩短等动作。 | `[{ intersectionId: intersection_1_1, decision: extend_green }]` |
+| `evStatus` | `EvStatus[]` | 是 | 应急车进度追踪。前端用它显示进度条和剩余时间。 | `[{ evId: ev_default, passedCount: 1, totalCount: 5 }]` |
 
 ### 9.5 VehicleState 字段说明
 
@@ -521,10 +541,44 @@ wss://api.example.com/ws/v1/simulations/run_001
 | 字段 | 类型 | 必需 | 含义 | 示例 |
 |---|---|---:|---|---|
 | `vehicleCount` | `number` | 是 | 当前路网内车辆总数。 | `582` |
+| `activeVehicleCount` | `number` | 否 | 当前仍在路网上的活跃车辆数。 | `582` |
+| `scheduledDepartureCount` | `number` | 否 | 当前仿真时间前已计划发车的车辆累计数。 | `710` |
 | `queueCount` | `number` | 是 | 当前路网排队车辆总数。 | `96` |
 | `avgSpeed` | `number` | 是 | 当前全局平均速度。 | `7.4` |
 | `avgWait` | `number` | 是 | 当前全局平均等待时间，单位秒。 | `35.2` |
 | `throughput` | `number` | 是 | 已完成行程车辆数。 | `128` |
+
+### 9.10 EvEvent 字段说明
+
+| 字段 | 类型 | 必需 | 含义 | 示例 |
+|---|---|---|---|---|
+| `evId` | `string` | 否 | 触发事件的应急车 ID。 | `"ev_default"` |
+| `evType` | `string` | 否 | 车辆类型。 | `"fire_truck"` |
+| `priority` | `int` | 否 | 优先级，1 最高。 | `1` |
+| `intersectionId` | `string` | 是 | 触发事件的路口 ID。 | `"intersection_1_1"` |
+| `decision` | `string` | 是 | 信号决策类型：`extend_green` / `shorten_red`。 | `"extend_green"` |
+| `phaseIndex` | `int` | 是 | 决策后的相位索引。 | `2` |
+| `phaseIndexBefore` | `int` | 否 | 决策前的相位索引。 | `1` |
+| `timestamp` | `number` | 是 | 事件触发时的仿真时间（秒）。 | `5.2` |
+| `status` | `string` | 否 | 事件状态。 | `"resolved"` |
+| `blockedBy` | `string` | 否 | 仲裁时被阻塞方 ID。 | `"ev_002"` |
+
+前端兼容说明：`evEvents` 为空数组时表示本帧无应急事件。前端可按 `intersectionId` 找到对应路口并闪烁提示。
+
+### 9.11 EvStatus 字段说明
+
+| 字段 | 类型 | 必需 | 含义 | 示例 |
+|---|---|---|---|---|
+| `evId` | `string` | 是 | 应急车 ID。 | `"ev_default"` |
+| `evType` | `string` | 是 | 车辆类型。 | `"fire_truck"` |
+| `priority` | `int` | 是 | 优先级，1 最高。 | `1` |
+| `route` | `string[]` | 是 | 规划路径（交叉口 ID 列表）。 | `["intersection_1_1", "intersection_2_1"]` |
+| `passedCount` | `int` | 是 | 已通过交叉口数。 | `1` |
+| `totalCount` | `int` | 是 | 总交叉口数。 | `5` |
+| `completed` | `bool` | 是 | 是否已完成全程。 | `false` |
+| `elapsedTime` | `number` | 是 | 已用时间（秒）。 | `12.5` |
+
+前端兼容说明：用 `passedCount / totalCount` 渲染进度条。`completed` 为 `true` 时切换为已完成状态。
 
 ---
 
@@ -643,6 +697,8 @@ wss://api.example.com/ws/v1/simulations/run_001
 ## 13. 扩展协议：RL 模型调度
 
 本协议预留 `rl.*` 命名空间。后续接入 RL 或 LLM 控制模型时，不修改 `sim.frame`，而是新增 `rl.decision` 消息。
+
+当前 Spring Boot 已使用 `control.decision` 推送策略动作提交状态。该消息只表示后端已经生成并提交控制动作，不代表 CityFlow 已经在当前帧完成相位切换；真实信号灯显示必须仍以 `sim.frame.data.signals` 为准。
 
 ### 13.1 rl.decision 示例
 
@@ -802,6 +858,7 @@ export type MessageType =
   | 'sim.error'
   | 'client.subscribe'
   | 'client.command'
+  | 'control.decision'
   | 'rl.decision'
   | 'greenwave.plan'
   | 'alert.created';
@@ -862,6 +919,7 @@ export interface Phase {
 export interface SimFrameData {
   vehicles: VehicleState[];
   roads: RoadState[];
+  laneStates?: Record<string, IntersectionLaneState>;
   intersections: IntersectionState[];
   signals: SignalState[];
   metrics: SimulationMetrics;
@@ -892,6 +950,16 @@ export interface IntersectionState {
   level: CongestionLevel;
 }
 
+export interface IntersectionLaneState {
+  lanes: Record<'WT' | 'WL' | 'ST' | 'SL' | 'ET' | 'EL' | 'NT' | 'NL' | string, LaneMovementState>;
+}
+
+export interface LaneMovementState {
+  queue_len: number;
+  avg_wait_time: number;
+  cells: number[];
+}
+
 export interface SignalState {
   intersectionId: string;
   phaseIndex: number;
@@ -900,6 +968,8 @@ export interface SignalState {
 
 export interface SimulationMetrics {
   vehicleCount: number;
+  activeVehicleCount?: number;
+  scheduledDepartureCount?: number;
   queueCount: number;
   avgSpeed: number;
   avgWait: number;
@@ -964,7 +1034,7 @@ export interface AlertCreatedData {
    - intersections 更新路口状态；
    - signals 高亮信号灯放行方向；
    - metrics 更新指标卡。
-8. 如果后续启用 RL、绿波、告警：
+8. 如果启用 Traffic-R、绿波、告警：
    - 订阅对应 topic；
    - 增加对应 type 的处理器；
    - 不修改已有 sim.frame 渲染逻辑。
@@ -975,15 +1045,12 @@ export interface AlertCreatedData {
 ## 19. 后端组装 sim.frame 的建议
 
 ```text
-1. CityFlow engine 推进一步。
-2. 获取当前车辆列表。
-3. 为每辆车计算 roadId、lane、x、y、angle、speed。
-4. 按 roadId 聚合 vehicleCount、queueCount、avgSpeed。
-5. 按 intersectionId 聚合 queueCount、avgWait、level。
-6. 读取当前每个路口的 phaseIndex。
-7. 聚合全局 metrics。
-8. 按前端订阅 topics 裁剪 data 内容。
-9. 发送 sim.frame。
+1. Python CityFlow 后台 worker 连续推进 CityFlow engine。
+2. Python 组装并缓存 latest frame。
+3. Spring Boot 定时调用 `/cityflow/simulations/{sid}/frame` 读取缓存快照。
+4. Spring Boot 按控制器类型低频生成策略决策，并异步下发 `/actions`。
+5. Spring Boot 将 CityFlow 返回的车辆、道路、laneStates、路口、signals 和 metrics 封装为 `sim.frame`。
+6. 前端只依据 `sim.frame.data.vehicles` 和 `sim.frame.data.signals` 渲染真实车辆和信号灯状态。
 ```
 
 ---
@@ -999,3 +1066,4 @@ export interface AlertCreatedData {
 - 用户权限系统实现。
 
 这些内容可以在其他设计文档中单独定义。
+

@@ -12,6 +12,7 @@ class SceneDefinition:
     name: str
     roadnet_file: Path
     flow_file: Path
+    total_vehicle_count: int = 0
 
 
 class SceneRegistry:
@@ -56,7 +57,8 @@ class SceneRegistry:
                     retryable=False,
                 )
 
-            scene_root = self.data_dir / scene_id
+            scene_dir = str(item.get("sceneDir", scene_id)).strip() or scene_id
+            scene_root = self.data_dir / scene_dir
             roadnet_file = scene_root / str(item.get("roadnetFile", ""))
             flow_file = scene_root / str(item.get("flowFile", ""))
             if not roadnet_file.exists():
@@ -74,11 +76,13 @@ class SceneRegistry:
                     retryable=False,
                 )
 
+            total_vehicle_count = self._count_flow_vehicles(flow_file)
             scenes[scene_id] = SceneDefinition(
                 scene_id=scene_id,
                 name=str(item.get("name", scene_id)),
                 roadnet_file=roadnet_file,
                 flow_file=flow_file,
+                total_vehicle_count=total_vehicle_count,
             )
 
         if not scenes:
@@ -89,3 +93,22 @@ class SceneRegistry:
                 retryable=False,
             )
         return scenes
+
+    def _count_flow_vehicles(self, flow_file: Path) -> int:
+        with flow_file.open("r", encoding="utf-8") as file:
+            flows = json.load(file)
+        count = 0
+        iterable_flows = flows if isinstance(flows, list) else []
+        for flow in iterable_flows:
+            try:
+                start_time = float(flow.get("startTime", 0.0))
+                end_time = float(flow.get("endTime", start_time))
+                interval = float(flow.get("interval", 1.0))
+            except (TypeError, ValueError):
+                count += 1
+                continue
+            if interval <= 0 or end_time <= start_time:
+                count += 1
+            else:
+                count += int((end_time - start_time) / interval) + 1
+        return count

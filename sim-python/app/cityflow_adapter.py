@@ -1,15 +1,23 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import math
 import uuid
 from pathlib import Path
 
-from app.config import DEFAULT_FRAME_STEP_SECONDS, DEFAULT_VISIBLE_VEHICLE_LIMIT, ENGINE_MODE, SERVICE_VERSION
+from app.config import (
+    AUTO_SIGNAL_CYCLE,
+    DEFAULT_FRAME_STEP_SECONDS,
+    DEFAULT_VISIBLE_VEHICLE_LIMIT,
+    ENGINE_MODE,
+    MAX_ACTIVE_SESSIONS,
+    MAX_SPEED,
+    SERVICE_VERSION,
+)
 from app.engine import RealCityFlowEngine
 from app.errors import ApiError
 from app.models import JsonDict, SimulationSession
-from app.roadnet_parser import PHASE_CODES, RoadnetParser
+from app.roadnet_parser import BUSINESS_PHASE_CODE_TO_INDEX, BUSINESS_PHASE_INDEXES, FIRST_BUSINESS_PHASE_INDEX, PHASE_CODES, RoadnetParser
 from app.scene_registry import SceneRegistry
 
 
@@ -30,6 +38,7 @@ class CityFlowAdapter:
         self.parsers: dict[str, RoadnetParser] = {}
         self.flows: dict[str, list[JsonDict]] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
+        self.lane_movement_maps: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
         for scene_id in self.scene_registry.list_scene_ids():
             self._load_scene(scene_id)
 
@@ -39,6 +48,9 @@ class CityFlowAdapter:
             "service": "sim-python",
             "version": SERVICE_VERSION,
             "engineMode": self.engine_mode,
+            "autoSignalCycle": AUTO_SIGNAL_CYCLE,
+            "maxActiveSessions": MAX_ACTIVE_SESSIONS,
+            "maxSpeed": MAX_SPEED,
             "sceneIds": self.scene_registry.list_scene_ids(),
             "activeSessions": self._active_session_count(),
         }
@@ -46,11 +58,27 @@ class CityFlowAdapter:
     def get_roadnet(self, scene_id: str) -> JsonDict:
         return self._parser(scene_id).to_response(scene_id)
 
-    def create_simulation(self, scene_id: str, speed: float | None = None) -> JsonDict:
+    def create_simulation(
+            self,
+            scene_id: str,
+            speed: float | None = None,
+            warmup_seconds: float | None = None,
+            owner_id: str = "default",
+    ) -> JsonDict:
+        self._destroy_mock_sessions_for_owner(owner_id)
         self._load_scene(scene_id)
         normalized_speed = self._normalize_speed(speed)
+        normalized_warmup_seconds = self._normalize_warmup_seconds(warmup_seconds)
         if self.real_engine is not None:
-            return self.real_engine.create_session(scene_id, normalized_speed)
+            return self.real_engine.create_session(scene_id, normalized_speed, normalized_warmup_seconds, owner_id)
+
+        if len(self.sessions) >= MAX_ACTIVE_SESSIONS:
+            raise ApiError(
+                status=429,
+                code="SESSION_LIMIT_EXCEEDED",
+                message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
+                retryable=True,
+            )
 
         sid = f"run_{uuid.uuid4().hex[:8]}"
         session = SimulationSession(
@@ -58,6 +86,7 @@ class CityFlowAdapter:
             scene_id=scene_id,
             speed=normalized_speed,
             engine_mode=self.engine_mode,
+            owner_id=owner_id,
         )
         self.sessions[sid] = session
         return {
@@ -67,19 +96,11 @@ class CityFlowAdapter:
             "engineMode": self.engine_mode,
         }
 
-    def next_frame(self, sid: str) -> JsonDict:
+    def next_frame(self, sid: str, owner_id: str = "default") -> JsonDict:
         if self.real_engine is not None:
-            return self.real_engine.next_frame(sid)
+            return self.real_engine.next_frame(sid, owner_id)
 
-        if sid not in self.sessions:
-            raise ApiError(
-                status=404,
-                code="SESSION_NOT_FOUND",
-                message=f"simulation session not found: {sid}",
-                retryable=False,
-            )
-
-        session = self.sessions[sid]
+        session = self._mock_session(sid, owner_id)
         with session.lock:
             session.seq += 1
             session.sim_time += DEFAULT_FRAME_STEP_SECONDS * session.speed
@@ -92,6 +113,7 @@ class CityFlowAdapter:
                 for index, flow in active_flows[:DEFAULT_VISIBLE_VEHICLE_LIMIT]
             ]
             roads = self._road_states(vehicles, road_by_id)
+            lane_states = self._lane_states(session.scene_id, vehicles, road_by_id)
             intersections = self._intersection_states(session.scene_id, roads)
             signals = self._signal_states(session.scene_id, session.sim_time)
             metrics = self._metrics(vehicles, roads, flows, session.sim_time)
@@ -104,15 +126,94 @@ class CityFlowAdapter:
                 "engineMode": session.engine_mode,
                 "vehicles": vehicles,
                 "roads": roads,
+                "laneStates": lane_states,
                 "intersections": intersections,
                 "signals": signals,
                 "metrics": metrics,
+                "evEvents": [],
+                "evStatus": [],
             }
 
-    def apply_control_actions(self, sid: str, payload: JsonDict) -> JsonDict:
-        decisions = self._validate_decisions_payload(sid, payload)
+    def _session_roadnet(self, sid: str) -> JsonDict:
+        """Get roadnet dict for a session (real engine only)."""
         if self.real_engine is not None:
-            return self.real_engine.apply_control_actions(sid, decisions)
+            scene_id = self.real_engine.sessions[sid].scene_id
+            self._load_scene(scene_id)
+            return self.parsers[scene_id].raw
+        return {}
+
+    def _session_scene(self, sid: str) -> str:
+        """Get scene_id for a session."""
+        if self.real_engine is not None and sid in self.real_engine.sessions:
+            return self.real_engine.sessions[sid].scene_id
+        if sid in self.sessions:
+            return self.sessions[sid].scene_id
+        return ""
+
+    def dispatch(self, sid: str, params: JsonDict, owner_id: str = "default") -> JsonDict:
+        """Dispatch an emergency vehicle with coordinate-based routing."""
+        if self.real_engine is not None:
+            session = self.real_engine._session(sid, owner_id)
+            print(f'[dispatch] sid={sid} scene={self._session_scene(sid)}', flush=True)
+            try:
+                result = self.real_engine.ev_service.dispatch(
+                    sid=sid,
+                    scene_id=session.scene_id,
+                    roadnet=self._session_roadnet(sid),
+                    engine=session.engine,
+                    params=params,
+                )
+                print(f'[dispatch] result={result}', flush=True)
+                return result
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                raise
+        raise ApiError(
+            status=400, code="CITYFLOW_ENGINE_NOT_CONFIGURED",
+            message="dispatch requires cityflow engine mode",
+            retryable=False,
+        )
+
+    def start_simulation(self, sid: str, owner_id: str = "default") -> JsonDict:
+        if self.real_engine is not None:
+            return self.real_engine.start_session(sid, owner_id)
+        session = self._mock_session(sid, owner_id)
+        with session.lock:
+            session.running = True
+            session.stopped = False
+        return {"sid": sid, "status": "running"}
+
+    def pause_simulation(self, sid: str, owner_id: str = "default") -> JsonDict:
+        if self.real_engine is not None:
+            return self.real_engine.pause_session(sid, owner_id)
+        session = self._mock_session(sid, owner_id)
+        with session.lock:
+            session.running = False
+        return {"sid": sid, "status": "paused"}
+
+    def stop_simulation(self, sid: str, owner_id: str = "default") -> JsonDict:
+        if self.real_engine is not None:
+            return self.real_engine.stop_session(sid, owner_id)
+        session = self._mock_session(sid, owner_id)
+        with session.lock:
+            session.running = False
+            session.stopped = True
+        return {"sid": sid, "status": "stopped"}
+
+    def apply_control_actions(self, sid: str, payload: JsonDict, owner_id: str = "default") -> JsonDict:
+        decisions = self._validate_decisions_payload(sid, payload)
+        print(
+            f"apply_control_actions sid={sid} received={len(decisions)} "
+            f"source={payload.get('source')} simTime={payload.get('simTime')}",
+            flush=True,
+        )
+        if self.real_engine is not None:
+            result = self.real_engine.apply_control_actions(sid, decisions, owner_id)
+            print(
+                f"apply_control_actions sid={sid} applied={len(result.get('applied', []))}",
+                flush=True,
+            )
+            return result
 
         if sid not in self.sessions:
             raise ApiError(
@@ -122,10 +223,15 @@ class CityFlowAdapter:
                 retryable=False,
             )
 
-        return {
+        result = {
             "sid": sid,
             "applied": [self._applied_action(decision) for decision in decisions],
         }
+        print(
+            f"apply_control_actions sid={sid} applied={len(result.get('applied', []))}",
+            flush=True,
+        )
+        return result
 
     def _load_scene(self, scene_id: str) -> None:
         scene = self.scene_registry.get(scene_id)
@@ -134,6 +240,7 @@ class CityFlowAdapter:
             parser = RoadnetParser(scene.roadnet_file)
             self.parsers[scene_id] = parser
             self.road_index[scene_id] = parser.road_by_id()
+            self.lane_movement_maps[scene_id] = parser.lane_movement_map()
         if scene_id not in self.flows:
             with scene.flow_file.open("r", encoding="utf-8") as file:
                 self.flows[scene_id] = json.load(file)
@@ -171,12 +278,49 @@ class CityFlowAdapter:
                 message="speed must be greater than 0",
                 retryable=False,
             )
+        if value > MAX_SPEED:
+            raise ApiError(
+                status=400,
+                code="INVALID_REQUEST",
+                message=f"speed must be less than or equal to {MAX_SPEED}",
+                retryable=False,
+            )
         return value
+
+    def _normalize_warmup_seconds(self, warmup_seconds: float | None) -> float:
+        try:
+            value = float(warmup_seconds if warmup_seconds is not None else 0.0)
+        except (TypeError, ValueError) as ex:
+            raise ApiError(
+                status=400,
+                code="INVALID_REQUEST",
+                message="warmupSeconds must be a number",
+                retryable=False,
+            ) from ex
+        if value < 0:
+            raise ApiError(
+                status=400,
+                code="INVALID_REQUEST",
+                message="warmupSeconds must be greater than or equal to 0",
+                retryable=False,
+            )
+        return min(value, 600.0)
 
     def _active_session_count(self) -> int:
         if self.real_engine is not None:
             return self.real_engine.active_session_count()
         return len(self.sessions)
+
+    def _destroy_mock_sessions_for_owner(self, owner_id: str) -> None:
+        sessions_to_destroy = [
+            session for session in self.sessions.values()
+            if session.owner_id == owner_id
+        ]
+        for session in sessions_to_destroy:
+            with session.lock:
+                session.running = False
+                session.stopped = True
+            self.sessions.pop(session.sid, None)
 
     def _validate_decisions_payload(self, sid: str, payload: JsonDict) -> list[JsonDict]:
         decisions = payload.get("decisions", [])
@@ -226,13 +370,31 @@ class CityFlowAdapter:
             valid_decisions.append(valid_decision)
         return valid_decisions
 
+    def _mock_session(self, sid: str, owner_id: str = "default") -> SimulationSession:
+        if sid not in self.sessions:
+            raise ApiError(
+                status=404,
+                code="SESSION_NOT_FOUND",
+                message=f"simulation session not found: {sid}",
+                retryable=False,
+            )
+        session = self.sessions[sid]
+        if session.owner_id != owner_id:
+            raise ApiError(
+                status=403,
+                code="SESSION_OWNER_MISMATCH",
+                message=f"simulation session does not belong to client: {owner_id}",
+                retryable=False,
+            )
+        return session
+
     def _applied_action(self, decision: JsonDict) -> JsonDict:
-        phase_index = int(decision["phaseIndex"])
+        phase_index = self._normalize_control_phase(decision)
         return {
             "intersectionId": decision["intersectionId"],
             "phaseIndex": phase_index,
             "cityflowPhaseId": phase_index - 1,
-            "phaseCode": decision.get("phaseCode"),
+            "phaseCode": PHASE_CODES.get(phase_index) or decision.get("phaseCode"),
             "status": "applied",
         }
 
@@ -331,6 +493,85 @@ class CityFlowAdapter:
             })
         return states
 
+    def _lane_states(
+            self,
+            scene_id: str,
+            vehicles: list[JsonDict],
+            road_by_id: dict[str, JsonDict],
+    ) -> JsonDict:
+        states = self._empty_lane_states(self._parser(scene_id))
+        movement_map = self.lane_movement_maps.get(scene_id, {})
+        for vehicle in vehicles:
+            road_id = vehicle.get("roadId")
+            road = road_by_id.get(road_id)
+            if road is None:
+                continue
+            intersection_id = road.get("endIntersection")
+            lane_index = int(vehicle.get("lane", 0))
+            lane_code = movement_map.get(intersection_id, {}).get(road_id, {}).get(lane_index)
+            if lane_code is None:
+                continue
+            lane_state = states[intersection_id]["lanes"][lane_code]
+            if float(vehicle.get("speed", 0.0)) < 1.0:
+                lane_state["queue_len"] += 1
+            else:
+                distance_from_start = self._distance_from_start(road, vehicle)
+                segment_index = self._segment_index(self._road_length(road), distance_from_start)
+                lane_state["cells"][segment_index] += 1
+        for intersection_state in states.values():
+            for lane_state in intersection_state["lanes"].values():
+                lane_state["avg_wait_time"] = round(lane_state["queue_len"] * 3.0, 3)
+        return states
+
+    def _empty_lane_states(self, parser: RoadnetParser) -> JsonDict:
+        lane_codes = ["WT", "WL", "ST", "SL", "ET", "EL", "NT", "NL"]
+        return {
+            intersection_id: {
+                "lanes": {
+                    lane_code: {
+                        "queue_len": 0,
+                        "avg_wait_time": 0.0,
+                        "cells": [0, 0, 0, 0],
+                    }
+                    for lane_code in lane_codes
+                }
+            }
+            for intersection_id in parser.real_intersection_ids()
+        }
+
+    def _segment_index(self, road_length: float, distance_from_start: float) -> int:
+        if road_length <= 0:
+            return 0
+        remaining = max(0.0, min(road_length, road_length - distance_from_start))
+        segment_length = road_length / 4.0
+        return min(3, max(0, int(remaining / segment_length)))
+
+    def _distance_from_start(self, road: JsonDict, vehicle: JsonDict) -> float:
+        points = road.get("points", [])
+        if len(points) < 2:
+            return 0.0
+        start = points[0]
+        end = points[-1]
+        sx, sy = float(start.get("x", 0.0)), float(start.get("y", 0.0))
+        ex, ey = float(end.get("x", 0.0)), float(end.get("y", 0.0))
+        vx, vy = float(vehicle.get("x", 0.0)), float(vehicle.get("y", 0.0))
+        dx, dy = ex - sx, ey - sy
+        length_squared = dx * dx + dy * dy
+        if length_squared <= 0:
+            return 0.0
+        ratio = max(0.0, min(1.0, ((vx - sx) * dx + (vy - sy) * dy) / length_squared))
+        return self._road_length(road) * ratio
+
+    def _road_length(self, road: JsonDict) -> float:
+        points = road.get("points", [])
+        total = 0.0
+        for start, end in zip(points, points[1:]):
+            total += math.dist(
+                (float(start.get("x", 0.0)), float(start.get("y", 0.0))),
+                (float(end.get("x", 0.0)), float(end.get("y", 0.0))),
+            )
+        return total
+
     def _intersection_states(self, scene_id: str, roads: list[JsonDict]) -> list[JsonDict]:
         parser = self._parser(scene_id)
         road_state_by_id = {road["id"]: road for road in roads}
@@ -361,8 +602,10 @@ class CityFlowAdapter:
 
         signals = []
         for intersection_id in parser.real_intersection_ids():
-            phase_indexes = phases_by_intersection.get(intersection_id, [1])
-            phase_index = phase_indexes[int(sim_time // 10) % len(phase_indexes)]
+            phase_indexes = phases_by_intersection.get(intersection_id, [FIRST_BUSINESS_PHASE_INDEX])
+            controllable_phase_indexes = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
+            cycle_phase_indexes = controllable_phase_indexes or phase_indexes
+            phase_index = cycle_phase_indexes[int(sim_time // 10) % len(cycle_phase_indexes)]
             signals.append({
                 "intersectionId": intersection_id,
                 "phaseIndex": phase_index,
@@ -385,10 +628,36 @@ class CityFlowAdapter:
             for flow in flows
             if float(flow.get("startTime", 0.0)) + max(30.0, len(flow.get("route", [])) * 18.0) < sim_time
         )
+        scheduled_departure_count = sum(
+            1
+            for flow in flows
+            if float(flow.get("startTime", 0.0)) <= sim_time
+        )
         return {
             "vehicleCount": vehicle_count,
+            "activeVehicleCount": vehicle_count,
+            "scheduledDepartureCount": scheduled_departure_count,
             "queueCount": queue_count,
             "avgSpeed": round(avg_speed, 3),
             "avgWait": round(queue_count * 3.0, 3),
             "throughput": throughput,
         }
+
+    def _normalize_control_phase(self, decision: JsonDict) -> int:
+        phase_code = decision.get("phaseCode")
+        if isinstance(phase_code, str) and phase_code in BUSINESS_PHASE_CODE_TO_INDEX:
+            return BUSINESS_PHASE_CODE_TO_INDEX[phase_code]
+
+        phase_index = int(decision["phaseIndex"])
+        if phase_index in BUSINESS_PHASE_INDEXES:
+            return phase_index
+
+        legacy_business_index_to_cityflow_phase = {
+            1: BUSINESS_PHASE_CODE_TO_INDEX["ETWT"],
+            2: BUSINESS_PHASE_CODE_TO_INDEX["NTST"],
+            3: BUSINESS_PHASE_CODE_TO_INDEX["ELWL"],
+            4: BUSINESS_PHASE_CODE_TO_INDEX["NLSL"],
+        }
+        if phase_index in legacy_business_index_to_cityflow_phase:
+            return legacy_business_index_to_cityflow_phase[phase_index]
+        return phase_index

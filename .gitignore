@@ -5,18 +5,23 @@ coverage/
 target/
 .maven-repo/
 .maven-tmp/
+backend/target/
 temp-three-frontend/node_modules/
 temp-three-frontend/dist/
+sys-frontend/node_modules/
+sys-frontend/dist/
 
 # Python
 __pycache__/
 *.pyc
 .venv/
+.venv-*/
 .pytest_cache/
 
 # Secrets and local config
 .env
 .env.*
+!.env.example
 *.key
 
 # Models, vector stores, and simulation output
@@ -28,7 +33,15 @@ sumo_output/
 
 # Local runtime logs
 *.log
+*.pid
+logs/
+logs*/
+backend/logs/
 sim-python/logs/
+temp-three-frontend/*.log
+
+# Generated test outputs
+cloud/traffic-r/test-results/
 
 # Editors and system files
 .vscode/

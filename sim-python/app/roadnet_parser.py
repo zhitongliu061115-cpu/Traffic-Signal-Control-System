@@ -7,11 +7,15 @@ from app.models import JsonDict
 
 
 PHASE_CODES = {
-    1: "ETWT",
-    2: "NTST",
-    3: "ELWL",
-    4: "NLSL",
+    2: "ETWT",
+    3: "NTST",
+    4: "ELWL",
+    5: "NLSL",
 }
+
+BUSINESS_PHASE_CODE_TO_INDEX = {phase_code: phase_index for phase_index, phase_code in PHASE_CODES.items()}
+BUSINESS_PHASE_INDEXES = set(PHASE_CODES.keys())
+FIRST_BUSINESS_PHASE_INDEX = 2
 
 
 class RoadnetParser:
@@ -94,3 +98,48 @@ class RoadnetParser:
             for item in self.raw.get("intersections", [])
             if not item.get("virtual", False)
         ]
+
+    def lane_movement_map(self) -> dict[str, dict[str, dict[int, str]]]:
+        mapping: dict[str, dict[str, dict[int, str]]] = {}
+        roads_by_id = self.road_by_id()
+        for intersection in self.raw.get("intersections", []):
+            if intersection.get("virtual", False):
+                continue
+            intersection_id = intersection["id"]
+            point = intersection.get("point", {})
+            movement_by_road = mapping.setdefault(intersection_id, {})
+            for road_link in intersection.get("roadLinks", []):
+                movement_type = road_link.get("type")
+                if movement_type not in {"go_straight", "turn_left"}:
+                    continue
+                start_road_id = road_link.get("startRoad")
+                if not start_road_id:
+                    continue
+                approach = self._approach_code(roads_by_id.get(start_road_id), point)
+                turn_code = "T" if movement_type == "go_straight" else "L"
+                lane_code = f"{approach}{turn_code}"
+                lane_by_index = movement_by_road.setdefault(start_road_id, {})
+                for lane_link in road_link.get("laneLinks", []):
+                    try:
+                        lane_index = int(lane_link.get("startLaneIndex"))
+                    except (TypeError, ValueError):
+                        continue
+                    lane_by_index[lane_index] = lane_code
+        return mapping
+
+    def _approach_code(self, road: JsonDict | None, intersection_point: JsonDict) -> str:
+        if not road:
+            return "W"
+        points = road.get("points", [])
+        if not points:
+            return "W"
+        start = points[0]
+        ix = float(intersection_point.get("x", 0.0))
+        iy = float(intersection_point.get("y", 0.0))
+        dx = float(start.get("x", 0.0)) - ix
+        dy = float(start.get("y", 0.0)) - iy
+        if abs(dx) >= abs(dy):
+            return "W" if dx < 0 else "E"
+        # Jinan roadnet uses screen-style coordinates: negative y is the south
+        # approach and positive y is the north approach.
+        return "S" if dy < 0 else "N"

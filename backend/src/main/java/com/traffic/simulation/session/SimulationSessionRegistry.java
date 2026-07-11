@@ -3,6 +3,7 @@ package com.traffic.simulation.session;
 import org.springframework.stereotype.Component;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,5 +25,13 @@ public class SimulationSessionRegistry {
 
     public Collection<SimulationRuntimeSession> findAll() {
         return sessions.values();
+    }
+
+    public List<SimulationRuntimeSession> findAllSnapshot() {
+        return List.copyOf(sessions.values());
+    }
+
+    public void clear() {
+        sessions.clear();
     }
 }

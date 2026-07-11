@@ -1,9 +1,23 @@
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
+
+logging:
+  level:
+    com.traffic.agent: DEBUG
 
 spring:
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+      - optional:file:backend/.env[.properties]
   application:
     name: traffic-signal-backend
+  profiles:
+    group:
+      lan:
+        - postgres
+        - lan-server
   datasource:
     url: jdbc:h2:mem:traffic_signal;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
     username: sa
@@ -18,6 +32,57 @@ spring:
     locations: classpath:db/migration
 
 cityflow:
-  base-url: http://localhost:9000
+  base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9000}
+  api-token: ${CITYFLOW_API_TOKEN:jLEc-o3L16migUKQ7f_OlH94qsjEstFf}
+  client-id: ${CITYFLOW_CLIENT_ID:hcj}
   default-scene-id: jinan_3x4
-  frame-poll-interval-ms: 200
+  frame-poll-interval-ms: 100
+
+traffic-r:
+  enabled: ${TRAFFIC_R_ENABLED:true}
+  base-url: ${TRAFFIC_R_BASE_URL:http://127.0.0.1:16008}
+  health-path: ${TRAFFIC_R_HEALTH_PATH:/health}
+  predict-path: ${TRAFFIC_R_PREDICT_PATH:/predict}
+  batch-predict-path: ${TRAFFIC_R_BATCH_PREDICT_PATH:/predict-batch}
+  decision-interval-sec: ${TRAFFIC_R_DECISION_INTERVAL_SEC:10}
+  timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:30}
+  fallback-controller: ${TRAFFIC_R_FALLBACK_CONTROLLER:max-pressure}
+
+bailian:
+  base-url: ${DASHSCOPE_HTTP_BASE_URL:${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/api/v1}}
+  app-id: ${DASHSCOPE_APP_ID:${BAILIAN_APP_ID:d77d3dffe51447ecb6d3d34e7a779560}}
+  api-key: ${DASHSCOPE_API_KEY:${BAILIAN_API_KEY:}}
+  call-mode: ${BAILIAN_CALL_MODE:app}
+  compatible-base-url: ${DASHSCOPE_COMPATIBLE_BASE_URL:${BAILIAN_COMPATIBLE_BASE_URL:}}
+  model: ${DASHSCOPE_MODEL:${BAILIAN_MODEL:qwen-plus}}
+  connect-timeout-ms: ${BAILIAN_CONNECT_TIMEOUT_MS:10000}
+  read-timeout-ms: ${BAILIAN_READ_TIMEOUT_MS:30000}
+
+---
+
+spring:
+  config:
+    activate:
+      on-profile: lan-server
+
+server:
+  address: ${SERVER_ADDRESS:0.0.0.0}
+
+---
+
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: ${TRAFFIC_DB_URL:jdbc:postgresql://${TRAFFIC_DB_HOST:localhost}:${TRAFFIC_DB_PORT:5432}/${TRAFFIC_DB_NAME:traffic_signal}}
+    username: ${TRAFFIC_DB_USERNAME:postgres}
+    password: ${TRAFFIC_DB_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: false

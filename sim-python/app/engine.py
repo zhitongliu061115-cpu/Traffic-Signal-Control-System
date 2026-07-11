@@ -5,23 +5,38 @@ from dataclasses import dataclass, field
 import json
 import math
 import tempfile
+import time
 import uuid
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 
+from app.config import (
+    AUTO_SIGNAL_CYCLE,
+    DEFAULT_MIN_REALTIME_TICK_SECONDS,
+    DEFAULT_REALTIME_TICK_SECONDS,
+    DEFAULT_VISIBLE_VEHICLE_LIMIT,
+    MAX_ACTIVE_SESSIONS,
+)
 from app.errors import ApiError
+from app.ev_service import EVPriorityService
 from app.models import JsonDict
-from app.roadnet_parser import PHASE_CODES, RoadnetParser
+from app.roadnet_parser import BUSINESS_PHASE_CODE_TO_INDEX, BUSINESS_PHASE_INDEXES, FIRST_BUSINESS_PHASE_INDEX, PHASE_CODES, RoadnetParser
 from app.scene_registry import SceneDefinition, SceneRegistry
 
 
 class SimulationEngine(ABC):
     @abstractmethod
-    def create_session(self, scene_id: str, speed: float) -> JsonDict:
+    def create_session(
+            self,
+            scene_id: str,
+            speed: float,
+            warmup_seconds: float = 0.0,
+            owner_id: str = "default",
+    ) -> JsonDict:
         """Create an engine-owned simulation session."""
 
     @abstractmethod
-    def next_frame(self, sid: str) -> JsonDict:
+    def next_frame(self, sid: str, owner_id: str = "default") -> JsonDict:
         """Advance one simulation step and return a frame."""
 
 
@@ -49,11 +64,51 @@ class RealCityFlowEngine(SimulationEngine):
         self.parsers: dict[str, RoadnetParser] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
         self.phase_indexes: dict[str, dict[str, list[int]]] = {}
+        self.lane_movement_maps: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
+        self.ev_service = EVPriorityService()
 
     def active_session_count(self) -> int:
         return len(self.sessions)
 
-    def create_session(self, scene_id: str, speed: float) -> JsonDict:
+    def destroy_all_sessions(self) -> None:
+        old_sessions = list(self.sessions.values())
+        self._stop_and_join_sessions(old_sessions)
+        self.sessions.clear()
+
+    def destroy_sessions_for_owner(self, owner_id: str) -> None:
+        old_sessions = [
+            session for session in self.sessions.values()
+            if session.owner_id == owner_id
+        ]
+        self._stop_and_join_sessions(old_sessions)
+        for session in old_sessions:
+            self.sessions.pop(session.sid, None)
+
+    def _stop_and_join_sessions(self, old_sessions: list["CityFlowEngineSession"]) -> None:
+        for session in old_sessions:
+            with session.state_lock:
+                session.running = False
+                session.stopped = True
+        for session in old_sessions:
+            worker = session.worker
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=1.0)
+
+    def create_session(
+            self,
+            scene_id: str,
+            speed: float,
+            warmup_seconds: float = 0.0,
+            owner_id: str = "default",
+    ) -> JsonDict:
+        self.destroy_sessions_for_owner(owner_id)
+        if len(self.sessions) >= MAX_ACTIVE_SESSIONS:
+            raise ApiError(
+                status=429,
+                code="SESSION_LIMIT_EXCEEDED",
+                message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
+                retryable=True,
+            )
         scene = self.scene_registry.get(scene_id)
         self._load_scene(scene)
         config_path = self._write_cityflow_config(scene)
@@ -73,9 +128,15 @@ class RealCityFlowEngine(SimulationEngine):
             sid=sid,
             scene_id=scene_id,
             speed=speed,
+            owner_id=owner_id,
+            total_vehicle_count=scene.total_vehicle_count,
             engine=engine,
             config_path=config_path,
         )
+        self._initialize_signal_phases(self.sessions[sid])
+        if warmup_seconds > 0:
+            self._warmup_session(self.sessions[sid], warmup_seconds)
+        self._refresh_latest_frame(self.sessions[sid], advance=False)
         return {
             "sid": sid,
             "sceneId": scene_id,
@@ -83,60 +144,63 @@ class RealCityFlowEngine(SimulationEngine):
             "engineMode": "cityflow",
         }
 
-    def next_frame(self, sid: str) -> JsonDict:
-        if sid not in self.sessions:
-            raise ApiError(
-                status=404,
-                code="SESSION_NOT_FOUND",
-                message=f"simulation session not found: {sid}",
-                retryable=False,
-            )
+    def start_session(self, sid: str, owner_id: str = "default") -> JsonDict:
+        session = self._session(sid, owner_id)
+        with session.state_lock:
+            if session.stopped:
+                raise ApiError(
+                    status=409,
+                    code="SESSION_STOPPED",
+                    message=f"simulation session has already stopped: {sid}",
+                    retryable=False,
+                )
+            session.running = True
+            if session.worker is None or not session.worker.is_alive():
+                session.worker = Thread(
+                    target=self._run_session_loop,
+                    args=(session,),
+                    name=f"cityflow-session-{sid}",
+                    daemon=True,
+                )
+                session.worker.start()
+        return {"sid": sid, "status": "running"}
 
-        session = self.sessions[sid]
-        with session.lock:
-            steps = max(1, int(round(session.speed)))
-            for _ in range(steps):
-                session.engine.next_step()
+    def pause_session(self, sid: str, owner_id: str = "default") -> JsonDict:
+        session = self._session(sid, owner_id)
+        with session.state_lock:
+            session.running = False
+        return {"sid": sid, "status": "paused"}
 
-            session.seq += 1
-            sim_time = float(session.engine.get_current_time())
-            parser = self.parsers[session.scene_id]
-            road_by_id = self.road_index[session.scene_id]
-            self._advance_signal_phases(session, sim_time)
-            vehicles = self._vehicle_states(session, road_by_id)
-            roads = self._road_states(session, vehicles, road_by_id)
-            intersections = self._intersection_states(session.scene_id, roads)
-            signals = self._signal_states(session.scene_id, session.current_phases)
-            metrics = self._metrics(session, vehicles, roads)
+    def stop_session(self, sid: str, owner_id: str = "default") -> JsonDict:
+        session = self._session(sid, owner_id)
+        with session.state_lock:
+            session.running = False
+            session.stopped = True
+        return {"sid": sid, "status": "stopped"}
 
-            return {
-                "sid": session.sid,
-                "sceneId": session.scene_id,
-                "seq": session.seq,
-                "simTime": round(sim_time, 3),
-                "engineMode": "cityflow",
-                "vehicles": vehicles,
-                "roads": roads,
-                "intersections": intersections,
-                "signals": signals,
-                "metrics": metrics,
-            }
+    def next_frame(self, sid: str, owner_id: str = "default") -> JsonDict:
+        session = self._session(sid, owner_id)
+        with session.frame_lock:
+            if session.latest_frame is not None:
+                return session.latest_frame
 
-    def apply_control_actions(self, sid: str, decisions: list[JsonDict]) -> JsonDict:
-        if sid not in self.sessions:
-            raise ApiError(
-                status=404,
-                code="SESSION_NOT_FOUND",
-                message=f"simulation session not found: {sid}",
-                retryable=False,
-            )
+        return self._refresh_latest_frame(session, advance=False)
 
-        session = self.sessions[sid]
+    def apply_control_actions(self, sid: str, decisions: list[JsonDict], owner_id: str = "default") -> JsonDict:
+        session = self._session(sid, owner_id)
         applied = []
-        with session.lock:
+        with session.engine_lock:
             for decision in decisions:
                 intersection_id = decision["intersectionId"]
-                phase_index = int(decision["phaseIndex"])
+                phase_index = self._normalize_control_phase(decision)
+                valid_phase_indexes = self.phase_indexes.get(session.scene_id, {}).get(intersection_id, [])
+                if phase_index not in valid_phase_indexes:
+                    raise ApiError(
+                        status=400,
+                        code="INVALID_PHASE_INDEX",
+                        message=f"phaseIndex must exist in CityFlow roadnet phases for {intersection_id}: {phase_index}",
+                        retryable=False,
+                    )
                 cityflow_phase_id = phase_index - 1
                 try:
                     session.engine.set_tl_phase(intersection_id, cityflow_phase_id)
@@ -152,7 +216,7 @@ class RealCityFlowEngine(SimulationEngine):
                     "intersectionId": intersection_id,
                     "phaseIndex": phase_index,
                     "cityflowPhaseId": cityflow_phase_id,
-                    "phaseCode": decision.get("phaseCode"),
+                    "phaseCode": PHASE_CODES.get(phase_index) or decision.get("phaseCode"),
                     "status": "applied",
                 })
             if applied:
@@ -162,12 +226,104 @@ class RealCityFlowEngine(SimulationEngine):
             "applied": applied,
         }
 
+    def _session(self, sid: str, owner_id: str = "default") -> "CityFlowEngineSession":
+        if sid not in self.sessions:
+            raise ApiError(
+                status=404,
+                code="SESSION_NOT_FOUND",
+                message=f"simulation session not found: {sid}",
+                retryable=False,
+            )
+        session = self.sessions[sid]
+        if session.owner_id != owner_id:
+            raise ApiError(
+                status=403,
+                code="SESSION_OWNER_MISMATCH",
+                message=f"simulation session does not belong to client: {owner_id}",
+                retryable=False,
+            )
+        return session
+
+    def _run_session_loop(self, session: "CityFlowEngineSession") -> None:
+        while True:
+            with session.state_lock:
+                if session.stopped:
+                    return
+                running = session.running
+            if running:
+                started_at = time.perf_counter()
+                try:
+                    self._refresh_latest_frame(session, advance=True)
+                except Exception as ex:
+                    with session.state_lock:
+                        session.running = False
+                        session.last_error = str(ex)
+                    return
+                elapsed = time.perf_counter() - started_at
+                time.sleep(max(0.0, self._snapshot_interval_seconds(session) - elapsed))
+            else:
+                time.sleep(0.05)
+
+    def _refresh_latest_frame(self, session: "CityFlowEngineSession", advance: bool) -> JsonDict:
+        frame = self._build_frame(session, advance)
+        with session.frame_lock:
+            session.latest_frame = frame
+        return frame
+
+    def _build_frame(self, session: "CityFlowEngineSession", advance: bool) -> JsonDict:
+        with session.engine_lock:
+            if advance:
+                session.engine.next_step()
+
+            session.seq += 1
+            sim_time = float(session.engine.get_current_time())
+            road_by_id = self.road_index[session.scene_id]
+            if AUTO_SIGNAL_CYCLE:
+                self._advance_signal_phases(session, sim_time)
+            ev_events: list[dict] = []
+            ev_status: list[dict] = []
+            if self.ev_service.has_evs(session.sid):
+                ev_overrides, ev_events, ev_status = self.ev_service.step(session.sid, session.engine, sim_time)
+                for intersection_id, phase_index in ev_overrides.items():
+                    try:
+                        session.engine.set_tl_phase(intersection_id, phase_index - 1)
+                        session.current_phases[intersection_id] = phase_index
+                    except Exception:
+                        continue
+            vehicles = self._vehicle_states(session, road_by_id)
+            lane_states = self._lane_states(session, road_by_id)
+            roads = self._road_states(session, vehicles, road_by_id)
+            intersections = self._intersection_states(session.scene_id, roads)
+            signals = self._signal_states(session.scene_id, session.current_phases)
+            metrics = self._metrics(session, vehicles, roads)
+
+            return {
+                "sid": session.sid,
+                "sceneId": session.scene_id,
+                "seq": session.seq,
+                "simTime": round(sim_time, 3),
+                "engineMode": "cityflow",
+                "vehicles": vehicles,
+                "roads": roads,
+                "laneStates": lane_states,
+                "intersections": intersections,
+                "signals": signals,
+                "metrics": metrics,
+                "evEvents": ev_events,
+                "evStatus": ev_status,
+            }
+
+    def _snapshot_interval_seconds(self, session: "CityFlowEngineSession") -> float:
+        speed = max(1.0, float(session.speed))
+        return max(DEFAULT_MIN_REALTIME_TICK_SECONDS, DEFAULT_REALTIME_TICK_SECONDS / speed)
+
     def _load_scene(self, scene: SceneDefinition) -> None:
         if scene.scene_id in self.parsers:
             return
         parser = RoadnetParser(scene.roadnet_file)
         self.parsers[scene.scene_id] = parser
         self.road_index[scene.scene_id] = parser.road_by_id()
+        self.lane_movement_maps[scene.scene_id] = parser.lane_movement_map()
         phase_indexes: dict[str, list[int]] = {}
         for phase in parser.to_response(scene.scene_id).get("phases", []):
             phase_indexes.setdefault(phase["intersectionId"], []).append(int(phase["phaseIndex"]))
@@ -205,7 +361,7 @@ class RealCityFlowEngine(SimulationEngine):
         lane_by_vehicle = self._vehicle_lane_index(engine.get_lane_vehicles())
 
         vehicles = []
-        for vehicle_id in vehicle_ids:
+        for vehicle_id in vehicle_ids[:DEFAULT_VISIBLE_VEHICLE_LIMIT]:
             lane_id = lane_by_vehicle.get(vehicle_id, "")
             road_id, lane_index = self._split_lane_id(lane_id)
             distance = float(distance_by_vehicle.get(vehicle_id, 0.0))
@@ -309,6 +465,78 @@ class RealCityFlowEngine(SimulationEngine):
             })
         return states
 
+    def _lane_states(
+            self,
+            session: "CityFlowEngineSession",
+            road_by_id: dict[str, JsonDict],
+    ) -> JsonDict:
+        parser = self.parsers[session.scene_id]
+        states = self._empty_lane_states(parser)
+        movement_map = self.lane_movement_maps.get(session.scene_id, {})
+        lane_vehicles = session.engine.get_lane_vehicles()
+        lane_waiting_counts = session.engine.get_lane_waiting_vehicle_count()
+        speed_by_vehicle = session.engine.get_vehicle_speed()
+        distance_by_vehicle = session.engine.get_vehicle_distance()
+
+        for lane_id, vehicle_ids in lane_vehicles.items():
+            road_id, lane_index = self._split_lane_id(lane_id)
+            road = road_by_id.get(road_id)
+            if road is None:
+                continue
+            intersection_id = road.get("endIntersection")
+            lane_code = movement_map.get(intersection_id, {}).get(road_id, {}).get(lane_index)
+            if lane_code is None:
+                continue
+            lane_state = states[intersection_id]["lanes"][lane_code]
+            lane_state["queue_len"] += int(lane_waiting_counts.get(lane_id, 0))
+            road_length = self._road_length(road)
+            for vehicle_id in vehicle_ids:
+                if float(speed_by_vehicle.get(vehicle_id, 0.0)) < 0.1:
+                    continue
+                segment_index = self._segment_index(
+                    road_length,
+                    float(distance_by_vehicle.get(vehicle_id, 0.0)),
+                )
+                lane_state["cells"][segment_index] += 1
+
+        for intersection_state in states.values():
+            for lane_state in intersection_state["lanes"].values():
+                lane_state["avg_wait_time"] = round(lane_state["queue_len"] * 3.0, 3)
+        return states
+
+    def _empty_lane_states(self, parser: RoadnetParser) -> JsonDict:
+        lane_codes = ["WT", "WL", "ST", "SL", "ET", "EL", "NT", "NL"]
+        return {
+            intersection_id: {
+                "lanes": {
+                    lane_code: {
+                        "queue_len": 0,
+                        "avg_wait_time": 0.0,
+                        "cells": [0, 0, 0, 0],
+                    }
+                    for lane_code in lane_codes
+                }
+            }
+            for intersection_id in parser.real_intersection_ids()
+        }
+
+    def _segment_index(self, road_length: float, distance_from_start: float) -> int:
+        if road_length <= 0:
+            return 0
+        remaining = max(0.0, min(road_length, road_length - distance_from_start))
+        segment_length = road_length / 4.0
+        return min(3, max(0, int(remaining / segment_length)))
+
+    def _road_length(self, road: JsonDict) -> float:
+        points = road.get("points", [])
+        total = 0.0
+        for start, end in zip(points, points[1:]):
+            total += math.dist(
+                (float(start.get("x", 0.0)), float(start.get("y", 0.0))),
+                (float(end.get("x", 0.0)), float(end.get("y", 0.0))),
+            )
+        return total
+
     def _intersection_states(self, scene_id: str, roads: list[JsonDict]) -> list[JsonDict]:
         parser = self.parsers[scene_id]
         road_state_by_id = {road["id"]: road for road in roads}
@@ -334,7 +562,7 @@ class RealCityFlowEngine(SimulationEngine):
         parser = self.parsers[scene_id]
         signals = []
         for intersection_id in parser.real_intersection_ids():
-            phase_index = current_phases.get(intersection_id, 1)
+            phase_index = current_phases.get(intersection_id, FIRST_BUSINESS_PHASE_INDEX)
             signals.append({
                 "intersectionId": intersection_id,
                 "phaseIndex": phase_index,
@@ -343,13 +571,13 @@ class RealCityFlowEngine(SimulationEngine):
         return signals
 
     def _advance_signal_phases(self, session: "CityFlowEngineSession", sim_time: float) -> None:
-        if session.external_control_enabled:
-            return
         phase_indexes_by_intersection = self.phase_indexes.get(session.scene_id, {})
         for intersection_id, phase_indexes in phase_indexes_by_intersection.items():
             if not phase_indexes:
                 continue
-            phase_index = phase_indexes[int(sim_time // 10) % len(phase_indexes)]
+            controllable_phase_indexes = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
+            cycle_phase_indexes = controllable_phase_indexes or phase_indexes
+            phase_index = cycle_phase_indexes[int(sim_time // 10) % len(cycle_phase_indexes)]
             session.current_phases[intersection_id] = phase_index
             try:
                 session.engine.set_tl_phase(intersection_id, phase_index - 1)
@@ -357,6 +585,24 @@ class RealCityFlowEngine(SimulationEngine):
                 # CityFlow 0.1 does not expose get_tl_phase; keep returning the
                 # session-recorded phase so visualization remains debuggable.
                 continue
+
+    def _initialize_signal_phases(self, session: "CityFlowEngineSession") -> None:
+        phase_indexes_by_intersection = self.phase_indexes.get(session.scene_id, {})
+        for intersection_id, phase_indexes in phase_indexes_by_intersection.items():
+            if not phase_indexes:
+                continue
+            controllable_phase_indexes = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
+            phase_index = FIRST_BUSINESS_PHASE_INDEX if FIRST_BUSINESS_PHASE_INDEX in phase_indexes else (controllable_phase_indexes[0] if controllable_phase_indexes else phase_indexes[0])
+            session.current_phases[intersection_id] = phase_index
+            try:
+                session.engine.set_tl_phase(intersection_id, phase_index - 1)
+            except Exception:
+                continue
+
+    def _warmup_session(self, session: "CityFlowEngineSession", warmup_seconds: float) -> None:
+        target_steps = max(0, int(round(warmup_seconds / 0.2)))
+        for _ in range(target_steps):
+            session.engine.next_step()
 
     def _metrics(
             self,
@@ -367,13 +613,46 @@ class RealCityFlowEngine(SimulationEngine):
         vehicle_count = len(vehicles)
         queue_count = sum(road["queueCount"] for road in roads)
         avg_speed = sum(vehicle["speed"] for vehicle in vehicles) / vehicle_count if vehicle_count else 0.0
+        active_vehicle_count = int(session.engine.get_vehicle_count())
+        finished_vehicle_count = self._finished_vehicle_count(session.engine)
+        scheduled_departure_count = min(session.total_vehicle_count, finished_vehicle_count + active_vehicle_count)
         return {
-            "vehicleCount": int(session.engine.get_vehicle_count()),
+            "vehicleCount": active_vehicle_count,
+            "activeVehicleCount": active_vehicle_count,
+            "scheduledDepartureCount": scheduled_departure_count,
             "queueCount": queue_count,
             "avgSpeed": round(avg_speed, 3),
             "avgWait": round(queue_count * 3.0, 3),
-            "throughput": 0,
+            "throughput": finished_vehicle_count,
         }
+
+    def _finished_vehicle_count(self, engine: object) -> int:
+        try:
+            return int(engine.get_finished_vehicle_count())
+        except Exception:
+            return 0
+
+    def _normalize_control_phase(self, decision: JsonDict) -> int:
+        phase_code = decision.get("phaseCode")
+        if isinstance(phase_code, str) and phase_code in BUSINESS_PHASE_CODE_TO_INDEX:
+            return BUSINESS_PHASE_CODE_TO_INDEX[phase_code]
+
+        phase_index = int(decision["phaseIndex"])
+        if phase_index in BUSINESS_PHASE_INDEXES:
+            return phase_index
+
+        # Backward compatibility for stale clients that still send Traffic-R's
+        # business indices 1..4. CityFlow phase 1 is right-turn-only in Jinan
+        # and must not be treated as ETWT.
+        legacy_business_index_to_cityflow_phase = {
+            1: BUSINESS_PHASE_CODE_TO_INDEX["ETWT"],
+            2: BUSINESS_PHASE_CODE_TO_INDEX["NTST"],
+            3: BUSINESS_PHASE_CODE_TO_INDEX["ELWL"],
+            4: BUSINESS_PHASE_CODE_TO_INDEX["NLSL"],
+        }
+        if phase_index in legacy_business_index_to_cityflow_phase:
+            return legacy_business_index_to_cityflow_phase[phase_index]
+        return phase_index
 
 
 @dataclass
@@ -381,9 +660,18 @@ class CityFlowEngineSession:
     sid: str
     scene_id: str
     speed: float
+    owner_id: str
+    total_vehicle_count: int
     engine: object
     config_path: Path
     seq: int = 0
     current_phases: dict[str, int] = field(default_factory=dict)
     external_control_enabled: bool = False
-    lock: Lock = field(default_factory=Lock, repr=False)
+    running: bool = False
+    stopped: bool = False
+    last_error: str | None = None
+    latest_frame: JsonDict | None = None
+    worker: Thread | None = field(default=None, repr=False)
+    state_lock: Lock = field(default_factory=Lock, repr=False)
+    engine_lock: Lock = field(default_factory=Lock, repr=False)
+    frame_lock: Lock = field(default_factory=Lock, repr=False)

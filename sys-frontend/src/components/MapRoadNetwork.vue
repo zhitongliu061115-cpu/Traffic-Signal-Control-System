@@ -1,0 +1,209 @@
+<script setup lang="ts">
+// ================================================================
+// MapRoadNetwork — 高德地图 城市级数字孪生路网
+// 加载流程：地图 → POI修正路口 → 路径规划 → 一次性渲染
+// 离线降级 → RoadNetwork.vue（Three.js 抽象路网）
+// ================================================================
+import { ref, watch, onBeforeUnmount, computed } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useTrafficStore } from '@/stores/traffic'
+import { initAMap, type AMapInstance } from '@/map/amapInit'
+import { addAMapRoadLayer } from '@/map/amapRoads'
+import { createTLMarkers, type TLMarker } from '@/map/amapMarkers'
+import { fetchDrivingPath } from '@/map/amapPathGen'
+import RoadNetwork from '@/components/RoadNetwork.vue'
+import MapLegend from '@/components/MapLegend.vue'
+import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
+
+const store = useTrafficStore()
+const { intersections, roads, vehicles, systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId } = storeToRefs(store)
+
+const mapBox = ref<HTMLDivElement | null>(null)
+const mapReady = ref(false)
+const mapFailed = ref(false)
+const dataLoading = ref(false)
+const viewerOpen = ref(false)
+const selectedRoadId = ref<string | null>(null)
+
+let amapInstance: AMapInstance | null = null
+let roadLayer: ReturnType<typeof addAMapRoadLayer> | null = null
+let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
+let emergencyLine: AMap.Polyline | null = null
+
+async function bootstrapMap(): Promise<void> {
+  if (!mapBox.value) return
+  try {
+    amapInstance = await initAMap(mapBox.value, () => { mapFailed.value = true })
+    const map = amapInstance!.map
+
+    emergencyLine = new AMap.Polyline({
+      path: [], strokeColor: '#00E5FF', strokeWeight: 8, strokeOpacity: 0.9, zIndex: 50,
+    })
+    emergencyLine.setMap(map)
+
+    mapReady.value = true
+    dataLoading.value = true
+
+    // 后台加载真实数据，完成后一次性渲染
+    await loadRealData()
+    dataLoading.value = false
+  } catch {
+    mapFailed.value = true
+  }
+}
+
+async function loadRealData(): Promise<void> {
+  const map = amapInstance!.map
+
+  // ---- 第 1 步：从后端加载数据（失败自动降级 mock）----
+  await store.loadDashboardData()
+
+  // ---- 第 2 步：路径规划 ----
+  for (const r of roads.value) {
+    const from = intersections.value.find((i) => i.id === r.from)
+    const to = intersections.value.find((i) => i.id === r.to)
+    if (!from || !to) continue
+    const realPath = await fetchDrivingPath([from.lng, from.lat], [to.lng, to.lat])
+    if (realPath) r.path = realPath
+  }
+
+  // ---- 第 3 步：一次性创建 ----
+  roadLayer = addAMapRoadLayer(map, intersections.value, roads.value, (id) => { selectedRoadId.value = id })
+  tlMarkers = createTLMarkers(map, intersections.value, (id) => store.selectIntersection(id))
+
+}
+
+function syncEmergency(): void {
+  if (!emergencyLine) return
+  if (systemMode.value === 'emergency') {
+    const pts: [number, number][] = []
+    for (const id of emergencyRoute.value) {
+      const it = intersections.value.find((i) => i.id === id)
+      if (it) pts.push([it.lng, it.lat])
+    }
+    emergencyLine.setPath(pts)
+    emergencyLine.show()
+  } else {
+    emergencyLine.hide()
+  }
+}
+
+watch([roads, intersections], () => {
+  roadLayer?.update(intersections.value, roads.value)
+  tlMarkers?.updateAll(intersections.value)
+  syncEmergency()
+})
+watch(systemMode, syncEmergency)
+
+function onMapDblClick(): void {
+  if (selectedIntersectionId.value) viewerOpen.value = true
+}
+
+setTimeout(bootstrapMap, 100)
+
+onBeforeUnmount(() => {
+  roadLayer?.dispose()
+  tlMarkers?.dispose()
+  emergencyLine?.setMap(null)
+  amapInstance?.destroy()
+})
+
+const overview = computed(() => [
+  { label: '路口总数', value: String(intersections.value.length), unit: '个' },
+  { label: '设备在线率', value: store.statistics.deviceOnlineRate.toFixed(1), unit: '%' },
+  { label: '监测车辆', value: String(vehicles.value.length), unit: '辆' },
+  { label: '拥堵路段', value: String(store.statistics.congestedRoadCount), unit: '条' },
+])
+const selectedName = computed(
+  () => intersections.value.find((it) => it.id === selectedIntersectionId.value)?.name ?? '',
+)
+const selectedRoadName = computed(
+  () => roads.value.find((r) => r.id === selectedRoadId.value)?.name ?? '',
+)
+</script>
+
+<template>
+  <section class="hud-card data-panel-card comp-card">
+    <div class="hud-panel-titlebar">
+      <div class="titlebar-inner">
+        <span class="titlebar-mark" />
+        <span class="titlebar-text">城市路网数字孪生</span>
+        <span v-if="dataLoading" class="mrn-badge mrn-badge--loading">
+          <span class="status-dot status-dot--live" /> 加载中…
+        </span>
+        <span v-else-if="mapReady" class="mrn-badge mrn-badge--live">
+          <span class="status-dot status-dot--live" /> 高德地图
+        </span>
+        <span v-else-if="mapFailed" class="mrn-badge mrn-badge--fallback">
+          <span class="status-dot status-dot--warning" /> 离线/降级
+        </span>
+        <span class="titlebar-deco"><i /><i /><i /></span>
+      </div>
+    </div>
+
+    <div class="hud-card__content comp-card__body">
+      <div class="mrn-viewport">
+        <RoadNetwork v-if="mapFailed" class="mrn-fallback" />
+        <div v-show="!mapFailed" ref="mapBox" class="mrn-map" @dblclick="onMapDblClick" />
+
+        <!-- 概览指标：左上角浮层 -->
+        <div class="mrn-overview-float">
+          <div v-for="o in overview" :key="o.label" class="mrn-metric-float">
+            <span class="mrn-metric__value">{{ o.value }}</span>
+            <span class="mrn-metric__unit">{{ o.unit }}</span>
+            <div class="mrn-metric__label">{{ o.label }}</div>
+          </div>
+        </div>
+
+        <div v-if="dataLoading" class="mrn-loading-overlay">
+          <div class="mrn-loading-box">
+            <span class="mrn-loading-icon">⏳</span>
+            <div class="mrn-loading-text">正在加载路口数据与道路规划…</div>
+          </div>
+        </div>
+
+        <MapLegend :visible="!mapFailed && !dataLoading" />
+
+
+        <div class="mrn-hint" v-if="!mapFailed && !dataLoading">
+          <span>🖱 拖拽/滚轮 · 单击路口 · 双击进全景 | 高德地图</span>
+        </div>
+      </div>
+    </div>
+
+    <Intersection3DViewer
+      v-if="viewerOpen"
+      :intersection-id="selectedIntersectionId"
+      @close="viewerOpen = false"
+    />
+  </section>
+</template>
+
+<style scoped>
+.comp-card { height: 100%; display: flex; flex-direction: column; }
+.comp-card__body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0; overflow: hidden; }
+.mrn-badge { margin-left: 10px; font-size: 10px; padding: 3px 8px; display: inline-flex; align-items: center; gap: 4px; }
+.mrn-badge--live { border: 1px solid rgba(34,211,160,0.5); color: #22d3a0; background: rgba(34,211,160,0.08); }
+.mrn-badge--loading { border: 1px solid rgba(0,212,255,0.5); color: #00d4ff; background: rgba(0,212,255,0.08); }
+.mrn-badge--fallback { border: 1px solid rgba(255,184,0,0.5); color: #ffb800; background: rgba(255,184,0,0.08); }
+.mrn-overview { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; flex: 0 0 auto; position: relative; z-index: 5; }
+.mrn-metric { padding: 5px 10px; text-align: center; background: rgba(0,212,255,0.05); border: 1px solid rgba(0,212,255,0.18); }
+.mrn-metric__value { font-family: 'DINPro','Rajdhani',sans-serif; font-size: clamp(15px, 1.3vw, 23px); font-weight: 700; color: #00d4ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mrn-metric__unit { margin-left: 3px; font-size: 11px; color: #8da8c5; white-space: nowrap; }
+.mrn-metric__label { margin-top: 1px; font-size: 11px; color: #5a7595; letter-spacing: 0.04em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrn-viewport { flex: 1; min-height: 0; position: relative; border: 1.5px solid rgba(0,212,255,0.42); overflow: hidden; }
+.mrn-map { width: 100%; height: 100%; }
+.mrn-fallback { width: 100%; height: 100%; }
+
+.mrn-overview-float { position: absolute; top: 6px; left: 6px; z-index: 5; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mrn-metric-float { padding: 4px 10px; text-align: center; background: rgba(4,21,39,0.85); border: 1px solid rgba(0,212,255,0.25); white-space: nowrap; }
+.mrn-loading-overlay { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(2,8,23,0.6); }
+.mrn-loading-box { text-align: center; }
+.mrn-loading-icon { font-size: 36px; display: block; margin-bottom: 10px; }
+.mrn-loading-text { font-size: 14px; color: #8da8c5; letter-spacing: 0.06em; }
+.mrn-selected-info { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); z-index: 5; padding: 4px 10px; background: rgba(4,21,39,0.88); border: 1px solid rgba(0,212,255,0.35); backdrop-filter: blur(4px); display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.mrn-selected-info__name { font-size: 12px; font-weight: 600; color: #7af7ff; text-shadow: 0 0 6px rgba(0,212,255,0.3); overflow: hidden; text-overflow: ellipsis; }
+.mrn-enter-btn { padding: 3px 7px; font-size: 10px; color: #00d4ff; background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.35); cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+.mrn-enter-btn:hover { background: rgba(0,212,255,0.18); box-shadow: 0 0 8px rgba(0,212,255,0.25); }
+.mrn-hint { position: absolute; top: 8px; right: 10px; z-index: 4; font-size: 10px; color: #8da8c5; padding: 3px 8px; background: rgba(4,21,39,0.7); border: 1px solid rgba(0,212,255,0.15); pointer-events: none; }
+</style>
