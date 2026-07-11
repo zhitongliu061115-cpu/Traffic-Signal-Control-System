@@ -3,7 +3,7 @@
 // ================================================================
 import AMapLoader from '@amap/amap-jsapi-loader'
 
-const AMAP_KEY = import.meta.env.VITE_AMAP_KEY as string
+const AMAP_KEY = '177a0670648f7f7b711e935b0b4bddbd'
 const LOAD_TIMEOUT_MS = 12000 // 12 秒超时
 
 const CENTER: [number, number] = [121.4644, 31.2240]

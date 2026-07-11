@@ -18,6 +18,8 @@ import {
   Fog,
   Group,
   Mesh,
+  InstancedMesh,
+  Matrix4,
   BoxGeometry,
   Sprite,
   SpriteMaterial,
@@ -33,14 +35,15 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { useTrafficStore } from '@/stores/traffic'
-import { IntersectionVehicleAnimator } from '@/three/IntersectionVehicleAnimator'
+import { IntersectionVehicleAnimator, type IntersectionSimState } from '@/three/IntersectionVehicleAnimator'
 import { PHASE_LABELS, DEVICE_STATUS_LABELS } from '@/types/traffic'
+import type { SignalPhase, SimVehicleState, SimSignalState, SimRoadnetResponse, Intersection } from '@/types/traffic'
 
 const props = defineProps<{ intersectionId: string | null }>()
 const emit = defineEmits<{ close: [] }>()
 
 const store = useTrafficStore()
-const { intersections, roads, vehicles } = storeToRefs(store)
+const { intersections, roads, vehicles, simulationVehicles, simulationSignals, simulationSimTime, simRoadnet, simulationStatus } = storeToRefs(store)
 
 const viewerBox = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
@@ -50,6 +53,80 @@ const intersection = computed(() =>
   intersections.value.find((it) => it.id === props.intersectionId) ?? null,
 )
 
+// ================================================================
+// 从仿真帧派生选中路口的四方向车辆数 + 相位（Plan B 数据源）
+// ================================================================
+const SIGNAL_PHASE_MAP: Record<string, SignalPhase> = {
+  ETWT: 'eastwest_straight', ew_straight: 'eastwest_straight',
+  NTST: 'northsouth_straight', ns_straight: 'northsouth_straight',
+  ELWL: 'eastwest_left', ew_left: 'eastwest_left',
+  NLSL: 'northsouth_left', ns_left: 'northsouth_left',
+  all_red: 'all_red',
+}
+
+/** 上海路口 → CityFlow 转置键 "R_C"（R=col, C=row） */
+function simKeyOf(it: Intersection): string {
+  return `${it.col}_${it.row}`
+}
+
+function deriveIntersectionState(
+  shIt: Intersection | null,
+  simVehicles: SimVehicleState[],
+  simSignals: SimSignalState[],
+  roadnet: SimRoadnetResponse | null,
+  simTime: number,
+): IntersectionSimState | null {
+  if (!shIt || !roadnet) return null
+  const key = simKeyOf(shIt)
+  const cfId = `intersection_${key}`
+
+  // 找 CityFlow 路口中心坐标
+  const cfIt = roadnet.intersections.find((i) => i.id === cfId && !i.virtual)
+  if (!cfIt) return null
+  const cx = cfIt.x
+  const cy = cfIt.y
+
+  // 统计进场车辆：距中心一定范围内，按相对位置分四方向
+  // CityFlow: x 轴道路 = 东西向(EW)，y 轴道路 = 南北向(NS)
+  const RADIUS_X = 220 // x 轴路口间距 400，取半略小
+  const RADIUS_Y = 420 // y 轴路口间距 800，取半略小
+  let north = 0, south = 0, east = 0, west = 0
+  for (const v of simVehicles) {
+    const dx = v.x - cx
+    const dy = v.y - cy
+    if (Math.abs(dx) > Math.abs(dy)) {
+      // 东西向道路
+      if (Math.abs(dx) > RADIUS_X || Math.abs(dy) > 30) continue
+      if (dx > 0) east++
+      else west++
+    } else {
+      // 南北向道路
+      if (Math.abs(dy) > RADIUS_Y || Math.abs(dx) > 30) continue
+      if (dy > 0) north++
+      else south++
+    }
+  }
+
+  // 当前相位
+  const sig = simSignals.find((s) => s.intersectionId === cfId)
+  const currentPhase = sig ? (SIGNAL_PHASE_MAP[sig.phaseCode] ?? 'eastwest_straight') : 'eastwest_straight'
+  const greenRemain = 10 - (simTime % 10)
+
+  return { northCount: north, southCount: south, eastCount: east, westCount: west, currentPhase, greenRemain }
+}
+
+/** 当前选中路口的仿真派生状态（仿真运行时有值，否则 null → 走 mock 降级） */
+const simState = computed<IntersectionSimState | null>(() => {
+  if (simulationStatus.value !== 'running') return null
+  return deriveIntersectionState(
+    intersection.value,
+    simulationVehicles.value as SimVehicleState[],
+    simulationSignals.value as SimSignalState[],
+    simRoadnet.value as SimRoadnetResponse | null,
+    simulationSimTime.value,
+  )
+})
+
 // ---- Three.js 局部实例 ----
 let scene: Scene | null = null
 let camera: PerspectiveCamera | null = null
@@ -57,6 +134,7 @@ let renderer: WebGLRenderer | null = null
 let controls: OrbitControls | null = null
 let rafId: number | null = null
 let resizeObserver: ResizeObserver | null = null
+let lastFrameTime = 0
 const tlSpriteUpdaters: Array<() => void> = []
 let vehicleAnimator: IntersectionVehicleAnimator | null = null
 
@@ -91,25 +169,33 @@ function buildProceduralIntersection(): Group {
     g.add(c)
   }
 
-  // 车道线（三车道：左右各 3 条虚线）
+  // 车道线（三车道：左右各 3 条虚线）→ InstancedMesh 合批
+  const dummy = new Matrix4()
   for (const dir of ['H', 'V'] as const) {
     const isH = dir === 'H'
     const laneGeom = isH ? new BoxGeometry(8, 1.15, 0.3) : new BoxGeometry(0.3, 1.15, 8)
+    const dashPositions: Array<[number, number, number]> = []
     for (let pos = -60; pos <= 60; pos += 16) {
       for (let laneOff of [-LANE_W, 0, LANE_W]) {
-        const dash = new Mesh(laneGeom, line)
-        if (isH) { dash.position.set(pos, 0.4, laneOff) }
-        else     { dash.position.set(laneOff, 0.4, pos) }
-        g.add(dash)
+        if (isH) dashPositions.push([pos, 0.4, laneOff])
+        else     dashPositions.push([laneOff, 0.4, pos])
       }
     }
+    const dashIM = new InstancedMesh(laneGeom, line, dashPositions.length)
+    dashPositions.forEach(([x, y, z], i) => {
+      dummy.identity().setPosition(x, y, z)
+      dashIM.setMatrixAt(i, dummy)
+    })
+    dashIM.instanceMatrix.needsUpdate = true
+    g.add(dashIM)
+
     // 中央双黄线
     const yellow = new MeshStandardMaterial({ color: 0xf5c842, emissive: 0x332800, emissiveIntensity: 0.3 })
     const yellowLine = new Mesh(isH ? new BoxGeometry(ROAD_LEN, 1.15, 0.4) : new BoxGeometry(0.4, 1.15, ROAD_LEN), yellow)
     g.add(yellowLine)
   }
 
-  // 斑马线（仅四角人行横道，不在路口中心）
+  // 斑马线（仅四角人行横道）→ InstancedMesh 合批
   const zebraMat = new MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 })
   const zebraPositions: [number, number, boolean][] = [
     [-(ROAD_W / 2 + 10), 0, true],  // 西侧
@@ -117,15 +203,25 @@ function buildProceduralIntersection(): Group {
     [0, -(ROAD_W / 2 + 10), false], // 南侧
     [0, (ROAD_W / 2 + 10), false],  // 北侧
   ]
+  const zebraH: Array<[number, number, number]> = []
+  const zebraV: Array<[number, number, number]> = []
   for (const [cx, cz, isH] of zebraPositions) {
     for (let i = -12; i <= 12; i += 4) {
-      const cw = new Mesh(
-        isH ? new BoxGeometry(3, 0.3, ROAD_W + 6) : new BoxGeometry(ROAD_W + 6, 0.3, 3),
-        zebraMat,
-      )
-      cw.position.set(isH ? i : cx, 0.55, isH ? cz : i)
-      g.add(cw)
+      if (isH) zebraH.push([i, 0.55, cz])
+      else     zebraV.push([cx, 0.55, i])
     }
+  }
+  if (zebraH.length > 0) {
+    const zH = new InstancedMesh(new BoxGeometry(3, 0.3, ROAD_W + 6), zebraMat, zebraH.length)
+    zebraH.forEach(([x, y, z], i) => { dummy.identity().setPosition(x, y, z); zH.setMatrixAt(i, dummy) })
+    zH.instanceMatrix.needsUpdate = true
+    g.add(zH)
+  }
+  if (zebraV.length > 0) {
+    const zV = new InstancedMesh(new BoxGeometry(ROAD_W + 6, 0.3, 3), zebraMat, zebraV.length)
+    zebraV.forEach(([x, y, z], i) => { dummy.identity().setPosition(x, y, z); zV.setMatrixAt(i, dummy) })
+    zV.instanceMatrix.needsUpdate = true
+    g.add(zV)
   }
 
   // 3D 红绿灯柱（四角，每个朝向对应道路）
@@ -167,25 +263,31 @@ function buildProceduralIntersection(): Group {
     g.add(radar)
   }
 
-  // 城市绿化树（沿路两侧各 4 棵）
+  // 城市绿化树（沿路两侧各 4 棵）→ InstancedMesh 合批
   const trunkMat = new MeshStandardMaterial({ color: 0x5c4033, roughness: 0.8 })
   const leafMat = new MeshStandardMaterial({ color: 0x225533, roughness: 0.5 })
   const treeOffsets = [-65, -30, 30, 65]
+  const trunkPositions: Array<[number, number, number]> = []
+  const crownPositions: Array<[number, number, number]> = []
   for (const off of treeOffsets) {
     for (const side of [-1, 1]) {
       for (const axis of ['H', 'V'] as const) {
         const isH = axis === 'H'
         const px = isH ? off : side * (ROAD_W / 2 + 14)
         const pz = isH ? side * (ROAD_W / 2 + 14) : off
-        const trunk = new Mesh(new CylinderGeometry(0.8, 1.2, 6, 6), trunkMat)
-        trunk.position.set(px, 3, pz)
-        g.add(trunk)
-        const crown = new Mesh(new SphereGeometry(5, 8, 6), leafMat)
-        crown.position.set(px, 9, pz)
-        g.add(crown)
+        trunkPositions.push([px, 3, pz])
+        crownPositions.push([px, 9, pz])
       }
     }
   }
+  const trunkIM = new InstancedMesh(new CylinderGeometry(0.8, 1.2, 6, 6), trunkMat, trunkPositions.length)
+  trunkPositions.forEach(([x, y, z], i) => { dummy.identity().setPosition(x, y, z); trunkIM.setMatrixAt(i, dummy) })
+  trunkIM.instanceMatrix.needsUpdate = true
+  g.add(trunkIM)
+  const crownIM = new InstancedMesh(new SphereGeometry(5, 8, 6), leafMat, crownPositions.length)
+  crownPositions.forEach(([x, y, z], i) => { dummy.identity().setPosition(x, y, z); crownIM.setMatrixAt(i, dummy) })
+  crownIM.instanceMatrix.needsUpdate = true
+  g.add(crownIM)
 
   // 周边建筑（6 栋）
   const buildMat = new MeshStandardMaterial({ color: 0x14202e, emissive: 0x0a1520, emissiveIntensity: 0.4 })
@@ -284,17 +386,21 @@ function buildFallback(): void {
       updateTLSprite()
       tlSpriteUpdaters.push(updateTLSprite)
       const dashMat = new MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222, emissiveIntensity: 0.3 })
+      const m4 = new Matrix4()
       for (const dir of ["H", "V"] as const) {
         const isH = dir === "H"
         const dGeom = isH ? new BoxGeometry(12, 1.15, 0.4) : new BoxGeometry(0.4, 1.15, 12)
+        const dPos: Array<[number, number, number]> = []
         for (let pos = -70; pos <= 70; pos += 18) {
           for (const offset of [-12, -6, 6, 12]) {
-            const d = new Mesh(dGeom, dashMat)
-            if (isH) { d.position.set(pos, 0.5, offset) }
-            else     { d.position.set(offset, 0.5, pos) }
-            rootGroup!.add(d)
+            if (isH) dPos.push([pos, 0.5, offset])
+            else     dPos.push([offset, 0.5, pos])
           }
         }
+        const dIM = new InstancedMesh(dGeom, dashMat, dPos.length)
+        dPos.forEach(([x, y, z], i) => { m4.identity().setPosition(x, y, z); dIM.setMatrixAt(i, m4) })
+        dIM.instanceMatrix.needsUpdate = true
+        rootGroup!.add(dIM)
       }
     },
     undefined,
@@ -373,12 +479,20 @@ onMounted(async () => {
   else { buildFallback(); loading.value = false }
 
   // 渲染循环
-  const loop = () => {
+  const loop = (now: number) => {
+    const deltaMs = lastFrameTime ? now - lastFrameTime : 16
+    lastFrameTime = now
     controls?.update()
     tlSpriteUpdaters.forEach((fn) => fn())
     if (vehicleAnimator && intersection.value) {
       vehicleAnimator.setIntersection(intersection.value)
-      vehicleAnimator.update(vehicles.value, roads.value)
+      if (simState.value) {
+        // 仿真运行中：按四方向车辆数 + 相位驱动车流
+        vehicleAnimator.updateFromSim(simState.value, deltaMs)
+      } else {
+        // 降级：mock 车辆数据
+        vehicleAnimator.update(vehicles.value, roads.value)
+      }
     }
     if (renderer && scene && camera) renderer.render(scene, camera)
     rafId = requestAnimationFrame(loop)
