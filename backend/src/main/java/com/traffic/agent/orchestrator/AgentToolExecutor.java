@@ -28,6 +28,13 @@ public class AgentToolExecutor {
             "get_system_health",
             "get_model_inference_log",
             "search_knowledge_base",
+            "diagnose_congestion",
+            "detect_signal_anomaly",
+            "detect_spillback_risk",
+            "get_safety_constraint_log",
+            "get_fallback_log",
+            "get_region_metrics",
+            "compare_strategy_metrics",
             "get_fallback_events",
             "get_safety_events",
             "get_alert_events",
@@ -130,6 +137,45 @@ public class AgentToolExecutor {
                     stringArg(arguments, "query", true),
                     intArg(arguments, "topK", 5),
                     stringArg(arguments, "scope", false)
+            );
+            case "diagnose_congestion" -> diagnosisTools.diagnoseCongestion(
+                    stringArg(arguments, "targetType", false),
+                    stringArg(arguments, "targetId", false),
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "sceneCode", false)
+            );
+            case "detect_signal_anomaly" -> diagnosisTools.detectSignalAnomaly(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "intersectionId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "detect_spillback_risk" -> diagnosisTools.detectSpillbackRisk(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "roadId", false),
+                    stringArg(arguments, "intersectionId", false),
+                    stringArg(arguments, "sceneCode", false)
+            );
+            case "get_safety_constraint_log" -> diagnosisTools.getSafetyConstraintLog(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "intersectionId", false),
+                    stringArg(arguments, "decisionId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_fallback_log" -> diagnosisTools.getFallbackLog(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "intersectionId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_region_metrics" -> diagnosisTools.getRegionMetrics(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "regionId", false),
+                    stringArg(arguments, "intersectionIds", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "compare_strategy_metrics" -> diagnosisTools.compareStrategyMetrics(
+                    stringArg(arguments, "sids", false),
+                    stringArg(arguments, "sceneCode", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
             );
             case "get_fallback_events" -> diagnosisTools.getFallbackEvents(
                     stringArg(arguments, "sid", false),

@@ -129,7 +129,7 @@ Agent 可见语义化工具
 | `get_road_detail` | 查询道路详情 | `roadId`, `sid?`, `sceneCode?` | 车辆数、排队数、平均速度、拥堵等级、上下游路口、车道数量 | 已实现 |
 | `get_latest_control_decisions` | 查询最近控制决策 | `sid?`, `intersectionId?`, `limit?` | 策略来源、请求相位、最终相位、持续时间、原因、是否成功下发 | 已实现基础版 |
 | `get_decision_trace` | 查询决策链路 | `decisionId` 或后续支持 `sid + intersectionId` | Traffic-R 原始输出、安全校验、fallback、最终执行结果 | 已实现基础版，需增强 |
-| `diagnose_congestion` | 分析拥堵原因 | `targetType`, `targetId`, `sid?` | 关键证据、可能原因、影响范围、处理建议 | 未实现，第一优先级 |
+| `diagnose_congestion` | 分析拥堵原因 | `targetType?`, `targetId?`, `sid?`, `sceneCode?` | 结论、证据、影响范围、可能原因、建议动作、置信度、人工确认事项 | 已实现规则诊断基础版 |
 | `get_system_health` | 查询系统健康 | `limit?` | Spring Boot、CityFlow、Traffic-R、数据库、WebSocket、云端服务连接状态 | 已实现数据库基础版，需增强 |
 | `search_knowledge_base` | 查询项目知识库 | `query`, `topK?`, `scope?` | 命中文档、片段、来源、相似度或引用 | 已实现本地文档检索基础版；后续接百炼知识库 API |
 
@@ -141,9 +141,9 @@ Agent 可见语义化工具
 | --- | --- | --- | --- | --- |
 | `get_emergency_vehicle_status` | 查询应急车辆状态 | `sid`, `vehicleId?`, `eventCode?` | 位置、路线、已通过路口、预计到达时间、绿波状态 | 未实现；可基于 `emergency_event`、`emergency_route_node`、`emergency_signal_event` |
 | `draft_emergency_dispatch` | 生成应急调度草案 | `sid`, `start`, `end`, `vehicleType`, `priority?` | 路线、经过路口、预计时间、建议绿波相位；需人工确认 | 未实现；只生成草案，不执行 |
-| `get_region_metrics` | 查询区域整体指标 | `sid`, `regionId?`, `intersectionIds?`, `timeRange?` | 平均等待、平均排队、通行量、拥堵指数、平均速度 | 未实现 |
-| `detect_spillback_risk` | 检测下游溢出风险 | `sid`, `roadId?`, `intersectionId?`, `regionId?` | 风险等级、下游瓶颈、证据和建议 | 未实现 |
-| `detect_signal_anomaly` | 检测信号异常 | `sid`, `intersectionId?`, `timeRange?` | 相位长时间不变、全红/全绿异常、相位映射失败、绿灯车辆不通行 | 未实现 |
+| `get_region_metrics` | 查询区域整体指标 | `sid?`, `regionId?`, `intersectionIds?`, `limit?` | 平均等待、平均排队、平均速度、拥堵路口数量、证据和告警 | 已实现基础版 |
+| `detect_spillback_risk` | 检测下游溢出风险 | `sid?`, `roadId?`, `intersectionId?`, `sceneCode?` | 风险等级、下游瓶颈、证据和建议 | 已实现基础版 |
+| `detect_signal_anomaly` | 检测信号异常 | `sid?`, `intersectionId?`, `limit?` | 相位长时间不变、安全约束触发、相位映射疑似异常、绿灯车辆不通行风险 | 已实现基础版 |
 
 ### 4.3 第三批：策略评估与报告
 
@@ -151,7 +151,7 @@ Agent 可见语义化工具
 
 | 工具名 | 目标 | 输入 | 输出重点 | 状态 |
 | --- | --- | --- | --- | --- |
-| `compare_strategy_metrics` | 对比策略效果 | `sceneId`, `sessions`, `metrics?` | Fixed-Time、MaxPressure、Traffic-R、Hybrid 的等待、排队、速度、通行量对比 | 未实现；依赖真实实验数据 |
+| `compare_strategy_metrics` | 对比策略效果 | `sids?`, `sceneCode?`, `limit?` | Fixed-Time、MaxPressure、Traffic-R、Hybrid 的等待、排队、速度、通行量对比 | 已实现基础版；正式结论仍依赖同源实验数据 |
 | `draft_signal_adjustment` | 生成信号调整建议 | `sid`, `intersectionId?`, `regionId?`, `objective?` | 建议相位、时长、依据、风险；不执行 | 未实现；依赖安全层和仲裁层 |
 | `draft_strategy_switch` | 生成策略切换草案 | `sid`, `regionId?`, `fromStrategy`, `toStrategy` | 切换理由、影响范围、风险和回滚条件 | 未实现；不执行 |
 | `generate_daily_operation_report` | 生成运行日报 | `date`, `sceneId?`, `sid?` | 拥堵情况、策略效果、异常事件、模型调用、应急任务 | 未实现 |
@@ -204,7 +204,7 @@ Agent 可见语义化工具
 
 ### 6.0 当前阶段 2 / 阶段 3 落地状态
 
-当前阶段 2 已完成后端编排骨架，阶段 3 已完成第一批 LangChain4j 工具层封装：
+当前阶段 2 已完成后端编排骨架，阶段 3 已完成第一批 LangChain4j 工具层封装，阶段 5 已完成诊断类工具基础版：
 
 - `AgentController` 不再直接调用模型，而是调用 `AgentOrchestratorService`。
 - `AgentOrchestratorService` 负责创建或读取 `agent_conversation`，写入 user / assistant `agent_message`。
@@ -215,13 +215,15 @@ Agent 可见语义化工具
 - 已新增统一工具返回结构 `AgentToolResult`：`success`、`toolName`、`data`、`evidence`、`warnings`、`timestamp`。
 - 工具异常由 `AgentToolSupport` 捕获并包装为结构化失败结果，不直接中断整个 Agent 编排。
 - 工具结果进入 `agent_tool_call.result_payload` 前由 `AgentDataService` 截断到约 12,000 字符，模型回答上下文也会截断大 payload。
+- 已新增 `com.traffic.agent.analysis` 包，提供 `CongestionDiagnosisService`、`SignalAnomalyDetectionService`、`SpillbackRiskService`、`StrategyMetricsCompareService`。
+- 诊断类工具统一输出结论、证据、影响范围、可能原因、建议动作、置信度和需要人工确认事项；建议只生成文字建议，不执行控制动作。
 
 当前工具规划不是让模型直接执行 Java 方法，而是采用“LLM 输出 JSON 计划 -> 后端白名单执行”的安全模式。这样既满足由 LLM 进行工具调用决策，又避免模型越权调用未开放能力。
 
 当前仍未完成：
 
 - `search_knowledge_base` 目前是本地项目文档检索，不是百炼知识库 API。
-- `diagnose_congestion`、`detect_signal_anomaly` 等语义化分析工具尚未实现。
+- 诊断类工具目前是基于阈值和规则的基础版，尚未覆盖复杂因果推理、跨时段趋势分析和完整安全/仲裁链路解释。
 - 暂未开放执行类工具；策略切换、相位下发、应急绿波执行仍必须等待安全层和仲裁层。
 
 ### 6.1 意图分类
@@ -399,6 +401,8 @@ traffic:
 - 系统健康能覆盖 Spring Boot、CityFlow、Traffic-R、数据库；
 - 决策追踪能解释“模型建议 -> 安全/仲裁 -> 下发结果”。
 
+当前状态：已实现 `diagnose_congestion` 规则诊断基础版，并实现 `detect_signal_anomaly`、`detect_spillback_risk`、`get_safety_constraint_log`、`get_fallback_log`。`get_decision_trace` 和 `get_system_health` 仍为基础版，后续需要继续增强聚合解释。
+
 ### 阶段 D：实现应急与区域工具
 
 目标：
@@ -413,6 +417,8 @@ traffic:
 - 应急工具只生成草案，不执行；
 - 区域指标来自真实 session 数据；
 - 异常检测有明确阈值和证据。
+
+当前状态：已实现 `get_region_metrics`、`detect_spillback_risk`、`detect_signal_anomaly` 基础版；`draft_emergency_dispatch` 仍未实现。
 
 ### 阶段 E：实现报告和策略草案
 
@@ -430,6 +436,8 @@ traffic:
 - 策略对比只使用可复现实验数据；
 - 所有建议工具均标记 `draftOnly=true`；
 - 报告可以引用数据库记录和知识库资料。
+
+当前状态：已实现 `compare_strategy_metrics` 基础版，可按 session 或场景聚合帧指标；正式策略优劣结论仍要求同 roadnet、flow、随机种子和仿真时长。
 
 ### 阶段 F：实验型工具
 
@@ -450,10 +458,10 @@ traffic:
 
 下一步优先实现：
 
-1. `diagnose_congestion`
-2. 增强 `get_decision_trace`
-3. 增强 `get_system_health`
-4. `get_emergency_vehicle_status`
+1. 增强 `get_decision_trace`
+2. 增强 `get_system_health`
+3. `get_emergency_vehicle_status`
+4. `draft_emergency_dispatch`
 5. 将 `search_knowledge_base` 从本地文档检索增强为百炼知识库 API 或混合检索
 
 暂缓：

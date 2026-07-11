@@ -361,7 +361,7 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 | `TrafficDecisionAgentTools` | `get_latest_control_decisions`、`get_decision_trace`、`get_model_inference_log` |
 | `TrafficHealthAgentTools` | `get_system_health` |
 | `TrafficKnowledgeAgentTools` | `search_knowledge_base` |
-| `TrafficDiagnosisAgentTools` | `get_fallback_events`、`get_safety_events`、`get_alert_events` |
+| `TrafficDiagnosisAgentTools` | `diagnose_congestion`、`detect_signal_anomaly`、`detect_spillback_risk`、`get_safety_constraint_log`、`get_fallback_log`、`get_region_metrics`、`compare_strategy_metrics`、`get_fallback_events`、`get_safety_events`、`get_alert_events` |
 | `EmergencyAgentTools` | `get_emergency_events` |
 
 工具实现规则：
@@ -371,6 +371,30 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 - 工具异常会被包装为 `success=false` 的结构化结果，并记录为 `agent_tool_call.status=FAILED`，不应导致整个 Agent 对话崩溃。
 - 当前工具全部只读，不推进仿真、不下发相位、不切换策略、不执行应急绿波。
 - `search_knowledge_base` 当前是本地项目文档检索基础版，检索 `.md/.txt` 文件；尚不是百炼知识库 API。
+
+诊断类工具返回的 `data` 不是自然语言散文，而是结构化诊断报告，至少包含：
+
+```json
+{
+  "conclusion": "intersection_3 存在拥堵风险",
+  "evidence": ["movement E_0 queue=18, avg_wait=94.2s"],
+  "impactScope": ["主要积压 movement=E_0"],
+  "possibleCauses": ["等待时间偏高，可能存在放行不足或下游排空能力不足"],
+  "recommendations": ["建议检查下游溢出风险；相位调整必须经过安全层和仲裁层"],
+  "confidence": 0.81,
+  "humanConfirmationRequired": ["任何控制策略变化都需要人工确认"],
+  "data": {}
+}
+```
+
+当前诊断工具边界：
+
+- `diagnose_congestion`：基于路口 movement、道路快照和当前仿真帧做规则诊断。
+- `detect_signal_anomaly`：基于最近控制决策、安全约束事件和 movement 快照检测异常风险。
+- `detect_spillback_risk`：基于道路或 roadLink 下游道路快照检测溢出风险。
+- `get_region_metrics`：基于 `intersection_state_snapshot`、`road_state_snapshot` 聚合区域指标。
+- `compare_strategy_metrics`：基于 `simulation_frame` 聚合不同 session / controller 的策略指标。正式策略结论要求同 roadnet、flow、随机种子和仿真时长。
+- `get_safety_constraint_log`、`get_fallback_log`：分别是安全事件和 fallback 事件的语义化日志工具。
 
 ### 3.6 Agent 会话、消息与工具调用审计
 

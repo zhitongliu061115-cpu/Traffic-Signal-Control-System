@@ -105,6 +105,13 @@ public class AgentIntentClassifier {
                 - get_system_health: 查询系统健康。参数：limit?
                 - get_model_inference_log: 查询 Traffic-R 推理日志。参数：sid?，intersectionId?，limit?
                 - search_knowledge_base: 查询项目文档、接口规范、部署资料、Agent 设计和算法说明。参数：query 必填，topK?，scope?
+                - diagnose_congestion: 基于真实快照和决策证据诊断拥堵原因。参数：targetType?，targetId?，sid?，sceneCode?
+                - detect_signal_anomaly: 检测信号异常、相位长时间不变、安全约束触发或相位映射疑似异常。参数：sid?，intersectionId?，limit?
+                - detect_spillback_risk: 检测道路或路口下游溢出风险。参数：sid?，roadId?，intersectionId?，sceneCode?
+                - get_safety_constraint_log: 查询安全约束触发记录。参数：sid?，intersectionId?，decisionId?，limit?
+                - get_fallback_log: 查询策略降级/fallback 记录。参数：sid?，intersectionId?，limit?
+                - get_region_metrics: 查询区域或路口集合指标。参数：sid?，regionId?，intersectionIds?，limit?
+                - compare_strategy_metrics: 对比不同 session/策略的效果指标。参数：sids?，sceneCode?，limit?
                 - get_fallback_events: 查询策略降级事件。参数：sid?，intersectionId?，limit?
                 - get_safety_events: 查询安全约束事件。参数：sid?，intersectionId?，decisionId?，limit?
                 - get_alert_events: 查询告警事件。参数：sid?，level?，status?，limit?
@@ -113,6 +120,8 @@ public class AgentIntentClassifier {
                 规划规则：
                 - 涉及“当前、实时、仿真状态、路口状态、道路状态、拥堵、决策、健康、推理日志、应急事件”的问题，必须选择工具。
                 - 纯概念、纯规范、纯部署说明问题优先调用 search_knowledge_base。
+                - 用户要求“诊断、分析原因、为什么堵、是否异常、是否溢出、策略效果对比”时，优先选择 diagnose_congestion、detect_signal_anomaly、detect_spillback_risk、get_region_metrics 或 compare_strategy_metrics。
+                - 诊断类工具会返回结论、证据、影响范围、可能原因、建议动作、置信度和需要人工确认事项；不要用普通查询工具替代诊断工具。
                 - 不要创造工具名。不要填入未知 ID；如果用户没有提供必填 ID，就不要调用该工具。
                 - 最多输出 4 个 toolCalls。
 
