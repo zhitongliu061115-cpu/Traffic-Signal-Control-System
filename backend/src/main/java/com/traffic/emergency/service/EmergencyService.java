@@ -39,7 +39,13 @@ public class EmergencyService {
         List<String> routeRoads = toStringList(pythonResponse.get("routeRoads"));
         double travelTime = toDouble(pythonResponse.get("estimatedTravelTime"));
 
+        String cfVehicleId = (String) pythonResponse.get("cfVehicleId");
+        if (cfVehicleId == null || cfVehicleId.isBlank()) {
+            cfVehicleId = "";
+        }
+
         return new EVDispatchResponse(
+                cfVehicleId,
                 (String) pythonResponse.getOrDefault("sid", sid),
                 (String) pythonResponse.getOrDefault("evId", request.evId()),
                 (String) pythonResponse.getOrDefault("evType", request.evType()),
