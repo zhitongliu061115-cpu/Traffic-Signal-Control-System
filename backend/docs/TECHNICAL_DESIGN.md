@@ -216,9 +216,9 @@ SimulationService
 
 `/cityflow/simulations/{sid}/actions` 也从 Spring 帧循环中解耦：`StrategyDispatchService` 将 actions 放入后台执行器异步 POST 到 Python，帧循环继续读取缓存并推送 WebSocket。同一 session、同一路口、同一相位在上一次下发完成前会被去重，避免缓存快照尚未更新时重复提交相同控制动作。Spring Boot 推送的 `control.decision` 表示动作已生成并提交，不能作为真实信号灯状态；前端信号灯只能以随后 `sim.frame.data.signals` 中 CityFlow 已应用的相位为准。
 
-当前联调模式限制为单活跃仿真 session：Spring Boot 创建新仿真前会停止并清空 `SimulationSessionRegistry` 中已有 session；Python CityFlow 创建新 session 前也会停止后台 worker 并清空旧 `RealCityFlowEngine.sessions`。这样可以避免多个高车流 CityFlow Engine 同时后台 step，导致新仿真帧率被旧 session 拖慢。后续如需多用户并发实验，需要改为用户级隔离、资源配额和显式 session 回收机制。
+当前联调模式支持多个仿真 session 并行存在：Spring Boot 创建新仿真不会停止或覆盖已有 `sid`；Python CityFlow 也不会在创建新 session 时清空旧 `RealCityFlowEngine.sessions`。所有运行态操作都以唯一 `sid` 定位，不再按 `X-CityFlow-Client` 判断归属。
 
-云端多人开发时，Python CityFlow 以唯一 `sid` 定位会话，不再按 `X-CityFlow-Client` 判断归属，也不会在创建新会话时清理已有会话。多个 CityFlow Engine 可并行运行，但受 `SIM_MAX_ACTIVE_SESSIONS` 约束；显式停止或场景自然结束后自动释放对应 worker、Engine 和策略运行态。
+云端多人开发时，新建会话不再因为旧会话数量达到 `SIM_MAX_ACTIVE_SESSIONS` 而返回 429；`SIM_MAX_ACTIVE_SESSIONS=0` 表示不设置创建数量上限。资源释放依赖显式 stop、场景自然结束、`SIM_SESSION_IDLE_TTL_SECONDS`、`SIM_SESSION_ABANDONED_TTL_SECONDS`、`SIM_SESSION_MAX_LIFETIME_SECONDS` 和后台清理线程，释放内容包括 worker、Engine、EV 状态、临时配置目录和策略运行态。`SIM_SESSION_ABANDONED_TTL_SECONDS` 只针对 running 但长期没有后端请求的会话，不会被 Python 后台 worker 自身刷新。
 
 为了避免高倍速下一次后台循环推进过多 step 导致快照长时间不更新，真实 CityFlow 后台 worker 每次只执行一个 `engine.next_step()` 并生成缓存快照；`speed` 用于缩短后台循环间隔，而不是在单次快照中连续推进大量 step。前端等待状态以 WebSocket 消息接收时间为准，重复缓存帧不会被误判为断流，但车辆目标位置只在 `simTime` 变化时更新。
 

@@ -2,9 +2,10 @@
 
 import json
 import math
+import time
 import uuid
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
 
 from app.config import (
     AUTO_SIGNAL_CYCLE,
@@ -13,7 +14,11 @@ from app.config import (
     ENGINE_MODE,
     MAX_ACTIVE_SESSIONS,
     MAX_SPEED,
+    SESSION_ABANDONED_TTL_SECONDS,
+    SESSION_CLEANUP_INTERVAL_SECONDS,
     SESSION_DRAIN_TIMEOUT_SECONDS,
+    SESSION_IDLE_TTL_SECONDS,
+    SESSION_MAX_LIFETIME_SECONDS,
     SERVICE_VERSION,
 )
 from app.engine import RealCityFlowEngine
@@ -44,8 +49,15 @@ class CityFlowAdapter:
         self.lane_movement_maps: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
         for scene_id in self.scene_registry.list_scene_ids():
             self._load_scene(scene_id)
+        self.cleanup_thread = Thread(
+            target=self._cleanup_loop,
+            name="cityflow-session-cleanup",
+            daemon=True,
+        )
+        self.cleanup_thread.start()
 
     def health(self) -> JsonDict:
+        self.cleanup_expired_sessions()
         return {
             "status": "UP",
             "service": "sim-python",
@@ -54,6 +66,10 @@ class CityFlowAdapter:
             "autoSignalCycle": AUTO_SIGNAL_CYCLE,
             "maxActiveSessions": MAX_ACTIVE_SESSIONS,
             "maxSpeed": MAX_SPEED,
+            "sessionAbandonedTtlSeconds": SESSION_ABANDONED_TTL_SECONDS,
+            "sessionIdleTtlSeconds": SESSION_IDLE_TTL_SECONDS,
+            "sessionMaxLifetimeSeconds": SESSION_MAX_LIFETIME_SECONDS,
+            "sessionCleanupIntervalSeconds": SESSION_CLEANUP_INTERVAL_SECONDS,
             "sessionDrainTimeoutSeconds": SESSION_DRAIN_TIMEOUT_SECONDS,
             "sceneIds": self.scene_registry.list_scene_ids(),
             "activeSessions": self._active_session_count(),
@@ -70,19 +86,13 @@ class CityFlowAdapter:
             owner_id: str = "default",
     ) -> JsonDict:
         self._load_scene(scene_id)
+        self.cleanup_expired_sessions()
         normalized_speed = self._normalize_speed(speed)
         normalized_warmup_seconds = self._normalize_warmup_seconds(warmup_seconds)
         if self.real_engine is not None:
             return self.real_engine.create_session(scene_id, normalized_speed, normalized_warmup_seconds, owner_id)
 
         with self.sessions_lock:
-            if len(self.sessions) >= MAX_ACTIVE_SESSIONS:
-                raise ApiError(
-                    status=429,
-                    code="SESSION_LIMIT_EXCEEDED",
-                    message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
-                    retryable=True,
-                )
             sid = f"run_{uuid.uuid4().hex[:16]}"
             session = SimulationSession(
                 sid=sid,
@@ -104,6 +114,7 @@ class CityFlowAdapter:
 
         session = self._mock_session(sid, owner_id)
         with session.lock:
+            session.last_access_at = time.time()
             session.seq += 1
             session.sim_time += DEFAULT_FRAME_STEP_SECONDS * session.speed
 
@@ -198,6 +209,7 @@ class CityFlowAdapter:
             return self.real_engine.start_session(sid, owner_id)
         session = self._mock_session(sid, owner_id)
         with session.lock:
+            session.last_access_at = time.time()
             session.running = True
             session.stopped = False
         return {"sid": sid, "status": "running"}
@@ -207,6 +219,7 @@ class CityFlowAdapter:
             return self.real_engine.pause_session(sid, owner_id)
         session = self._mock_session(sid, owner_id)
         with session.lock:
+            session.last_access_at = time.time()
             session.running = False
         return {"sid": sid, "status": "paused"}
 
@@ -215,6 +228,7 @@ class CityFlowAdapter:
             return self.real_engine.stop_session(sid, owner_id)
         session = self._mock_session(sid, owner_id)
         with session.lock:
+            session.last_access_at = time.time()
             session.running = False
             session.stopped = True
         with self.sessions_lock:
@@ -243,6 +257,7 @@ class CityFlowAdapter:
                 message=f"simulation session not found: {sid}",
                 retryable=False,
             )
+        self.sessions[sid].last_access_at = time.time()
 
         result = {
             "sid": sid,
@@ -332,6 +347,48 @@ class CityFlowAdapter:
             return self.real_engine.active_session_count()
         with self.sessions_lock:
             return len(self.sessions)
+
+    def cleanup_expired_sessions(self) -> int:
+        released = 0
+        if self.real_engine is not None:
+            released += self.real_engine.cleanup_expired_sessions()
+        now = time.time()
+        with self.sessions_lock:
+            expired_sids = [
+                sid for sid, session in self.sessions.items()
+                if self._mock_session_expired(session, now)
+            ]
+            for sid in expired_sids:
+                self.sessions.pop(sid, None)
+                released += 1
+        return released
+
+    def _cleanup_loop(self) -> None:
+        while True:
+            time.sleep(SESSION_CLEANUP_INTERVAL_SECONDS)
+            try:
+                self.cleanup_expired_sessions()
+            except Exception as ex:
+                print(f"cityflow session cleanup failed: {ex}", flush=True)
+
+    def _mock_session_expired(self, session: SimulationSession, now: float) -> bool:
+        if session.stopped:
+            return True
+        if SESSION_MAX_LIFETIME_SECONDS > 0 and now - session.created_at >= SESSION_MAX_LIFETIME_SECONDS:
+            return True
+        if (
+                SESSION_ABANDONED_TTL_SECONDS > 0
+                and session.running
+                and now - session.last_access_at >= SESSION_ABANDONED_TTL_SECONDS
+        ):
+            return True
+        if (
+                SESSION_IDLE_TTL_SECONDS > 0
+                and not session.running
+                and now - session.last_access_at >= SESSION_IDLE_TTL_SECONDS
+        ):
+            return True
+        return False
 
     def _validate_decisions_payload(self, sid: str, payload: JsonDict) -> list[JsonDict]:
         decisions = payload.get("decisions", [])

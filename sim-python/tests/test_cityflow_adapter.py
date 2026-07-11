@@ -126,6 +126,39 @@ class CityFlowAdapterTest(unittest.TestCase):
         self.assertEqual(1, adapter.next_frame(bob["sid"], owner_id="bob")["seq"])
         self.assertEqual(2, adapter.health()["activeSessions"])
 
+    def test_create_simulation_does_not_reject_by_session_count(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+
+        created = [adapter.create_simulation("jinan_3x4", 1.0) for _ in range(12)]
+
+        self.assertEqual(12, len({session["sid"] for session in created}))
+        self.assertEqual(12, adapter.health()["activeSessions"])
+
+    def test_cleanup_releases_expired_idle_mock_session(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        created = adapter.create_simulation("jinan_3x4", 1.0)
+        session = adapter._mock_session(created["sid"])
+        session.running = False
+        session.created_at = 0.0
+        session.last_access_at = 0.0
+
+        released = adapter.cleanup_expired_sessions()
+
+        self.assertEqual(1, released)
+        self.assertEqual(0, adapter.health()["activeSessions"])
+
+    def test_cleanup_releases_abandoned_running_mock_session(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        created = adapter.create_simulation("jinan_3x4", 1.0)
+        session = adapter._mock_session(created["sid"])
+        session.running = True
+        session.last_access_at = 0.0
+
+        released = adapter.cleanup_expired_sessions()
+
+        self.assertEqual(1, released)
+        self.assertEqual(0, adapter.health()["activeSessions"])
+
     def test_stop_releases_mock_session(self):
         adapter = CityFlowAdapter(DATA_DIR)
         session = adapter.create_simulation("jinan_3x4", 1.0)
