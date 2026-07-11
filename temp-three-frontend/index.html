@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -32,15 +32,47 @@
             <option value="1">1x</option>
             <option value="5">5x</option>
             <option value="10">10x</option>
-            <option value="20" selected>20x</option>
-            <option value="30">30x</option>
-            <option value="50">50x</option>
+            <option value="10" selected>10x</option>
+            <option value="20">20x</option>
           </select>
           <button id="recreateButton" type="button">切换</button>
         </div>
         <div class="controls" aria-label="simulation controls">
           <button id="toggleRunButton" type="button" disabled>启动</button>
           <button id="stopButton" type="button" disabled>停止</button>
+        </div>
+
+        <div class="ev-panel" id="evPanel" aria-label="EV dispatch">
+          <div class="ev-panel-header" id="evPanelToggle">
+            <span>🚨 EV 应急调度</span>
+            <span class="ev-toggle-icon" id="evToggleIcon">▼</span>
+          </div>
+          <div class="ev-panel-body" id="evPanelBody">
+            <div class="ev-form-row">
+              <label for="evStartX">起点 X</label><input id="evStartX" type="number" value="100" step="1">
+              <label for="evStartY">起点 Y</label><input id="evStartY" type="number" value="700" step="1">
+            </div>
+            <div class="ev-form-row">
+              <label for="evEndX">终点 X</label><input id="evEndX" type="number" value="800" step="1">
+              <label for="evEndY">终点 Y</label><input id="evEndY" type="number" value="700" step="1">
+            </div>
+            <div class="ev-form-row">
+              <label for="evId">车辆 ID</label><input id="evId" type="text" value="ev_001">
+              <label for="evType">类型</label>
+              <select id="evType">
+                <option value="fire_truck">消防车</option>
+                <option value="ambulance" selected>救护车</option>
+                <option value="police">警车</option>
+                <option value="convoy">车队</option>
+              </select>
+            </div>
+            <div class="ev-form-row">
+              <label for="evPriority">优先级</label><input id="evPriority" type="number" value="1" min="1" max="5" step="1">
+              <label for="evSpeed">最高速度</label><input id="evSpeed" type="number" value="20" min="1" max="50" step="1">
+            </div>
+            <button id="evDispatchButton" type="button">🚀 调度应急车</button>
+            <div class="ev-status" id="evStatusDisplay"></div>
+          </div>
         </div>
         <div class="metrics">
           <div><span>累计发车</span><strong id="scheduledDepartureCount">0</strong></div>

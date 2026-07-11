@@ -1,4 +1,4 @@
-* {
+﻿* {
   box-sizing: border-box;
 }
 
@@ -332,4 +332,131 @@ body {
     right: 18px;
     flex-wrap: wrap;
   }
+}
+
+/* ---- EV Dispatch Panel ---- */
+.ev-panel {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  border-radius: 8px;
+  pointer-events: auto;
+  min-width: 260px;
+}
+.ev-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 700;
+  font-size: 14px;
+  border-radius: 8px;
+}
+.ev-panel-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.ev-panel-header.collapsed {
+  border-radius: 8px;
+}
+.ev-toggle-icon {
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+.ev-toggle-icon.collapsed {
+  transform: rotate(-90deg);
+}
+.ev-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 14px 12px 14px;
+}
+.ev-panel-body.collapsed {
+  display: none;
+}
+.ev-form-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ev-form-row label {
+  color: #aab8c5;
+  font-size: 12px;
+  white-space: nowrap;
+  min-width: 42px;
+}
+.ev-form-row input {
+  width: 68px;
+  height: 32px;
+  border: 1px solid rgba(200, 216, 230, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #edf3f8;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 6px;
+}
+.ev-form-row input:focus,
+.ev-form-row select:focus {
+  border-color: rgba(255, 77, 90, 0.55);
+  outline: none;
+}
+.ev-form-row select {
+  height: 32px;
+  border: 1px solid rgba(200, 216, 230, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #edf3f8;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 6px;
+}
+.ev-form-row select option {
+  background: #151b21;
+  color: #edf3f8;
+}
+.ev-panel-body button {
+  height: 36px;
+  border: 1px solid rgba(255, 77, 90, 0.45);
+  border-radius: 7px;
+  background: rgba(255, 77, 90, 0.16);
+  color: #ff707a;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.ev-panel-body button:hover:not(:disabled) {
+  background: rgba(255, 77, 90, 0.28);
+  border-color: rgba(255, 77, 90, 0.65);
+}
+.ev-panel-body button:disabled {
+  color: #697987;
+  border-color: rgba(200, 216, 230, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: not-allowed;
+}
+.ev-panel-body button.dispatching {
+  animation: evPulse 1.2s infinite;
+}
+@keyframes evPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.ev-status {
+  color: #33d17a;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 18px;
+  word-break: break-all;
+}
+.ev-status.error {
+  color: #ff4d5a;
+}
+.ev-status.loading {
+  color: #ffb020;
 }

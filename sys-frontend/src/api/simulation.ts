@@ -4,6 +4,8 @@
 import type {
   CreateSimulationRequest,
   CreateSimulationResponse,
+  DispatchRequest,
+  DispatchResponse,
   SimRoadnetResponse,
 } from '@/types/traffic'
 
@@ -79,4 +81,19 @@ export function pauseSimulation(sid: string): Promise<void> {
 /** 停止仿真 */
 export function stopSimulation(sid: string): Promise<void> {
   return request(`/api/v1/simulations/${sid}/stop`, { method: 'POST', body: '{}' })
+}
+
+// ================================================================
+// 应急调度
+// ================================================================
+
+/** 调度应急车辆进入仿真 */
+export function dispatchEmergency(
+  sid: string,
+  params: DispatchRequest,
+): Promise<DispatchResponse> {
+  return request(`/api/v1/simulations/${sid}/dispatch`, {
+    method: 'POST',
+    body: JSON.stringify(params),
+  })
 }

@@ -45,6 +45,19 @@ const els = {
   throughput: document.querySelector('#throughput'),
   toggleRunButton: document.querySelector('#toggleRunButton'),
   stopButton: document.querySelector('#stopButton'),
+  evDispatchButton: document.querySelector('#evDispatchButton'),
+  evStartX: document.querySelector('#evStartX'),
+  evStartY: document.querySelector('#evStartY'),
+  evEndX: document.querySelector('#evEndX'),
+  evEndY: document.querySelector('#evEndY'),
+  evIdInput: document.querySelector('#evId'),
+  evType: document.querySelector('#evType'),
+  evPriority: document.querySelector('#evPriority'),
+  evSpeed: document.querySelector('#evSpeed'),
+  evStatusDisplay: document.querySelector('#evStatusDisplay'),
+  evPanelToggle: document.querySelector('#evPanelToggle'),
+  evPanelBody: document.querySelector('#evPanelBody'),
+  evToggleIcon: document.querySelector('#evToggleIcon'),
 };
 
 const renderer = new THREE.WebGLRenderer({
@@ -87,6 +100,8 @@ const vehicleGroup = new THREE.Group();
 const signalGroup = new THREE.Group();
 scene.add(root);
 root.add(roadGroup, intersectionGroup, signalGroup, vehicleGroup);
+const evRouteGroup = new THREE.Group();
+root.add(evRouteGroup);
 
 const ambient = new THREE.AmbientLight(0xffffff, 0.72);
 const directional = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -114,6 +129,8 @@ let simulationState = 'booting';
 let controlBusy = false;
 let activeControllerType = 'traffic-r';
 let latestSignals = [];
+let evDispatchMap = {};       // evId -> {route, routeRoads, evType, priority, status}
+let evRouteLines = [];
 
 const controllerLabels = {
   'traffic-r': 'RL',
@@ -195,6 +212,150 @@ async function apiFetch(path, options = {}) {
     throw new Error(json?.message || `${response.status} ${response.statusText}`);
   }
   return unwrapApiResponse(json);
+}
+
+
+// ---- EV Dispatch ----
+async function dispatchEV() {
+  if (!sid || simulationState === 'finished') {
+    setEvStatus('请先启动仿真', 'error');
+    return;
+  }
+  els.evDispatchButton.disabled = true;
+  els.evDispatchButton.textContent = '调度中...';
+  els.evDispatchButton.classList.add('dispatching');
+  setEvStatus('正在调度...', 'loading');
+
+  try {
+    const body = {
+      startCoord: { x: Number(els.evStartX.value), y: Number(els.evStartY.value) },
+      endCoord:   { x: Number(els.evEndX.value),   y: Number(els.evEndY.value) },
+      evId:       els.evIdInput.value.trim() || 'ev_001',
+      evType:     els.evType.value,
+      priority:   Number(els.evPriority.value) || 1,
+      maxSpeed:   Number(els.evSpeed.value) || 20.0,
+    };
+    const data = await apiFetch(`/api/v1/simulations/${sid}/dispatch`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    evDispatchMap[data.evId] = {
+      cfVehicleId: data.cfVehicleId || '',
+      route: data.route || [],
+      routeRoads: data.routeRoads || [],
+      evType: data.evType,
+      priority: data.priority,
+      status: 'dispatched',
+      estimatedTravelTime: data.estimatedTravelTime,
+    };
+    highlightEvRoute(data.routeRoads || []);
+    setEvStatus(`已调度: ${data.evId} | ${data.evType} | 路线 ${(data.route||[]).length} 路口 | 预估 ${(data.estimatedTravelTime||0).toFixed(1)}s`, 'ok');
+  } catch (error) {
+    console.error(error);
+    setEvStatus(`调度失败: ${error.message}`, 'error');
+  } finally {
+    els.evDispatchButton.disabled = false;
+    els.evDispatchButton.textContent = '🚀 调度应急车';
+    els.evDispatchButton.classList.remove('dispatching');
+  }
+}
+
+function highlightEvRoute(routeRoads) {
+  clearEvRoutes();
+  if (!routeRoads.length || !roadnet) return;
+
+  routeRoads.forEach((roadId) => {
+    const road = roadnet.roads.find((r) => r.id === roadId);
+    if (!road || !road.points || road.points.length < 2) return;
+
+    const pts3d = road.points.map((p) => worldPoint(p));
+    const geometry = new THREE.BufferGeometry().setFromPoints(pts3d);
+    geometry.translate(0, 0.6, 0);
+    const material = new THREE.LineBasicMaterial({
+      color: 0x00ff88,
+      linewidth: 1,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const line = new THREE.Line(geometry, material);
+    line.userData.evRoute = true;
+    evRouteGroup.add(line);
+
+    // Glow tube
+    const curve = new THREE.CatmullRomCurve3(pts3d);
+    const tubeGeo = new THREE.TubeGeometry(curve, 32, 1.8, 8, false);
+    const tubeMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff88,
+      transparent: true,
+      opacity: 0.22,
+    });
+    const tube = new THREE.Mesh(tubeGeo, tubeMat);
+    tube.position.y = 0.6;
+    tube.userData.evRoute = true;
+    evRouteGroup.add(tube);
+  });
+}
+
+function clearEvRoutes() {
+  evRouteGroup.traverse((child) => {
+    child.geometry?.dispose?.();
+    child.material?.dispose?.();
+  });
+  while (evRouteGroup.children.length > 0) {
+    evRouteGroup.children.pop();
+  }
+}
+
+function updateEvHighlight(evStatusList, vehicles = []) {
+  const vehicleById = new Map();
+  if (vehicles) {
+    vehicles.forEach(v => vehicleById.set(v.id, v));
+  }
+  if (!evStatusList || !evStatusList.length) return;
+  const now = Date.now();
+  const COMPLETED_SHOW_MS = 5000; // show completed for 5s then auto-remove
+  evStatusList.forEach((es) => {
+    const ev = evDispatchMap[es.evId];
+    if (ev) {
+      if (es.completed && ev.status !== 'completed') {
+        ev.completedAt = now; // first time completed, start countdown
+      }
+      ev.status = es.completed ? 'completed' : 'active';
+      ev.passedCount = es.passedCount;
+      ev.totalCount = es.totalCount;
+      ev.elapsedTime = es.elapsedTime;
+    }
+  });
+  // Remove completed EVs after countdown
+  for (const [evId, ev] of Object.entries(evDispatchMap)) {
+    if (ev.status === 'completed' && ev.completedAt && (now - ev.completedAt) > COMPLETED_SHOW_MS) {
+      delete evDispatchMap[evId];
+    }
+  }
+  const activeEvs = evStatusList.filter((es) => !es.completed);
+  if (activeEvs.length === 0) {
+    evRouteGroup.children.forEach((c) => {
+      c.material && c.material.opacity !== undefined && (c.material.opacity = 0.15);
+    });
+  }
+  const lines = [];
+  if (Object.keys(evDispatchMap).length === 0) return;
+  for (const [evId, ev] of Object.entries(evDispatchMap)) {
+    const cfVeh = ev.cfVehicleId ? vehicleById.get(ev.cfVehicleId) : null;
+    const statusIcon = ev.status === 'completed' ? '[OK]' : ev.status === 'active' ? '[>>]' : '[--]';
+    // progress removed
+    const speedText = cfVeh ? ' | ' + cfVeh.speed.toFixed(1) + ' m/s' : '';
+    const posText = cfVeh ? ' | road:' + cfVeh.roadId : '';
+    lines.push(statusIcon + ' ' + evId + ' [' + ev.evType + ']' + speedText + posText + ' | ' + (ev.elapsedTime||0).toFixed(0) + 's');
+  }
+  if (lines.length) {
+    setEvStatus(lines.join('<br>'), 'ok');
+  }
+}
+
+function setEvStatus(text, mode) {
+  els.evStatusDisplay.innerHTML = text;
+  els.evStatusDisplay.className = 'ev-status' + (mode === 'error' ? ' error' : mode === 'loading' ? ' loading' : '');
 }
 
 function clearGroup(group) {
@@ -652,14 +813,14 @@ function drawTurnHint(roadLink) {
   signalGroup.add(group);
 }
 
-function createVehicleMesh(vehicle) {
+function createVehicleMesh(vehicle, isEv = false) {
   const group = new THREE.Group();
   const bodyGeometry = new THREE.BoxGeometry(VEHICLE_WIDTH, VEHICLE_HEIGHT, VEHICLE_LENGTH);
   const material = new THREE.MeshStandardMaterial({
-    color: 0x4cc9ff,
+    color: isEv ? 0xff2222 : 0x4cc9ff,
     roughness: 0.42,
     metalness: 0.18,
-    emissive: 0x0b4c62,
+    emissive: isEv ? 0x440000 : 0x0b4c62,
     emissiveIntensity: 0.85,
   });
   const body = new THREE.Mesh(bodyGeometry, material);
@@ -677,6 +838,19 @@ function createVehicleMesh(vehicle) {
   );
   marker.position.set(0, 7, -5.5);
   marker.rotation.x = Math.PI / 2;
+  if (isEv) {
+    const evMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(2.5, 8, 8),
+      new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.9,
+      }),
+    );
+    evMarker.position.set(0, 12, 0);
+    evMarker.userData.evBeacon = true;
+    group.add(evMarker);
+  }
   group.add(marker);
 
   group.position.copy(vehiclePosition(vehicle));
@@ -732,6 +906,11 @@ function closestPointOnSegment(point, start, end) {
 }
 
 function updateVehicles(vehicles = []) {
+  const evVehicleIds = new Set(
+    Object.values(evDispatchMap)
+      .filter(ev => ev.cfVehicleId)
+      .map(ev => ev.cfVehicleId)
+  );
   const now = performance.now();
   const activeIds = new Set();
   const lerpMs = THREE.MathUtils.clamp(
@@ -746,7 +925,8 @@ function updateVehicles(vehicles = []) {
     let entry = vehiclesById.get(vehicle.id);
 
     if (!entry) {
-      const mesh = createVehicleMesh(vehicle);
+      const isEv = evVehicleIds.has(vehicle.id);
+      const mesh = createVehicleMesh(vehicle, isEv);
       entry = {
         mesh,
         from: target.clone(),
@@ -834,6 +1014,7 @@ function handleFrame(message) {
     updateVehicles(message.data?.vehicles);
   }
   updateMetrics(message.data?.metrics);
+  updateEvHighlight(message.data?.evStatus, message.data?.vehicles);
   const firstSignal = message.data?.signals?.[0];
   const phaseText = firstSignal ? ` | phase ${firstSignal.phaseIndex}${firstSignal.phaseCode ? ` ${firstSignal.phaseCode}` : ''}` : '';
   els.statusText.title = `收到 ${message.data?.vehicles?.length ?? 0} 辆车，${message.data?.signals?.length ?? 0} 个信号灯状态`;
@@ -920,6 +1101,8 @@ function resetSceneState() {
   phaseByIntersectionAndIndex.clear();
   roadLinkByIntersectionAndIndex.clear();
   signalApproachesByIntersection.clear();
+  clearEvRoutes();
+  evDispatchMap = {};
 }
 
 async function recreateSimulation() {
@@ -938,7 +1121,8 @@ async function recreateSimulation() {
       sid = null;
       resetRuntimeState();
     }
-    setSimulationState('booting');
+    
+setSimulationState('booting');
     await createSimulation();
     await connectWebSocket();
   } catch (error) {
@@ -1065,6 +1249,14 @@ function animate() {
     entry.mesh.rotation.y = lerpAngle(entry.fromRotation ?? entry.mesh.rotation.y, entry.toRotation ?? entry.mesh.rotation.y, eased);
   }
 
+  vehicleGroup.traverse((child) => {
+    if (child.isMesh && child.userData.evBeacon) {
+      const pulse = 0.65 + Math.abs(Math.sin(now / 180 + child.id)) * 0.35;
+      child.scale.setScalar(pulse);
+      child.material.opacity = 0.5 + Math.abs(Math.sin(now / 180 + child.id)) * 0.5;
+    }
+  });
+
   signalGroup.traverse((child) => {
     if (child.isMesh && child.userData.signalLamp) {
       const pulse = 1 + Math.sin(now / 220 + child.id) * 0.035;
@@ -1114,6 +1306,13 @@ window.addEventListener('keydown', (event) => {
     event.preventDefault();
     toggleSimulation();
   }
+});
+
+els.evDispatchButton.addEventListener('click', dispatchEV);
+els.evPanelToggle.addEventListener('click', () => {
+  const collapsed = els.evPanelBody.classList.toggle('collapsed');
+  els.evPanelToggle.classList.toggle('collapsed', collapsed);
+  els.evToggleIcon.classList.toggle('collapsed', collapsed);
 });
 setSimulationState('booting');
 animate();
