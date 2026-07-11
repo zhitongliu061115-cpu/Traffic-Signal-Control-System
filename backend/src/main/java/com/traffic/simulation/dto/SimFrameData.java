@@ -5,6 +5,7 @@ import java.util.Map;
 
 public record SimFrameData(
         double simTime,
+        String status,
         List<VehicleStateDto> vehicles,
         List<RoadStateDto> roads,
         Map<String, IntersectionLaneStateDto> laneStates,

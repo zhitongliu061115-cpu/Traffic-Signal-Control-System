@@ -13,7 +13,7 @@
 | Python 服务入口 | `/opt/Traffic-Signal-Control-System/sim-python/app/server.py` |
 | Conda 环境 | `cityflow39` |
 | Spring Boot 默认 CityFlow 地址 | `http://39.105.75.87:9000` |
-| Spring Boot 默认 client id | `hcj` |
+| 会话标识 | Python 创建并返回的唯一 `sid` |
 | 当前团队 token | `jLEc-o3L16migUKQ7f_OlH94qsjEstFf` |
 
 当前云端目录应至少包含：
@@ -83,7 +83,8 @@ conda activate cityflow39
 ```bash
 SIM_ENGINE_MODE=cityflow \
 CITYFLOW_API_TOKEN="jLEc-o3L16migUKQ7f_OlH94qsjEstFf" \
-SIM_MAX_ACTIVE_SESSIONS=4 \
+  SIM_MAX_ACTIVE_SESSIONS=4 \
+  SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600 \
 SIM_MAX_SPEED=10 \
 SIM_VISIBLE_VEHICLE_LIMIT=300 \
 SIM_MAX_REQUEST_BYTES=1048576 \
@@ -97,6 +98,9 @@ python app/server.py --host 0.0.0.0 --port 9000
 - `--host` 必须是 `0.0.0.0`，不能是 `127.0.0.1`，否则公网无法访问。
 - `CITYFLOW_API_TOKEN` 必须和本地 Spring Boot 配置一致。
 - `SIM_MAX_ACTIVE_SESSIONS=4` 是为 4 核 8G 服务器设置的资源上限。
+- `SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600` 表示最后发车后最多再等待 600 秒仿真时间排空路网，避免死锁车辆永久占用 Engine。
+- 创建新仿真不会清理已有仿真；每个 `sid` 持有独立 CityFlow Engine。
+- 调用 stop 或场景自然结束后，服务会释放 worker、Engine、应急状态和临时配置目录，`/health.activeSessions` 随之减少。
 
 ## 4. 云端本机验证
 
@@ -215,7 +219,7 @@ cd D:\Github\Traffic-Signal-Control-System\backend
 mvn spring-boot:run
 ```
 
-如果某个成员要使用自己的 client id，可以在启动前覆盖：
+`CITYFLOW_CLIENT_ID` 当前仅为兼容保留，可以继续配置，但不会用于会话隔离或权限判断：
 
 ```powershell
 $env:CITYFLOW_CLIENT_ID="your-name"
@@ -242,6 +246,7 @@ WorkingDirectory=/opt/Traffic-Signal-Control-System/sim-python
 Environment=SIM_ENGINE_MODE=cityflow
 Environment=CITYFLOW_API_TOKEN=jLEc-o3L16migUKQ7f_OlH94qsjEstFf
 Environment=SIM_MAX_ACTIVE_SESSIONS=4
+Environment=SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600
 Environment=SIM_MAX_SPEED=10
 Environment=SIM_VISIBLE_VEHICLE_LIMIT=300
 Environment=SIM_MAX_REQUEST_BYTES=1048576

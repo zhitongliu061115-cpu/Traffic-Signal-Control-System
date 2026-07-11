@@ -633,6 +633,9 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationMetrics.value = frame.metrics ?? null
     simulationFrameCount.value++
     simulationLastFrameAt.value = Date.now()
+    if (frame.status === 'finished') {
+      simulationStatus.value = 'finished'
+    }
 
     // 用仿真数据同步刷新前端路口/道路/车辆状态
     applySimFrameToTrafficData(frame)

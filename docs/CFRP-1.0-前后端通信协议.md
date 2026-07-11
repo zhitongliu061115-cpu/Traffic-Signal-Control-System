@@ -379,6 +379,7 @@ wss://api.example.com/ws/v1/simulations/run_001
   "simTime": 120.0,
   "sentAt": "2026-07-08T10:32:00+08:00",
   "data": {
+    "status": "running",
     "vehicles": [
       {
         "id": "vehicle_001",
@@ -461,6 +462,7 @@ wss://api.example.com/ws/v1/simulations/run_001
 
 | 字段 | 类型 | 必需 | 含义 | 示例 |
 |---|---|---:|---|---|
+| `status` | `"running" \| "finished"` | 是 | CityFlow 会话状态。`finished` 表示这是自然结束后的最后一帧，后端和前端应停止等待后续帧。 | `"running"` |
 | `vehicles` | `VehicleState[]` | 是 | 当前帧车辆状态。前端用它更新车辆动画。 | `[{ "id": "vehicle_001", "x": 120.4, "y": 300.8 }]` |
 | `roads` | `RoadState[]` | 是 | 当前道路状态。前端用它更新道路颜色和 tooltip。 | `[{ "id": "road_1_1_0", "level": "slow" }]` |
 | `laneStates` | `Record<string, IntersectionLaneState>` | 否 | 路口 movement lane 级状态，主要供 Traffic-R 输入和调试展示。 | `{ "intersection_1_1": { "lanes": { "WT": {...} } } }` |
@@ -917,6 +919,7 @@ export interface Phase {
 }
 
 export interface SimFrameData {
+  status: 'running' | 'finished';
   vehicles: VehicleState[];
   roads: RoadState[];
   laneStates?: Record<string, IntersectionLaneState>;

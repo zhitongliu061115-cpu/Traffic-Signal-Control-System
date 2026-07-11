@@ -302,6 +302,7 @@ export interface SimMetrics {
 /** 单帧仿真数据（后端 SimFrameData） */
 export interface SimFrameData {
   simTime: number
+  status?: 'running' | 'finished'
   vehicles: SimVehicleState[]
   roads: SimRoadState[]
   intersections: SimIntersectionState[]

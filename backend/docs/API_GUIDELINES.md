@@ -87,6 +87,8 @@ Content-Type: application/json
 | `traffic-r` | 云端 Traffic-R / RL 控制器入口 |
 | `rl` | 兼容别名，后端会归一化为 `traffic-r` |
 
+每次创建都会生成独立 `sid`，不会停止或覆盖已有会话。Python 服务允许多个会话并行运行，但活跃会话总数仍受 `SIM_MAX_ACTIVE_SESSIONS` 限制。
+
 响应：
 
 ```json
@@ -114,7 +116,9 @@ POST /api/v1/simulations/{sid}/stop
 
 - `start`：Python 后台 worker 开始连续推进 CityFlow，并持续刷新缓存快照。
 - `pause`：Python 暂停后台推进，Spring Boot 暂停推送新帧。
-- `stop`：Python 停止并销毁该会话，Spring Boot 将会话置为结束状态。
+- `stop`：Python 停止 worker 并释放该会话持有的 CityFlow Engine、应急任务状态和临时配置，Spring Boot 同步移除运行态会话。
+
+当 flow 中最后一批车辆已经发出且路网上活跃车辆数归零时，Python 会自动结束并释放会话。若严重拥堵导致车辆始终无法清空，超过 `SIM_SESSION_DRAIN_TIMEOUT_SECONDS`（默认 600 秒仿真时间）后也会强制结束。最后一帧的 `data.status` 为 `finished`，Spring Boot 收到后停止继续轮询该 `sid`。
 
 ### 3.4 数据库连接状态
 
@@ -183,6 +187,7 @@ ws://localhost:8080/ws/v1/simulations/{sid}
   "simTime": 1.0,
   "sentAt": "2026-07-08T20:00:00+08:00",
   "data": {
+    "status": "running",
     "vehicles": [],
     "roads": [],
     "laneStates": {
@@ -222,8 +227,15 @@ X-CityFlow-Client: <client-id>
 说明：
 
 - `X-CityFlow-Token` 用于公网访问保护，必须与 Python 服务环境变量 `CITYFLOW_API_TOKEN` 一致。
-- `X-CityFlow-Client` 用于团队成员会话隔离。同一个 client 创建新仿真时会清理自己旧会话，不影响其他 client。
+- `X-CityFlow-Client` 仅作为兼容保留字段，不再参与会话归属判断。所有操作都以不可预测的 `sid` 定位会话，创建新会话不会清理其他会话。
 - 当前 Roadnet / Frame DTO 只保留 CityFlow 原始 `id`，没有 `cityflowId` 字段；前端应直接使用 `id` 与 CityFlow 路网对象对应。
+
+`sim.frame.data.status` 当前取值：
+
+| 值 | 含义 |
+|---|---|
+| `running` | 会话仍在运行，可继续读取快照和下发策略 |
+| `finished` | 场景已自然结束；这是最后一帧，Python 已释放 CityFlow Engine |
 
 ### 健康检查
 

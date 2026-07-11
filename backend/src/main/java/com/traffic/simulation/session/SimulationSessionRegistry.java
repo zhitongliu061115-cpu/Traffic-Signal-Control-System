@@ -31,6 +31,10 @@ public class SimulationSessionRegistry {
         return List.copyOf(sessions.values());
     }
 
+    public void remove(String sid) {
+        sessions.remove(sid);
+    }
+
     public void clear() {
         sessions.clear();
     }

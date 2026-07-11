@@ -119,7 +119,9 @@ curl http://127.0.0.1:9000/health
 - `cityflow.base-url` 必须指向云端 Python 服务真实地址，不能盲目使用 `localhost`。
 - 前端仍然只连接 Spring Boot，不直接连接 Python CityFlow 服务。
 - CityFlow 如果开放公网端口，必须启用 `CITYFLOW_API_TOKEN`，Spring Boot 通过 `X-CityFlow-Token` 访问。
-- 多人开发时，每个成员应配置不同 `CITYFLOW_CLIENT_ID`，避免同一 client 下创建新仿真时清理他人的旧会话。
+- 多人开发时会话统一按 `sid` 区分，`CITYFLOW_CLIENT_ID` 仅为兼容保留，不再影响创建、访问和清理行为。
+- 服务支持多个会话并行运行，活跃数量由 `SIM_MAX_ACTIVE_SESSIONS` 控制；显式停止或场景自然结束后会自动释放对应 CityFlow Engine。
+- `SIM_SESSION_DRAIN_TIMEOUT_SECONDS` 默认 600；最后发车后即使路网因死锁无法清空，到达该仿真时间宽限期也会强制释放会话。
 - AutoDL Traffic-R 不需要长期运行；只有选择 `traffic-r` / `rl` 策略做模型测试时才启动。
 
 ## 3. 本地通过隧道接入云端 Traffic-R

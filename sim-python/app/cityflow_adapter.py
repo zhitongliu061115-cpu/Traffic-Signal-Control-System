@@ -4,6 +4,7 @@ import json
 import math
 import uuid
 from pathlib import Path
+from threading import RLock
 
 from app.config import (
     AUTO_SIGNAL_CYCLE,
@@ -12,6 +13,7 @@ from app.config import (
     ENGINE_MODE,
     MAX_ACTIVE_SESSIONS,
     MAX_SPEED,
+    SESSION_DRAIN_TIMEOUT_SECONDS,
     SERVICE_VERSION,
 )
 from app.engine import RealCityFlowEngine
@@ -35,6 +37,7 @@ class CityFlowAdapter:
         self.scene_registry = SceneRegistry(data_dir)
         self.real_engine = RealCityFlowEngine(self.scene_registry) if self.engine_mode == "cityflow" else None
         self.sessions: dict[str, SimulationSession] = {}
+        self.sessions_lock = RLock()
         self.parsers: dict[str, RoadnetParser] = {}
         self.flows: dict[str, list[JsonDict]] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
@@ -51,6 +54,7 @@ class CityFlowAdapter:
             "autoSignalCycle": AUTO_SIGNAL_CYCLE,
             "maxActiveSessions": MAX_ACTIVE_SESSIONS,
             "maxSpeed": MAX_SPEED,
+            "sessionDrainTimeoutSeconds": SESSION_DRAIN_TIMEOUT_SECONDS,
             "sceneIds": self.scene_registry.list_scene_ids(),
             "activeSessions": self._active_session_count(),
         }
@@ -65,30 +69,28 @@ class CityFlowAdapter:
             warmup_seconds: float | None = None,
             owner_id: str = "default",
     ) -> JsonDict:
-        self._destroy_mock_sessions_for_owner(owner_id)
         self._load_scene(scene_id)
         normalized_speed = self._normalize_speed(speed)
         normalized_warmup_seconds = self._normalize_warmup_seconds(warmup_seconds)
         if self.real_engine is not None:
             return self.real_engine.create_session(scene_id, normalized_speed, normalized_warmup_seconds, owner_id)
 
-        if len(self.sessions) >= MAX_ACTIVE_SESSIONS:
-            raise ApiError(
-                status=429,
-                code="SESSION_LIMIT_EXCEEDED",
-                message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
-                retryable=True,
+        with self.sessions_lock:
+            if len(self.sessions) >= MAX_ACTIVE_SESSIONS:
+                raise ApiError(
+                    status=429,
+                    code="SESSION_LIMIT_EXCEEDED",
+                    message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
+                    retryable=True,
+                )
+            sid = f"run_{uuid.uuid4().hex[:16]}"
+            session = SimulationSession(
+                sid=sid,
+                scene_id=scene_id,
+                speed=normalized_speed,
+                engine_mode=self.engine_mode,
             )
-
-        sid = f"run_{uuid.uuid4().hex[:8]}"
-        session = SimulationSession(
-            sid=sid,
-            scene_id=scene_id,
-            speed=normalized_speed,
-            engine_mode=self.engine_mode,
-            owner_id=owner_id,
-        )
-        self.sessions[sid] = session
+            self.sessions[sid] = session
         return {
             "sid": sid,
             "sceneId": scene_id,
@@ -118,12 +120,14 @@ class CityFlowAdapter:
             signals = self._signal_states(session.scene_id, session.sim_time)
             metrics = self._metrics(vehicles, roads, flows, session.sim_time)
 
-            return {
+            status = "finished" if self._mock_simulation_complete(session, active_flows) else "running"
+            frame = {
                 "sid": session.sid,
                 "sceneId": session.scene_id,
                 "seq": session.seq,
                 "simTime": round(session.sim_time, 3),
                 "engineMode": session.engine_mode,
+                "status": status,
                 "vehicles": vehicles,
                 "roads": roads,
                 "laneStates": lane_states,
@@ -133,6 +137,12 @@ class CityFlowAdapter:
                 "evEvents": [],
                 "evStatus": [],
             }
+            if status == "finished":
+                session.running = False
+                session.stopped = True
+                with self.sessions_lock:
+                    self.sessions.pop(session.sid, None)
+            return frame
 
     def _session_roadnet(self, sid: str) -> JsonDict:
         """Get roadnet dict for a session (real engine only)."""
@@ -156,13 +166,22 @@ class CityFlowAdapter:
             session = self.real_engine._session(sid, owner_id)
             print(f'[dispatch] sid={sid} scene={self._session_scene(sid)}', flush=True)
             try:
-                result = self.real_engine.ev_service.dispatch(
-                    sid=sid,
-                    scene_id=session.scene_id,
-                    roadnet=self._session_roadnet(sid),
-                    engine=session.engine,
-                    params=params,
-                )
+                with session.engine_lock:
+                    if session.stopped:
+                        raise ApiError(
+                            status=409,
+                            code="SESSION_STOPPED",
+                            message=f"simulation session has already stopped: {sid}",
+                            retryable=False,
+                        )
+                    with self.real_engine.ev_service_lock:
+                        result = self.real_engine.ev_service.dispatch(
+                            sid=sid,
+                            scene_id=session.scene_id,
+                            roadnet=self._session_roadnet(sid),
+                            engine=session.engine,
+                            params=params,
+                        )
                 print(f'[dispatch] result={result}', flush=True)
                 return result
             except Exception as e:
@@ -198,6 +217,8 @@ class CityFlowAdapter:
         with session.lock:
             session.running = False
             session.stopped = True
+        with self.sessions_lock:
+            self.sessions.pop(sid, None)
         return {"sid": sid, "status": "stopped"}
 
     def apply_control_actions(self, sid: str, payload: JsonDict, owner_id: str = "default") -> JsonDict:
@@ -309,18 +330,8 @@ class CityFlowAdapter:
     def _active_session_count(self) -> int:
         if self.real_engine is not None:
             return self.real_engine.active_session_count()
-        return len(self.sessions)
-
-    def _destroy_mock_sessions_for_owner(self, owner_id: str) -> None:
-        sessions_to_destroy = [
-            session for session in self.sessions.values()
-            if session.owner_id == owner_id
-        ]
-        for session in sessions_to_destroy:
-            with session.lock:
-                session.running = False
-                session.stopped = True
-            self.sessions.pop(session.sid, None)
+        with self.sessions_lock:
+            return len(self.sessions)
 
     def _validate_decisions_payload(self, sid: str, payload: JsonDict) -> list[JsonDict]:
         decisions = payload.get("decisions", [])
@@ -371,22 +382,35 @@ class CityFlowAdapter:
         return valid_decisions
 
     def _mock_session(self, sid: str, owner_id: str = "default") -> SimulationSession:
-        if sid not in self.sessions:
+        with self.sessions_lock:
+            session = self.sessions.get(sid)
+        if session is None:
             raise ApiError(
                 status=404,
                 code="SESSION_NOT_FOUND",
                 message=f"simulation session not found: {sid}",
                 retryable=False,
             )
-        session = self.sessions[sid]
-        if session.owner_id != owner_id:
-            raise ApiError(
-                status=403,
-                code="SESSION_OWNER_MISMATCH",
-                message=f"simulation session does not belong to client: {owner_id}",
-                retryable=False,
-            )
         return session
+
+    def _mock_simulation_complete(
+            self,
+            session: SimulationSession,
+            active_flows: list[tuple[int, JsonDict]],
+    ) -> bool:
+        flows = self.flows[session.scene_id]
+        completion_time = max(
+            (
+                float(flow.get("startTime", 0.0))
+                + max(30.0, len(flow.get("route", [])) * 18.0)
+                for flow in flows
+            ),
+            default=0.0,
+        )
+        flow_end_time = self.scene_registry.get(session.scene_id).flow_end_time
+        return (
+            session.sim_time >= completion_time and not active_flows
+        ) or session.sim_time >= flow_end_time + SESSION_DRAIN_TIMEOUT_SECONDS
 
     def _applied_action(self, decision: JsonDict) -> JsonDict:
         phase_index = self._normalize_control_phase(decision)
