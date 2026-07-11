@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # ev_service.py - EV Priority Service Layer
 # =========================================
 # Full EV priority pipeline:
@@ -196,7 +196,7 @@ class EVPriorityService:
             ) from ex
 
         # Find the vehicle ID CityFlow assigned
-        cf_vehicle_id = push_result.strip() if isinstance(push_result, str) else ""
+        cf_vehicle_id = push_result.strip() if isinstance(push_result, str) and push_result.strip() else self._find_pushed_vehicle(engine, road_route[0], before_ids, sid)
 
         self.ev_sessions[sid][ev_id] = EVSession(
             ev_id=ev_id,
@@ -355,7 +355,15 @@ class EVPriorityService:
                     )
 
                     ta = detection["distance_to_stop"] / max(detection["speed"], 0.1)
-                    td = 30.0
+                    # LWR dynamic queue dissipation time (paper Eq 5-12)
+                    if pri_green:
+                        cycle_length = pc * 30.0
+                        t0_cycle = sim_time % cycle_length
+                        tg = (pri_green[0] - 1) * 30.0
+                        tr = pri_green[0] * 30.0
+                        td = self.lwr_model.compute_dissipation_time(tr, tg, t0_cycle)
+                    else:
+                        td = 30.0
 
                     decision, adjustment = self.strategy.decide(
                         ta, td, signal, sim_time, approach_dir, pri_green,
@@ -421,7 +429,11 @@ class EVPriorityService:
 
         # Clear overrides for intersections the EV has already passed
         for ev_id, ev in self.ev_sessions.get(sid, {}).items():
-            if ev.completed or not ev.cf_vehicle_id:
+            if ev.completed:
+                for iid in ev.route:
+                    self._active_overrides.get(sid, {}).pop(iid, None)
+                continue
+            if not ev.cf_vehicle_id:
                 continue
             try:
                 info = engine.get_vehicle_info(ev.cf_vehicle_id)
@@ -506,14 +518,22 @@ class EVPriorityService:
     # ================================================================
 
     def _find_pushed_vehicle(self, engine: Any, start_road: str,
-                             before_ids: set = None) -> str:
+                             before_ids: set = None, sid: str = "") -> str:
         """Find the CityFlow vehicle ID of the just-pushed EV."""
-        # Approach 1: set difference AND filter by start_road
+        # Collect already-assigned vehicle IDs to avoid cross-EV conflict
+        occupied = set()
+        if sid and sid in self.ev_sessions:
+            for ev in self.ev_sessions[sid].values():
+                if ev.cf_vehicle_id:
+                    occupied.add(ev.cf_vehicle_id)
+        # Approach 1: set difference AND filter by start_road, exclude occupied
         if before_ids is not None:
             try:
                 current = set(engine.get_vehicles())
                 new = current - before_ids
                 for vid in new:
+                    if str(vid) in occupied:
+                        continue
                     try:
                         info = engine.get_vehicle_info(str(vid))
                         if info and str(info.get('road', '')) == start_road:
@@ -527,6 +547,8 @@ class EVPriorityService:
             count = engine.get_vehicle_count()
             for i in range(count):
                 vid = engine.get_vehicle_id(i)
+                if str(vid) in occupied:
+                    continue
                 info = engine.get_vehicle_info(vid)
                 if info and str(info.get("road", "")) == start_road:
                     return str(vid)
