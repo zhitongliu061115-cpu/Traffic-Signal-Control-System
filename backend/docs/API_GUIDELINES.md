@@ -87,7 +87,7 @@ Content-Type: application/json
 | `traffic-r` | 云端 Traffic-R / RL 控制器入口 |
 | `rl` | 兼容别名，后端会归一化为 `traffic-r` |
 
-每次创建都会生成独立 `sid`，不会停止或覆盖已有会话。Python 服务允许多个会话并行运行，但活跃会话总数仍受 `SIM_MAX_ACTIVE_SESSIONS` 限制。
+每次创建都会生成独立 `sid`，不会停止或覆盖已有会话。Python 服务允许多个会话并行运行，新建会话不再因为旧会话数量达到 `SIM_MAX_ACTIVE_SESSIONS` 而返回 429；`SIM_MAX_ACTIVE_SESSIONS=0` 表示不设置创建数量上限。旧会话依赖 stop、自然结束、`SIM_SESSION_IDLE_TTL_SECONDS`、`SIM_SESSION_ABANDONED_TTL_SECONDS` 和 `SIM_SESSION_MAX_LIFETIME_SECONDS` 自动释放。其中 `SIM_SESSION_ABANDONED_TTL_SECONDS` 用于清理已经 running 但一段时间没有任何 `/frame`、`/actions`、`/pause`、`/stop` 等后端请求的遗弃会话。
 
 响应：
 

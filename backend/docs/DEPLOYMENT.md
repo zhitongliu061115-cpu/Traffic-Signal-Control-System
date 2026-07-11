@@ -120,7 +120,7 @@ curl http://127.0.0.1:9000/health
 - 前端仍然只连接 Spring Boot，不直接连接 Python CityFlow 服务。
 - CityFlow 如果开放公网端口，必须启用 `CITYFLOW_API_TOKEN`，Spring Boot 通过 `X-CityFlow-Token` 访问。
 - 多人开发时会话统一按 `sid` 区分，`CITYFLOW_CLIENT_ID` 仅为兼容保留，不再影响创建、访问和清理行为。
-- 服务支持多个会话并行运行，活跃数量由 `SIM_MAX_ACTIVE_SESSIONS` 控制；显式停止或场景自然结束后会自动释放对应 CityFlow Engine。
+- 服务支持多个会话并行运行，新建会话不再因旧会话数量达到 `SIM_MAX_ACTIVE_SESSIONS` 而被拒绝；`SIM_MAX_ACTIVE_SESSIONS=0` 表示不设置创建数量上限。显式停止、场景自然结束、idle TTL、abandoned TTL 或最大生存期到达后会自动释放对应 CityFlow Engine；abandoned TTL 专门用于清理 running 但长期没有后端请求的会话。
 - `SIM_SESSION_DRAIN_TIMEOUT_SECONDS` 默认 600；最后发车后即使路网因死锁无法清空，到达该仿真时间宽限期也会强制释放会话。
 - AutoDL Traffic-R 不需要长期运行；只有选择 `traffic-r` / `rl` 策略做模型测试时才启动。
 
@@ -209,6 +209,30 @@ Invoke-RestMethod `
 Traffic-R 在线批量推理当前测试平均约 7 秒，不能按 `cityflow.frame-poll-interval-ms=100` 每帧调用。后端策略调度必须按 `traffic-r.decision-interval-sec` 做低频决策，当前联调默认 10 秒仿真时间每个仿真会话最多调用一次 `/predict-batch`；推理完成后一次性下发所有路口决策。若连续 3 次无效、超时或请求失败，后端自动启用 Max-Pressure fallback，连续 3 次有效后恢复 RL。
 
 注意：`http://127.0.0.1:16008` 只适用于“本地 Windows 通过 SSH 隧道访问云端模型”的联调场景。后续如果 Spring Boot、Python CityFlow、Traffic-R 模型都部署在同一台云服务器上，不能继续使用 `16008` 隧道端口。
+
+### Agent LangChain4j / 百炼模型配置
+
+当前后端已完成 LangChain4j 第一阶段依赖与配置准备，但默认不启用 LangChain4j 编排：
+
+```yaml
+traffic:
+  agent:
+    langchain4j:
+      enabled: ${AGENT_LANGCHAIN4J_ENABLED:false}
+      base-url: ${DASHSCOPE_COMPATIBLE_BASE_URL:${BAILIAN_COMPATIBLE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
+      api-key: ${DASHSCOPE_API_KEY:${BAILIAN_API_KEY:}}
+      model-name: ${DASHSCOPE_MODEL:${BAILIAN_MODEL:qwen-plus}}
+      temperature: ${AGENT_MODEL_TEMPERATURE:0.2}
+      timeout-seconds: ${AGENT_MODEL_TIMEOUT_SECONDS:60}
+```
+
+部署注意：
+
+- 当前仍保留原有 `bailian.*` 配置和 `BailianAgentService`，LangChain4j 不会自动替换现有 Agent 聊天入口。
+- `AGENT_LANGCHAIN4J_ENABLED` 默认是 `false`，后续实现 `AgentOrchestratorService` 后再开启。
+- 不引入 `langchain4j-spring-boot-starter`，不要求升级 Spring Boot。
+- `DASHSCOPE_API_KEY` / `BAILIAN_API_KEY` 不应写入文档、日志或 Git；本地联调可以先写 `application.yml`，稳定后应改为环境变量或部署密钥。
+- LangChain4j 只负责模型编排和工具调用，实时交通状态仍必须通过后端数据库、CityFlow 和 Traffic-R 查询。
 
 ## 4. 后续同机部署方案
 

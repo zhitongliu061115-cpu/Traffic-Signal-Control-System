@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
+import time
 from typing import Any
 
 
@@ -15,6 +16,8 @@ class SimulationSession:
     engine_mode: str = "mock"
     running: bool = False
     stopped: bool = False
+    created_at: float = field(default_factory=time.time)
+    last_access_at: float = field(default_factory=time.time)
     latest_frame: dict[str, Any] | None = None
     active_vehicle_ids: set[str] = field(default_factory=set)
     lock: Lock = field(default_factory=Lock, repr=False)
