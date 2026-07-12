@@ -158,7 +158,6 @@ export function createVehicleLayer(
       cityFlowPoints: cfPts,
       flipped,
       totalLength: Math.max(1, polylineLength(cfPts)),
-      flipped,
     })
   }
 
@@ -197,10 +196,6 @@ export function createVehicleLayer(
         if (mapping.flipped) prog = 1 - prog
         // 映射到上海弯曲路径
         // 璁＄畻 CityFlow 鐩磋矾涓婄殑 progress
-        let prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
-        // 濡傛灉 CityFlow 閬撹矾涓庝笂娴烽亾璺柟鍚戠浉鍙嶏紝缈昏浆 progress
-        if (mapping.flipped) prog = 1 - prog
-        // 鏄犲皠鍒颁笂娴峰集鏇茶矾寰?
         const [lng, lat] = interpolateLngLat(mapping.shanghaiRoad.path!, prog)
         if (vi < pool.length) {
           pool[vi]!.setCenter([lng, lat] as unknown as AMap.LngLat)
