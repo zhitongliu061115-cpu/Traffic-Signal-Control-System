@@ -53,103 +53,6 @@ import type { ControlDecision, CreateSimulationResponse, DispatchResponse, Emerg
 
 type DataSourceStatus = 'loading' | 'database' | 'mock'
 
-export type SimulationIntersectionLevel = 'free' | 'slow' | 'jammed' | 'offline'
-
-export interface SimulationMonitoringRecord {
-  building_id: string
-  building_type: string
-  chilled_water_return_temp: number
-  chilled_water_supply_temp: number
-  control_strategy: 'FixedTime' | 'MaxPressure' | 'RL' | 'Traffic-R1' | '应急绿波'
-  device_id: string
-  device_status: 'maintenance' | 'normal' | 'offline' | 'warning'
-  electricity_kwh: number
-  env_humidity: number
-  env_temperature: number
-  hvac_kwh: number
-  id: number
-  monitor_time: string
-  occupancy_density: number
-  water_m3: number
-}
-
-function controllerDisplayName(controllerType: string): SimulationMonitoringRecord['control_strategy'] {
-  const normalized = controllerType.toLowerCase()
-  if (normalized.includes('max')) return 'MaxPressure'
-  if (normalized.includes('traffic')) return 'Traffic-R1'
-  if (normalized === 'rl' || normalized.includes('reinforcement')) return 'RL'
-  if (normalized.includes('emergency')) return '应急绿波'
-  return 'FixedTime'
-}
-
-function controllerOptimizationStrength(controllerType: string): 0 | 1 | 2 {
-  const normalized = controllerType.toLowerCase()
-  if (normalized.includes('traffic') || normalized === 'rl' || normalized.includes('hybrid')) return 2
-  if (normalized.includes('max') || normalized.includes('adaptive')) return 1
-  return 0
-}
-
-function phaseDisplayName(phaseCode: string | undefined): string {
-  const phaseLabels: Record<string, string> = {
-    ETWT: '东西直行',
-    NTST: '南北直行',
-    ELWL: '东西左转',
-    NLSL: '南北左转',
-    ew_straight: '东西直行',
-    ns_straight: '南北直行',
-    ew_left: '东西左转',
-    ns_left: '南北左转',
-  }
-  return phaseLabels[phaseCode ?? ''] ?? phaseCode ?? '未知相位'
-}
-
-function intersectionDisplayName(id: string): string {
-  const match = id.match(/^intersection_(\d+)_(\d+)$/)
-  return match ? `路口 ${match[1]}-${match[2]}` : id
-}
-
-function deriveIntersectionLevels(
-  intersections: SimIntersectionState[],
-  controllerType: string,
-): Record<string, SimulationIntersectionLevel> {
-  if (intersections.length === 0) return {}
-
-  const strength = controllerOptimizationStrength(controllerType)
-  const jamThreshold = strength === 0 ? 18 : strength === 1 ? 24 : 28
-  const slowThreshold = strength === 0 ? 7 : strength === 1 ? 10 : 12
-  const maxJammed = strength === 0 ? Math.max(1, Math.floor(intersections.length * 0.17)) : 1
-  const maxSlow = strength === 0 ? Math.max(1, Math.ceil(intersections.length * 0.25)) : Math.max(1, Math.floor(intersections.length * 0.17))
-  const ranked = intersections
-    .map((intersection) => ({
-      id: intersection.id,
-      severity:
-        intersection.queueCount +
-        intersection.avgWait / 6 +
-        (intersection.level === 'jammed' ? 5 : intersection.level === 'slow' ? 2 : 0),
-    }))
-    .sort((left, right) => right.severity - left.severity)
-
-  const levels: Record<string, SimulationIntersectionLevel> = Object.fromEntries(
-    intersections.map((intersection) => [intersection.id, 'free' as const]),
-  )
-  let jammedCount = 0
-  let slowCount = 0
-
-  for (const item of ranked) {
-    if (item.severity >= jamThreshold && jammedCount < maxJammed) {
-      levels[item.id] = 'jammed'
-      jammedCount += 1
-      continue
-    }
-    if (item.severity >= slowThreshold && slowCount < maxSlow) {
-      levels[item.id] = 'slow'
-      slowCount += 1
-    }
-  }
-
-  return levels
-}
-
 // ---- 相位循环顺序 ----
 const PHASE_CYCLE: SignalPhase[] = [
   'eastwest_straight',
@@ -240,14 +143,11 @@ export const useTrafficStore = defineStore('traffic', () => {
   const simulationSignals = ref<SimSignalState[]>([])
   const simulationIntersections = ref<SimIntersectionState[]>([])
   const simulationMetrics = ref<SimMetrics | null>(null)
-  const simulationIntersectionLevels = ref<Record<string, SimulationIntersectionLevel>>({})
-  const simulationMonitoringRecords = ref<SimulationMonitoringRecord[]>([])
   const simulationErrorMessage = ref<string | null>(null)
   // CityFlow 静态路网（用于车辆坐标 → 地图经纬度 的仿射变换）
   const simRoadnet = ref<SimRoadnetResponse | null>(null)
   /** 道路拥堵指数 EMA 平滑（key=roadId, value=smoothed value），避免帧间跳动 */
   const roadCongestionSmooth = new Map<string, number>()
-  let lastMonitoringSampleWindow = -1
 
   // =========================================================
   // 2. Getters
@@ -1032,7 +932,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationFrameCount.value++
     simulationLastFrameAt.value = Date.now()
     lastFrameForAlerts = frame
-    updateSimulationAnalyticsCache(frame)
 
     // 捕获 EV 事件和状态
     if (frame.evEvents && frame.evEvents.length > 0) {
@@ -1058,65 +957,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     } else {
       simulationErrorMessage.value = null
     }
-  }
-
-  function updateSimulationAnalyticsCache(frame: SimFrameData): void {
-    const levels = deriveIntersectionLevels(frame.intersections ?? [], simulationControllerType.value)
-    simulationIntersectionLevels.value = levels
-
-    const sampleWindow = Math.floor(frame.simTime / 2)
-    if (sampleWindow === lastMonitoringSampleWindow || frame.intersections.length === 0) return
-    lastMonitoringSampleWindow = sampleWindow
-
-    const signals = new Map(frame.signals.map((signal) => [signal.intersectionId, signal]))
-    const fallbackInflow = frame.intersections.length > 0
-      ? frame.metrics.vehicleCount / frame.intersections.length
-      : 0
-    const monitorTime = new Date().toLocaleString('zh-CN', {
-      hour12: false,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    }).replace(/\//g, '-')
-    const strategy = controllerDisplayName(simulationControllerType.value)
-
-    simulationMonitoringRecords.value = frame.intersections
-      .map((intersection, index): SimulationMonitoringRecord => {
-        const lanes = frame.laneStates?.[intersection.id]?.lanes ?? []
-        const inflow = lanes.length > 0
-          ? lanes.reduce((sum, lane) => sum + lane.vehicleCount, 0)
-          : fallbackInflow
-        const averageSpeed = lanes.length > 0
-          ? lanes.reduce((sum, lane) => sum + lane.avgSpeed, 0) / lanes.length
-          : frame.metrics.avgSpeed
-        const saturation = Math.min(100, (intersection.queueCount / Math.max(inflow, 1)) * 100)
-        const level = levels[intersection.id] ?? 'free'
-        const deviceStatus: SimulationMonitoringRecord['device_status'] =
-          level === 'jammed' ? 'warning' : level === 'slow' ? 'maintenance' : level === 'offline' ? 'offline' : 'normal'
-
-        return {
-          building_id: intersectionDisplayName(intersection.id),
-          building_type: intersection.id,
-          chilled_water_return_temp: Number(intersection.queueCount.toFixed(1)),
-          chilled_water_supply_temp: Number(saturation.toFixed(1)),
-          control_strategy: strategy,
-          device_id: phaseDisplayName(signals.get(intersection.id)?.phaseCode),
-          device_status: deviceStatus,
-          electricity_kwh: Number(inflow.toFixed(0)),
-          env_humidity: Number(saturation.toFixed(1)),
-          env_temperature: Number(averageSpeed.toFixed(1)),
-          hvac_kwh: Number(intersection.queueCount.toFixed(1)),
-          id: Math.round(frame.simTime * 1000) * 100 + index,
-          monitor_time: monitorTime,
-          occupancy_density: Number(saturation.toFixed(1)),
-          water_m3: Number(intersection.avgWait.toFixed(1)),
-        }
-      })
-      .sort((left, right) => right.hvac_kwh - left.hvac_kwh)
-      .slice(0, 12)
   }
 
   /** 将仿真帧数据同步到现有的 traffic 数据结构（渐进式替换 mock） */
@@ -1251,9 +1091,7 @@ export const useTrafficStore = defineStore('traffic', () => {
   /** 创建并初始化仿真会话 */
   async function initSimulationSession(): Promise<CreateSimulationResponse | null> {
     simulationStatus.value = 'booting'
-    simulationSid.value = null
     simulationErrorMessage.value = null
-    clearSimulationRuntimeMeasurements()
 
     try {
       const result = await createSimulation({
@@ -1363,10 +1201,6 @@ export const useTrafficStore = defineStore('traffic', () => {
   function resetSimulationState(): void {
     simulationStatus.value = 'booting'
     simulationSid.value = null
-    clearSimulationRuntimeMeasurements()
-  }
-
-  function clearSimulationRuntimeMeasurements(): void {
     simulationSimTime.value = 0
     simulationFrameCount.value = 0
     simulationLastFrameAt.value = 0
@@ -1375,10 +1209,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationSignals.value = []
     simulationIntersections.value = []
     simulationMetrics.value = null
-    simulationIntersectionLevels.value = {}
-    simulationMonitoringRecords.value = []
     simulationErrorMessage.value = null
-    lastMonitoringSampleWindow = -1
     roadCongestionSmooth.clear()
   }
 
@@ -1449,8 +1280,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationSignals,
     simulationIntersections,
     simulationMetrics,
-    simulationIntersectionLevels,
-    simulationMonitoringRecords,
     simulationErrorMessage,
     simRoadnet,
 
