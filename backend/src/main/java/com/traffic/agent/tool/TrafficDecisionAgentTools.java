@@ -28,7 +28,7 @@ public class TrafficDecisionAgentTools {
         );
     }
 
-    @Tool(name = "get_decision_trace", value = "查询指定控制决策链路，包括策略建议、安全/仲裁/fallback 轨迹和最终结果。只读。")
+    @Tool(name = "get_decision_trace", value = "查询指定控制决策链路，包括策略输入、MaxPressure 全候选评分、选择原因、CityFlow 应用结果和后续效果。只读。")
     public AgentToolResult getDecisionTrace(String decisionId) {
         return AgentToolSupport.run(
                 "get_decision_trace",

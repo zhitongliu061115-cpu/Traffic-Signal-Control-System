@@ -217,7 +217,7 @@ export interface GlobalStatistics {
   todayAlertCount: number
   /** 当前活跃绿波通道数 */
   greenWaveCount: number
-  throughput: number
+  throughput: number // Vehicles passing through during the current interval.
 }
 // ---- AI 对比指标 ----
 
