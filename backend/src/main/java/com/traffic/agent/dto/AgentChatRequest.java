@@ -9,6 +9,11 @@ public record AgentChatRequest(
         @Size(max = 4000, message = "message长度不能超过4000")
         String message,
         String sessionId,
+        String sid,
+        String conversationId,
         Map<String, Object> context
 ) {
+    public AgentChatRequest(String message, String sessionId, Map<String, Object> context) {
+        this(message, sessionId, null, null, context);
+    }
 }

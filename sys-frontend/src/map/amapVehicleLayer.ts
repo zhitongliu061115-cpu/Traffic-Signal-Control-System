@@ -16,7 +16,7 @@ interface RoadMapping {
   shanghaiRoad: Road
   cityFlowPoints: Array<{ x: number; y: number }>
   totalLength: number
-  /** CityFlow from鈫抰o 涓庝笂娴?from鈫抰o 鏂瑰悜鐩稿弽鏃堕渶缈昏浆 progress */
+  /** CityFlow from→to 与上海 from→to 方向相反时需翻转 progress */
   flipped: boolean
 }
 
@@ -146,15 +146,16 @@ function interpolateLngLat(
     if (!a || !b) continue
     const shRoad = pairToRoad.get([a, b].sort().join('|'))
     if (!shRoad || !shRoad.path || shRoad.path.length < 2) continue
-    // 鍒ゆ柇鏂瑰悜锛欳ityFlow from鈫抰o 鏄惁涓庝笂娴?from鈫抰o 涓€鑷达紙鐢ㄨ浆缃敭姣旇緝锛?
-    const shA = shIdToKey.get(shRoad.from) // 涓婃捣 from 鐨勮浆缃敭
-    const flipped = (a === shA) ? false : true // a 瀵瑰簲 from 鍒欏悓鍚戯紝鍚﹀垯鍙嶅悜
+    // 判断方向：CityFlow from→to 是否与上海 from→to 一致（用转置键比较）
+    const shA = shIdToKey.get(shRoad.from) // 上海 from 的转置键
+    const flipped = (a === shA) ? false : true // a 对应 from 则同向，否则反向
     const cfPts = sr.points && sr.points.length >= 2 ? sr.points : [{ x: 0, y: 0 }, { x: 0, y: 0 }]
     roadMapping.set(sr.id, {
       shanghaiRoad: shRoad,
       cityFlowPoints: cfPts,
       flipped,
       totalLength: Math.max(1, polylineLength(cfPts)),
+      flipped,
     })
   }
 
@@ -188,7 +189,9 @@ function interpolateLngLat(
         const mapping = roadMapping.get(v.roadId)
         if (!mapping) continue
         // 计算 CityFlow 直路上的 progress
-        const prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
+        let prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
+        // 如果 CityFlow 道路与上海道路方向相反，翻转 progress
+        if (mapping.flipped) prog = 1 - prog
         // 映射到上海弯曲路径
         // 璁＄畻 CityFlow 鐩磋矾涓婄殑 progress
         let prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)

@@ -20,29 +20,20 @@ src/main/resources/application.yml
 启用 `postgres` profile 后，后端会使用以下默认连接信息：
 
 ```text
-jdbc:postgresql://localhost:5432/traffic_signal
-username: postgres
-password: 从 TRAFFIC_DB_PASSWORD 环境变量读取
+jdbc:postgresql://120.48.99.240:5432/traffic_signal
+username: traffic_user
+password: 123456
 ```
 
-可通过环境变量覆盖：
-
-| 环境变量 | 说明 | 默认值 |
-| --- | --- | --- |
-| `TRAFFIC_DB_URL` | PostgreSQL JDBC 地址 | `jdbc:postgresql://localhost:5432/traffic_signal` |
-| `TRAFFIC_DB_USERNAME` | 数据库用户名 | `postgres` |
-| `TRAFFIC_DB_PASSWORD` | 数据库密码 | 空 |
+当前阶段按团队要求将云端连接信息直接写入 `application.yml` 的 `postgres` profile，不再依赖 `.env` 或 `TRAFFIC_DB_*` 环境变量。后续稳定后再改回环境变量或密钥管理。
 
 ## 启动方式
 
 PowerShell 示例：
 
 ```powershell
-$env:TRAFFIC_DB_PASSWORD="你的数据库密码"
 mvn spring-boot:run "-Dspring-boot.run.profiles=postgres"
 ```
-
-如果本机 PostgreSQL 已配置免密访问，可以不设置 `TRAFFIC_DB_PASSWORD`。
 
 ## 读写验证接口
 
@@ -114,6 +105,5 @@ spring:
 ## 当前验证结果
 
 - 后端编译验证通过：`mvn compile`。
-- 已确认本机 `localhost:5432` PostgreSQL 端口可访问。
-- 已临时启动后端并访问新增接口；由于当前启动环境没有提供 `TRAFFIC_DB_PASSWORD`，PostgreSQL 返回“需要密码认证”，所以真实读表请求返回 500。
-- 设置正确的 `TRAFFIC_DB_PASSWORD` 后，再访问上述接口即可验证真实读取和修改。
+- 当前 `postgres` profile 已直接指向百度云 PostgreSQL：`120.48.99.240:5432/traffic_signal`。
+- 启动时无需再设置 `TRAFFIC_DB_PASSWORD`；如连接失败，优先检查云服务器安全组、PostgreSQL `pg_hba.conf` 和用户授权。

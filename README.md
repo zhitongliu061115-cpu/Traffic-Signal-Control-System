@@ -30,7 +30,8 @@ Traffic-Signal-Control-System/
 |-- temp-three-frontend/ 临时 Three.js 联调前端
 |-- sys-frontend/   Vue + TypeScript 前端大屏
 |-- docs/           项目文档、接口规范、架构说明
-|-- rules.md        团队 AI 辅助开发与协作规则
+|-- agent.md        软件开发与 AI 协作权威规范
+|-- rules.md        兼容入口，指向 agent.md
 `-- README.md       项目总览
 ```
 
@@ -45,8 +46,10 @@ Traffic-Signal-Control-System/
 
 ## 文档入口
 
-- [项目简要介绍](docs/PROJECT_BRIEF.md)
+- [项目简要介绍](docs/项目简介.md)
 - [项目结构说明](docs/PROJECT_STRUCTURE.md)
+- [公共工作台账](docs/WORK_TRACKER.md)
+- [开发协作规范](agent.md)
 - [Traffic-R1 算法资料索引](docs/TRAFFIC_R1_REFERENCES.md)
 - [后端文档入口](backend/docs/README.md)
 - [阶段 2 调用链说明](backend/docs/CALL_CHAIN.md)
@@ -56,7 +59,7 @@ Traffic-Signal-Control-System/
 - [CityFlow 云端部署指南](backend/docs/CITYFLOW_CLOUD_RUNBOOK.md)
 - [Traffic-R 云端模型启动指南](backend/docs/TRAFFIC_R_CLOUD_RUNBOOK.md)
 - [CFRP 前后端通信协议](docs/CFRP-1.0-前后端通信协议.md)
-- [Git 协作规范](docs/GIT_GUIDELINES.md)
+- [Git 协作规范](docs/GIT_规范.md)
 - [团队 Prompt 规范](docs/PROMPTS.md)
 
 ## 启动方式

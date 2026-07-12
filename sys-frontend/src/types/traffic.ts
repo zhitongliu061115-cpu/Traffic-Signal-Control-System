@@ -217,6 +217,7 @@ export interface GlobalStatistics {
   todayAlertCount: number
   /** 当前活跃绿波通道数 */
   greenWaveCount: number
+  throughput: number
 }
   /** 鍚炲悙閲?(宸插畬鎴愯溅杈嗘暟) */
   throughput: number
@@ -437,6 +438,17 @@ export interface WsMessage<T = SimFrameData> {
   simTime: number
   sentAt: string
   data: T
+}
+
+/** AI 控制决策（后端 WebSocket control.decision） */
+export interface ControlDecision {
+  intersectionId: string
+  controllerType: string
+  phaseIndex: number
+  phaseCode: string
+  durationSec: number
+  confidence: number
+  reason: string
 }
 
 /** 创建仿真请求 */

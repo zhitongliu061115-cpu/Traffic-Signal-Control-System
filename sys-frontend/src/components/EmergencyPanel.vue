@@ -204,6 +204,17 @@ function handleSimulateVehicle(): void {
   openDispatchDialog(new MouseEvent('click'))
 }
 
+function handleStartGreenWave(): void {
+  store.startEmergencyGreenWave()
+  wasEverTriggered.value = true
+  store.generateMockAlert(
+    'green_wave_start',
+    'emergency',
+    '应急绿波已启动，沿线信号进入优先放行策略',
+    '系统操作 · 应急控制面板',
+  )
+}
+
 function handleRestoreNormal(): void {
   store.restoreNormalMode()
   store.generateMockAlert(

@@ -20,11 +20,18 @@ declare namespace AMap {
     on(event: string, handler: (...args: any[]) => void): void
     getContainer(): HTMLElement
     getZoom(): number
+    setZoomAndCenter(zoom: number, center: [number, number]): void
     lngLatToContainer(lngLat: [number, number]): { x: number; y: number }
   }
 
   class Pixel {
     constructor(x: number, y: number)
+  }
+
+  class LngLat {
+    constructor(lng: number, lat: number)
+    getLng(): number
+    getLat(): number
   }
 
   interface PolylineOptions {
@@ -60,5 +67,25 @@ declare namespace AMap {
     setContent(content: string): void
     setPosition(position: [number, number]): void
     on(event: string, handler: (...args: any[]) => void): void
+  }
+
+  interface CircleMarkerOptions {
+    center?: [number, number] | LngLat
+    radius?: number
+    fillColor?: string
+    fillOpacity?: number
+    strokeColor?: string
+    strokeWeight?: number
+    zIndex?: number
+    bubble?: boolean
+  }
+
+  class CircleMarker {
+    constructor(opts?: CircleMarkerOptions)
+    setMap(map: Map | null): void
+    setCenter(center: [number, number] | LngLat): void
+    setOptions(opts: Partial<CircleMarkerOptions>): void
+    show(): void
+    hide(): void
   }
 }

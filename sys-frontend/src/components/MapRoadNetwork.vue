@@ -10,7 +10,7 @@ import { useTrafficStore } from '@/stores/traffic'
 import { initAMap, type AMapInstance } from '@/map/amapInit'
 import { addAMapRoadLayer } from '@/map/amapRoads'
 import { createTLMarkers, type TLMarker } from '@/map/amapMarkers'
-import { fetchDrivingPathsBatch } from '@/map/amapPathGen'
+import { fetchDrivingPathsBatch, snapIntersectionsToAMap } from '@/map/amapPathGen'
 import RoadNetwork from '@/components/RoadNetwork.vue'
 import MapLegend from '@/components/MapLegend.vue'
 import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
@@ -71,7 +71,21 @@ async function loadRealData(): Promise<void> {
   // ---- 第 1 步：从后端加载数据（失败自动降级 mock）----
   await store.loadDashboardData()
 
-  // ---- 第 2 步：路径规划（3 路并发 + localStorage 缓存）----
+  // ---- 第 1.5 步：高德 POI 地理编码修正路口坐标 ----
+  // 把手写的 mock 坐标替换为高德认定的真实交叉口位置
+  const snapItems = intersections.value.map((it) => ({ id: it.id, name: it.name, lng: it.lng, lat: it.lat }))
+  const snapped = await snapIntersectionsToAMap(snapItems, 3)
+  for (const it of intersections.value) {
+    const pt = snapped.get(it.id)
+    if (pt) {
+      it.lng = pt[0]
+      it.lat = pt[1]
+      it.x = (it.lng - 121.450) / 0.035
+      it.y = (31.240 - it.lat) / 0.027
+    }
+  }
+
+  // ---- 第 2 步：路径规划（用修正后的坐标）----
   const pairs: Array<{ origin: [number, number]; destination: [number, number] }> = []
   for (const r of roads.value) {
     const from = intersections.value.find((i) => i.id === r.from)
@@ -152,6 +166,15 @@ watch([roads, intersections], () => {
   }, 300)
 }, { deep: true })
 watch(systemMode, syncEmergency)
+
+// 单击路口 marker → 镜头拉近放大到该路口
+watch(selectedIntersectionId, (id) => {
+  if (!id || !amapInstance) return
+  const it = intersections.value.find((i) => i.id === id)
+  if (it) {
+  amapInstance.map.setZoomAndCenter(15, [it.lng, it.lat])
+  }
+})
 
 // ---- 仿真车辆图层：路网就绪后按帧刷新 ----
 watch([simulationVehicles, simRoadnet, simulationStatus], () => {

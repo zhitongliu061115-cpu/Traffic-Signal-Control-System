@@ -3,6 +3,8 @@ package com.traffic.simulation.service;
 import com.traffic.cityflow.client.CityFlowClient;
 import com.traffic.common.exception.BusinessException;
 import com.traffic.common.util.TimeUtils;
+import com.traffic.runtime.persistence.RuntimePersistenceService;
+import com.traffic.roadnet.dto.RoadnetResponse;
 import com.traffic.simulation.dto.CityFlowCreateSimulationRequest;
 import com.traffic.simulation.dto.CreateSimulationRequest;
 import com.traffic.simulation.dto.CreateSimulationResponse;
@@ -12,6 +14,7 @@ import com.traffic.simulation.dto.WsMessage;
 import com.traffic.simulation.session.SimulationRuntimeSession;
 import com.traffic.simulation.session.SimulationSessionRegistry;
 import com.traffic.simulation.session.SimulationSessionState;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import com.traffic.simulation.websocket.SimulationWebSocketHandler;
 import com.traffic.strategy.TrafficSignalControllerType;
 import com.traffic.strategy.dto.AppliedControlResult;
@@ -36,6 +39,8 @@ public class SimulationService {
     private final TrafficSignalControllerRegistry controllerRegistry;
     private final StrategyDispatchService strategyDispatchService;
     private final SimulationFrameTimingLogger frameTimingLogger;
+    private final RuntimePersistenceService runtimePersistenceService;
+    private final LiveSimulationStateService liveSimulationStateService;
 
     public SimulationService(
             CityFlowClient cityFlowClient,
@@ -43,7 +48,9 @@ public class SimulationService {
             SimulationWebSocketHandler webSocketHandler,
             TrafficSignalControllerRegistry controllerRegistry,
             StrategyDispatchService strategyDispatchService,
-            SimulationFrameTimingLogger frameTimingLogger
+            SimulationFrameTimingLogger frameTimingLogger,
+            RuntimePersistenceService runtimePersistenceService,
+            LiveSimulationStateService liveSimulationStateService
     ) {
         this.cityFlowClient = cityFlowClient;
         this.sessionRegistry = sessionRegistry;
@@ -51,6 +58,8 @@ public class SimulationService {
         this.controllerRegistry = controllerRegistry;
         this.strategyDispatchService = strategyDispatchService;
         this.frameTimingLogger = frameTimingLogger;
+        this.runtimePersistenceService = runtimePersistenceService;
+        this.liveSimulationStateService = liveSimulationStateService;
     }
 
     public CreateSimulationResponse createSimulation(CreateSimulationRequest request) {
@@ -59,7 +68,34 @@ public class SimulationService {
         var cityFlowResponse = cityFlowClient.createSimulation(
                 new CityFlowCreateSimulationRequest(request.sceneId(), request.speed(), request.warmupSeconds())
         );
+        RoadnetResponse roadnet = null;
+        try {
+            roadnet = cityFlowClient.getRoadnet(cityFlowResponse.sceneId());
+        } catch (RuntimeException ex) {
+            log.warn("failed to load CityFlow roadnet for live cache. sceneId={}, error={}",
+                    cityFlowResponse.sceneId(), ex.getMessage());
+        }
+        RoadnetResponse roadnetSnapshot = roadnet;
+        runtimePersistenceService.ensureRoadnet(
+                cityFlowResponse.sceneId(),
+                () -> roadnetSnapshot
+        );
+        runtimePersistenceService.createSession(
+                cityFlowResponse.sid(),
+                cityFlowResponse.sceneId(),
+                controllerType,
+                request.speed(),
+                request.warmupSeconds(),
+                cityFlowResponse.status()
+        );
         sessionRegistry.register(cityFlowResponse.sid(), cityFlowResponse.sceneId(), controllerType);
+        liveSimulationStateService.registerSession(
+                cityFlowResponse.sid(),
+                cityFlowResponse.sceneId(),
+                controllerType,
+                cityFlowResponse.status(),
+                roadnet
+        );
         return new CreateSimulationResponse(
                 cityFlowResponse.sid(),
                 cityFlowResponse.sceneId(),
@@ -72,18 +108,24 @@ public class SimulationService {
         SimulationRuntimeSession session = findSession(sid);
         forwardLifecycleToCityFlow("start", sid);
         session.setState(SimulationSessionState.RUNNING);
+        liveSimulationStateService.updateSessionStatus(sid, "running");
+        runtimePersistenceService.updateSessionStatus(sid, "running");
     }
 
     public void pause(String sid) {
         SimulationRuntimeSession session = findSession(sid);
         forwardLifecycleToCityFlow("pause", sid);
         session.setState(SimulationSessionState.PAUSED);
+        liveSimulationStateService.updateSessionStatus(sid, "paused");
+        runtimePersistenceService.updateSessionStatus(sid, "paused");
     }
 
     public void stop(String sid) {
         SimulationRuntimeSession session = findSession(sid);
         forwardLifecycleToCityFlow("stop", sid);
         session.setState(SimulationSessionState.FINISHED);
+        liveSimulationStateService.updateSessionStatus(sid, "finished");
+        runtimePersistenceService.updateSessionStatus(sid, "finished");
         releaseSessionState(sid);
     }
 
@@ -194,8 +236,12 @@ public class SimulationService {
                     decisions.size()
             );
         }
+        liveSimulationStateService.recordFrame(session, seq, publishFrame, decisions);
+        runtimePersistenceService.persistRuntimeEvents(session, publishFrame, decisions);
         if (finished) {
             session.setState(SimulationSessionState.FINISHED);
+            liveSimulationStateService.updateSessionStatus(session.getSid(), "finished");
+            runtimePersistenceService.updateSessionStatus(session.getSid(), "finished");
             releaseSessionState(session.getSid());
             log.info("simulation finished and released. sid={}, simTime={}", session.getSid(), publishFrame.simTime());
         }
