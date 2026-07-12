@@ -59,18 +59,18 @@ auth:
   invite-code: ${AUTH_INVITE_CODE:123456}
   initial-account:
     username: ${AUTH_INITIAL_USERNAME:admin}
-    password: ${AUTH_INITIAL_PASSWORD:}
+    password: ${AUTH_INITIAL_PASSWORD:123456}
     email: ${AUTH_INITIAL_EMAIL:admin@traffic.local}
 
 cityflow:
   base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9000}
-  api-token: ${CITYFLOW_API_TOKEN:}
+  api-token: ${CITYFLOW_API_TOKEN:jLEc-o3L16migUKQ7f_OlH94qsjEstFf}
   client-id: ${CITYFLOW_CLIENT_ID:hcj}
   default-scene-id: jinan_3x4
   frame-poll-interval-ms: ${CITYFLOW_FRAME_POLL_INTERVAL_MS:500}
 
 traffic-r:
-  enabled: ${TRAFFIC_R_ENABLED:false}
+  enabled: ${TRAFFIC_R_ENABLED:true}
   base-url: ${TRAFFIC_R_BASE_URL:http://127.0.0.1:16008}
   health-path: ${TRAFFIC_R_HEALTH_PATH:/health}
   predict-path: ${TRAFFIC_R_PREDICT_PATH:/predict}
@@ -119,7 +119,7 @@ spring:
   datasource:
     url: jdbc:postgresql://120.48.99.240:5432/traffic_signal
     username: ${TRAFFIC_DB_USERNAME:traffic_user}
-    password: ${TRAFFIC_DB_PASSWORD:}
+    password: ${TRAFFIC_DB_PASSWORD:123456}
     driver-class-name: org.postgresql.Driver
   jpa:
     database-platform: org.hibernate.dialect.PostgreSQLDialect
