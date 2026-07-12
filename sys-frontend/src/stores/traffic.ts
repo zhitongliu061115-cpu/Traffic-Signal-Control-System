@@ -1,5 +1,7 @@
-// =========================================================// AI 自适应信号控制与应急绿波数字孪生系统 — Pinia Store
-// =========================================================import { defineStore } from 'pinia'
+// =========================================================
+// AI 自适应信号控制与应急绿波数字孪生系统 — Pinia Store
+// =========================================================
+import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type {
   SystemMode,
@@ -70,7 +72,8 @@ const PHASE_DURATIONS: Record<SignalPhase, number> = {
 let trendTick = 0 // 不放在 state 里避免响应式开销
 
 export const useTrafficStore = defineStore('traffic', () => {
-  // =========================================================  // 1. State
+  // =========================================================
+  // 1. State
   // =========================================================
   const systemMode = ref<SystemMode>('normal')
   const aiEnabled = ref(true)
@@ -146,7 +149,8 @@ export const useTrafficStore = defineStore('traffic', () => {
   /** 道路拥堵指数 EMA 平滑（key=roadId, value=smoothed value），避免帧间跳动 */
   const roadCongestionSmooth = new Map<string, number>()
 
-  // =========================================================  // 2. Getters
+  // =========================================================
+  // 2. Getters
   // =========================================================
   const selectedIntersection = computed<Intersection | undefined>(() =>
     intersections.value.find((it) => it.id === selectedIntersectionId.value),
@@ -183,7 +187,8 @@ export const useTrafficStore = defineStore('traffic', () => {
     intersections.value.filter((it) => emergencyRoute.value.includes(it.id)),
   )
 
-  // =========================================================  // 3. Actions — 系统控制
+  // =========================================================
+  // 3. Actions — 系统控制
   // =========================================================
   /** 启动 AI 自适应控制 */
   function startAiControl(): void {
@@ -219,7 +224,8 @@ export const useTrafficStore = defineStore('traffic', () => {
     mapZoom.value = zoom
   }
 
-  // =========================================================  // 4. Actions — 应急绿波
+  // =========================================================
+  // 4. Actions — 应急绿波
   // =========================================================
   /**
    * 调度应急车辆（优先调用后端 API，失败降级到 mock）
@@ -430,7 +436,8 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
   }
 
-  // =========================================================  // 5. Actions — 数据刷新
+  // =========================================================
+  // 5. Actions — 数据刷新
   // =========================================================
   /**
    * 高频更新：仅推进车辆位置（200ms 间隔）
@@ -468,9 +475,11 @@ export const useTrafficStore = defineStore('traffic', () => {
    * 中频更新：道路指数、信号灯、统计指标（2s 间隔）
    */
   function updateTrafficIndicators(deltaMs: number = 2000): void {
-    // =========================================================    // 仿真运行中：使用 CityFlow / WebSocket 真实数据，不添加本地噪声
+    // =========================================================
+    // 仿真运行中：使用 CityFlow / WebSocket 真实数据，不添加本地噪声
     // （intersections / roads / vehicles 已由 applySimFrameToTrafficData 更新）
-    // =========================================================    if (
+    // =========================================================
+    if (
       simulationSid.value !== null &&
       simulationFrameCount.value > 0 &&
       simulationStatus.value !== 'finished'
@@ -530,8 +539,10 @@ export const useTrafficStore = defineStore('traffic', () => {
       return
     }
 
-    // =========================================================    // 无仿真：本地 mock / 后端 DB 数据 + 轻微随机噪声（演示用）
-    // =========================================================    // ---- 道路拥堵波动 ----
+    // =========================================================
+    // 无仿真：本地 mock / 后端 DB 数据 + 轻微随机噪声（演示用）
+    // =========================================================
+    // ---- 道路拥堵波动 ----
     for (const r of roads.value) {
       const drift = (Math.random() - 0.5) * 4
       r.congestionIndex = Math.max(10, Math.min(98, r.congestionIndex + drift))
@@ -907,7 +918,8 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
   }
 
-  // =========================================================  // 6. Actions — 仿真管理
+  // =========================================================
+  // 6. Actions — 仿真管理
   // =========================================================
   /** 处理从 WebSocket/API 收到的仿真帧数据 */
   function handleSimFrame(frame: SimFrameData): void {
@@ -1225,7 +1237,8 @@ export const useTrafficStore = defineStore('traffic', () => {
     // 数据已全部重置
   }
 
-  // =========================================================  // 6. 导出
+  // =========================================================
+  // 6. 导出
   // =========================================================
   return {
     // state

@@ -1,7 +1,9 @@
-﻿// =========================================================// amapVehicleLayer 鈥?楂樺痉 CircleMarker 杞﹁締鍥惧眰锛坧rogress 鏄犲皠锛?
+﻿// =========================================================
+// amapVehicleLayer 鈥?楂樺痉 CircleMarker 杞﹁締鍥惧眰锛坧rogress 鏄犲皠锛?
 // CityFlow 杞﹁締 (roadId, x, y) 鈫?閫愯矾 progress 鈫?涓婃捣寮洸 path 鈫?lng/lat
 // 涓嶆敼 roadnet锛屼笉鏀瑰悗绔紝涓嶆敼 store
-// =========================================================import type { Road, Intersection, SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
+// =========================================================
+import type { Road, Intersection, SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 
 // ---- 甯搁噺 ----
 const MARKER_RADIUS = 4.5
@@ -118,7 +120,8 @@ function interpolateLngLat(
   return path[path.length - 1]!
 }
 
-// =========================================================export function createVehicleLayer(
+// =========================================================
+export function createVehicleLayer(
   map: AMap.Map,
   simRoadnet: SimRoadnetResponse,
   shanghaiRoads: Road[],
