@@ -17,6 +17,8 @@ interface RoadMapping {
   shanghaiRoad: Road
   cityFlowPoints: Array<{ x: number; y: number }>
   totalLength: number
+  /** CityFlow from→to 与上海 from→to 方向相反时需翻转 progress */
+  flipped: boolean
 }
 
 export interface VehicleLayer {
@@ -146,11 +148,15 @@ export function createVehicleLayer(
     if (!a || !b) continue
     const shRoad = pairToRoad.get([a, b].sort().join('|'))
     if (!shRoad || !shRoad.path || shRoad.path.length < 2) continue
+    // 判断方向：CityFlow from→to 是否与上海 from→to 一致（用转置键比较）
+    const shA = shIdToKey.get(shRoad.from) // 上海 from 的转置键
+    const flipped = (a === shA) ? false : true // a 对应 from 则同向，否则反向
     const cfPts = sr.points && sr.points.length >= 2 ? sr.points : [{ x: 0, y: 0 }, { x: 0, y: 0 }]
     roadMapping.set(sr.id, {
       shanghaiRoad: shRoad,
       cityFlowPoints: cfPts,
       totalLength: Math.max(1, polylineLength(cfPts)),
+      flipped,
     })
   }
 
@@ -184,7 +190,9 @@ export function createVehicleLayer(
         const mapping = roadMapping.get(v.roadId)
         if (!mapping) continue
         // 计算 CityFlow 直路上的 progress
-        const prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
+        let prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
+        // 如果 CityFlow 道路与上海道路方向相反，翻转 progress
+        if (mapping.flipped) prog = 1 - prog
         // 映射到上海弯曲路径
         const [lng, lat] = interpolateLngLat(mapping.shanghaiRoad.path!, prog)
         if (vi < pool.length) {

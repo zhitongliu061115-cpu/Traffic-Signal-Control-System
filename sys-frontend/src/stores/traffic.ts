@@ -49,7 +49,7 @@ import {
   fetchRoadnet,
   dispatchEmergency,
 } from '@/api/simulation'
-import type { CreateSimulationResponse, DispatchResponse, EmergencyEvType } from '@/types/traffic'
+import type { ControlDecision, CreateSimulationResponse, DispatchResponse, EmergencyEvType } from '@/types/traffic'
 
 type DataSourceStatus = 'loading' | 'database' | 'mock'
 
@@ -96,6 +96,33 @@ export const useTrafficStore = defineStore('traffic', () => {
   const alertIdCounter = ref(100)
   const dataSourceStatus = ref<DataSourceStatus>('mock')
   const dataSourceMessage = ref('当前显示本地演示数据')
+
+  // ---- AI 控制决策（WebSocket control.decision）----
+  const latestControlDecision = ref<ControlDecision | null>(null)
+  function handleControlDecision(decision: ControlDecision): void {
+    latestControlDecision.value = decision
+  }
+
+  // ---- compareMetrics 更新节流 ----
+  let lastCompareMetricsUpdate = 0
+
+  // ---- 告警检测跟踪变量 ----
+  let lastSimStatus: string | null = null
+  let lastAvgSpeedForAlert = 0
+  let lastFrameForAlerts: any = null
+
+  // ---- 实时指标趋势（给 CompareCharts 用）----
+  function genInitialTrend(base: number, variance: number): CongestionTrendPoint[] {
+    const pts: CongestionTrendPoint[] = []
+    const now = new Date()
+    for (let i = 59; i >= 0; i--) {
+      const t = new Date(now.getTime() - i * 60_000)
+      pts.push({ time: `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`, value: Math.round((base + (Math.random() - 0.5) * variance) * 10) / 10 })
+    }
+    return pts
+  }
+  const waitTrend = ref<CongestionTrendPoint[]>(genInitialTrend(32, 10))
+  const speedTrend = ref<CongestionTrendPoint[]>(genInitialTrend(42, 8))
 
   // ---- 仿真状态 ----
   const simulationStatus = ref<SimulationStatus>('booting')
@@ -470,6 +497,31 @@ export const useTrafficStore = defineStore('traffic', () => {
       statistics.value.greenWaveCount = systemMode.value === 'emergency' ? 1 : 0
       statistics.value.todayAlertCount = alerts.value.length
 
+      // 每 30s 用真实仿真数据更新 AI 对比指标
+      const now = Date.now()
+      if (m && now - lastCompareMetricsUpdate > 30_000) {
+        lastCompareMetricsUpdate = now
+        compareMetrics.value = {
+          ...compareMetrics.value,
+          averageWaitTime: {
+            ...compareMetrics.value.averageWaitTime,
+            ai: Math.round(m.avgWait * 10) / 10,
+          },
+          averageSpeed: {
+            ...compareMetrics.value.averageSpeed,
+            ai: Math.round(m.avgSpeed * 3.6 * 10) / 10, // m/s → km/h
+          },
+          queueLength: {
+            ...compareMetrics.value.queueLength,
+            ai: m.queueCount,
+          },
+        }
+        // 追加实时趋势点
+        const timeLabel = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        waitTrend.value = [...waitTrend.value.slice(-59), { time: timeLabel, value: Math.round(m.avgWait * 10) / 10 }]
+        speedTrend.value = [...speedTrend.value.slice(-59), { time: timeLabel, value: Math.round(m.avgSpeed * 3.6 * 10) / 10 }]
+      }
+
       updateSystemLatency()
       return
     }
@@ -593,6 +645,57 @@ export const useTrafficStore = defineStore('traffic', () => {
             `故障 · 需立即派单巡检`,
             it.id,
           )
+        }
+      }
+    }
+
+    // ---- 仿真中断检测 ----
+    const prevStatus = lastSimStatus
+    lastSimStatus = simulationStatus.value
+    if (
+      prevStatus === 'running' &&
+      (simulationStatus.value === 'paused' || simulationStatus.value === 'finished')
+    ) {
+      generateMockAlert('control_failure', 'error', '仿真异常中断', `状态从 running → ${simulationStatus.value}`, undefined)
+    }
+
+    // ---- AI 决策置信度低 ----
+    const decision = latestControlDecision.value
+    if (decision && decision.confidence < 0.3) {
+      const key = `ai_low_confidence:${decision.intersectionId}`
+      const last = alertCooldown.get(key)
+      if (!last || now - last > ALERT_COOLDOWN_MS) {
+        alertCooldown.set(key, now)
+        generateMockAlert('control_failure', 'warning', `AI 决策置信度低 (${Math.round(decision.confidence * 100)}%) — ${decision.intersectionId}`, `控制器 ${decision.controllerType}`, decision.intersectionId)
+      }
+    }
+
+    // ---- 路网性能恶化（均速骤降） ----
+    let prevAvgSpeed = lastAvgSpeedForAlert
+    lastAvgSpeedForAlert = statistics.value.averageSpeed
+    if (prevAvgSpeed > 0 && statistics.value.averageSpeed < prevAvgSpeed * 0.7) {
+      const key = 'perf_degradation'
+      const last = alertCooldown.get(key)
+      if (!last || now - last > ALERT_COOLDOWN_MS) {
+        alertCooldown.set(key, now)
+        generateMockAlert('abnormal_congestion', 'error', `路网均速骤降: ${prevAvgSpeed.toFixed(1)} → ${statistics.value.averageSpeed.toFixed(1)} km/h`, '路网性能恶化预警')
+      }
+    }
+
+    // ---- 应急车辆阻塞（来自仿真帧 evEvents） ----
+    if (simulationStatus.value === 'running' && simulationVehicles.value) {
+      // evEvents 在 SimFrameData 中但前端类型未包含，用 any 兜底
+      const frame = lastFrameForAlerts
+      if (frame && (frame as any).evEvents) {
+        for (const ev of (frame as any).evEvents) {
+          if (ev.status === 'blocked') {
+            const key = `ev_blocked:${ev.evId}:${ev.intersectionId}`
+            const last = alertCooldown.get(key)
+            if (!last || now - last > ALERT_COOLDOWN_MS) {
+              alertCooldown.set(key, now)
+              generateMockAlert('emergency_event', 'emergency', `应急车辆 ${ev.evId} 在 ${ev.intersectionId} 被阻塞`, ev.blockedBy ? `被 ${ev.blockedBy} 阻塞` : '决策 blocked', ev.intersectionId)
+            }
+          }
         }
       }
     }
@@ -816,6 +919,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationMetrics.value = frame.metrics ?? null
     simulationFrameCount.value++
     simulationLastFrameAt.value = Date.now()
+    lastFrameForAlerts = frame
     if (frame.status === 'finished') {
       simulationStatus.value = 'finished'
     }
@@ -865,10 +969,8 @@ export const useTrafficStore = defineStore('traffic', () => {
       if (!it) continue
       it.currentPhase = phaseMap[sig.phaseCode] ?? it.currentPhase
       it.deviceStatus = 'online'
-      // 每个路口按 phaseIndex 错开倒计时，避免全部同步
-      const phaseDuration = 40  // 每个相位持续 40s
-      const offset = sig.phaseIndex * (phaseDuration / 4)
-      it.greenRemain = phaseDuration - ((frame.simTime + offset) % phaseDuration)
+      // 仿真每 10s 切一次相位，从 simTime 推算倒计时
+      it.greenRemain = 10 - (frame.simTime % 10)
     }
 
     // ---- 路口排队/延误（按转置键精确匹配）----
@@ -1063,7 +1165,15 @@ export const useTrafficStore = defineStore('traffic', () => {
       return null
     }
 
-    console.log('[TrafficStore] recreated with controller:', controllerType, 'sid:', result.sid)
+    // 4. 自动启动新仿真
+    try {
+      await startSimulation(result.sid)
+      simulationStatus.value = 'running'
+      console.log('[TrafficStore] recreated + started with controller:', controllerType, 'sid:', result.sid)
+    } catch (err) {
+      console.warn('[TrafficStore] auto-start failed, simulation left paused', err)
+    }
+
     return result.sid
   }
 
@@ -1126,12 +1236,16 @@ export const useTrafficStore = defineStore('traffic', () => {
     statistics,
     compareMetrics,
     congestionTrend,
+    waitTrend,
+    speedTrend,
     refreshConfig,
     systemLatency,
     mapZoom,
     alertIdCounter,
     dataSourceStatus,
     dataSourceMessage,
+    latestControlDecision,
+    handleControlDecision,
 
     // simulation state
     simulationStatus,

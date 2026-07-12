@@ -108,6 +108,102 @@ async function requestPath(
 // 公开 API
 // ================================================================
 
+// ---- 地理编码缓存 ----
+const geocodeCache = new Map<string, [number, number] | null>()
+const GEO_CACHE_STORAGE_KEY = 'amap_geocode_cache'
+
+function loadGeocodeCache(): void {
+  try {
+    const raw = localStorage.getItem(GEO_CACHE_STORAGE_KEY)
+    if (!raw) return
+    const data = JSON.parse(raw) as Array<{ key: string; lng: number; lat: number }>
+    for (const { key, lng, lat } of data) {
+      if (!geocodeCache.has(key)) geocodeCache.set(key, [lng, lat])
+    }
+  } catch { /* ignore */ }
+}
+function saveGeocodeCache(): void {
+  try {
+    const data = Array.from(geocodeCache.entries())
+      .filter(([, v]) => v !== null)
+      .map(([key, pt]) => ({ key, lng: pt![0], lat: pt![1] }))
+    localStorage.setItem(GEO_CACHE_STORAGE_KEY, JSON.stringify(data))
+  } catch { /* ignore */ }
+}
+loadGeocodeCache()
+
+/**
+ * 用高德地理编码 API 将路口名转为精确经纬度。
+ * 搜索关键词 = "上海市{路口名}路口"
+ */
+async function geocodeOne(address: string): Promise<[number, number] | null> {
+  try {
+    const url =
+      `https://restapi.amap.com/v3/geocode/geo` +
+      `?address=${encodeURIComponent(address)}` +
+      `&city=上海` +
+      `&key=${AMAP_WEB_KEY}`
+
+    const res = await fetch(url)
+    const data = await res.json()
+
+    if (data.status !== '1' || !data.geocodes?.length) return null
+
+    const [lng, lat] = data.geocodes[0].location.split(',').map(Number) as [number, number]
+    if (!isFinite(lng) || !isFinite(lat)) return null
+
+    return [lng, lat]
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 批量地理编码：把路口名修正为高德认定的真实交叉口坐标。
+ * 12 个路口 × 600ms / 3 并发 ≈ 2.4s
+ */
+export async function snapIntersectionsToAMap(
+  items: Array<{ id: string; name: string; lng: number; lat: number }>,
+  concurrency = 3,
+): Promise<Map<string, [number, number]>> {
+  const results = new Map<string, [number, number]>()
+  let idx = 0
+  let changed = false
+
+  async function worker() {
+    while (idx < items.length) {
+      const i = idx++
+      const it = items[i]!
+      // 拆分 "西藏中路-南京东路" → "上海市黄浦区西藏中路南京东路路口"
+      const parts = it.name.split('-')
+      const address = `上海市${parts.join('')}路口`
+
+      // 缓存命中
+      if (geocodeCache.has(address)) {
+        const pt = geocodeCache.get(address)
+        if (pt) results.set(it.id, pt)
+        continue
+      }
+
+      await acquireSlot()
+
+      const pt = await geocodeOne(address)
+      geocodeCache.set(address, pt)
+      changed = true
+      if (pt) {
+        results.set(it.id, pt)
+        console.log(`[AMapGeo] ${it.name} → ${pt[0].toFixed(6)}, ${pt[1].toFixed(6)}`)
+      } else {
+        console.warn(`[AMapGeo] ${it.name} 未找到，保留原坐标`)
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()))
+  if (changed) saveGeocodeCache()
+  return results
+}
+
 /**
  * 并发批量路径规划（推荐）
  *

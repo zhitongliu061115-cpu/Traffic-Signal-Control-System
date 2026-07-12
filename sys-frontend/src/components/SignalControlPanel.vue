@@ -19,6 +19,7 @@ const {
   alerts,
   simulationControllerType,
   simulationStatus,
+  latestControlDecision,
 } = storeToRefs(store)
 
 // ---- 策略切换 ----
@@ -136,58 +137,51 @@ const suggestDuration = computed(() => {
 
 const aiSuggestion = computed(() => {
   const it = activeIntersection.value
-  if (!it) return { title: '—', body: '', tone: 'default' as const }
+  if (!it) return { title: '—', body: '', tone: 'default' as const, source: 'none' as const }
 
+  // ---- 仿真运行时：显示后端 AI 真实决策 ----
+  const decision = latestControlDecision.value
+  if (simulationStatus.value === 'running') {
+    if (decision) {
+      const phaseLabel = PHASE_LABELS[decision.phaseCode as SignalPhase] ?? decision.phaseCode
+      const confPct = Math.round(decision.confidence * 100)
+      const tone = decision.confidence >= 0.7 ? 'emerald' as const
+        : decision.confidence >= 0.4 ? 'amber' as const
+        : 'rose' as const
+      return {
+        title: `${decision.controllerType} → ${phaseLabel} (置信度 ${confPct}%)`,
+        body: decision.reason || `AI 决策：切换至 ${phaseLabel}，持续 ${decision.durationSec}s`,
+        tone,
+        source: 'ai' as const,
+      }
+    }
+    // 仿真在跑但还没收到 AI 决策（fixed-time 或等待第一个决策周期）
+    return {
+      title: '⏳ 等待 AI 模型决策…',
+      body: `仿真运行中，${simulationControllerType.value === 'fixed-time' ? '当前为 Fixed-Time 固定配时模式，不产生 AI 决策。切换至 Max-Pressure 或 Traffic-R 可看到 AI 决策。' : 'AI 决策周期为 10s，等待第一个决策推送中…'}`,
+      tone: 'default' as const,
+      source: 'waiting' as const,
+    }
+  }
+
+  // ---- 仿真未运行：本地启发式规则（降级方案）----
   // 故障/离线
   if (it.deviceStatus === 'fault') {
-    return {
-      title: '⚠️ 设备故障 — 需人工介入',
-      body: '当前路口信号控制器故障，倒计时已停止，AI 控制自动降级。建议：① 立即派单巡检；② 周边路口已自动扩大放行窗口以疏导积压车辆；③ 在维修完成前考虑启用临时移动信号灯。',
-      tone: 'rose' as const,
-    }
+    return { title: '⚠️ 设备故障 — 需人工介入', body: '当前路口信号控制器故障，倒计时已停止，AI 控制自动降级。建议：① 立即派单巡检；② 周边路口已自动扩大放行窗口以疏导积压车辆；③ 在维修完成前考虑启用临时移动信号灯。', tone: 'rose' as const, source: 'local' as const }
   }
-
   if (it.deviceStatus === 'offline') {
-    return {
-      title: '🔌 设备离线',
-      body: '信号控制器离线，无法获取实时车流数据。AI 决策已暂停对该路口的控制，请在设备恢复后重新启用 AI 自适应。',
-      tone: 'amber' as const,
-    }
+    return { title: '🔌 设备离线', body: '信号控制器离线，无法获取实时车流数据。AI 决策已暂停对该路口的控制，请在设备恢复后重新启用 AI 自适应。', tone: 'amber' as const, source: 'local' as const }
   }
-
-  // 严重拥堵
   if (it.congestionIndex >= 80) {
-    return {
-      title: `严重拥堵 — 建议延长 ${phaseName.value} 至 ${suggestDuration.value}s`,
-      body: `当前${phaseName.value}相位，路口拥堵指数 ${Math.round(it.congestionIndex)}，排队 ${it.queueLength} 辆，平均延误 ${Math.round(it.averageDelay)}s。系统建议：① 延长当前绿灯至 ${suggestDuration.value}s；② 提前 ${nextPhaseName.value} 相位的启动窗口；③ 向上游路口发送限流建议。`,
-      tone: 'rose' as const,
-    }
+    return { title: `严重拥堵 — 建议延长 ${phaseName.value} 至 ${suggestDuration.value}s`, body: `当前${phaseName.value}相位，路口拥堵指数 ${Math.round(it.congestionIndex)}，排队 ${it.queueLength} 辆，平均延误 ${Math.round(it.averageDelay)}s。`, tone: 'rose' as const, source: 'local' as const }
   }
-
-  // 中度拥堵
   if (it.congestionIndex >= 60) {
-    return {
-      title: `中度拥堵 — 维持配时，监控排队变化`,
-      body: `当前${phaseName.value}相位，拥堵指数 ${Math.round(it.congestionIndex)}。车流密度偏高但仍在可控范围，建议维持标准配时 ${suggestDuration.value}s。下一相位${nextPhaseName.value}，预计持续 ${PHASE_DURATION[PHASE_ORDER[(aiPhaseIndex.value + 1) % PHASE_ORDER.length]!] ?? 30}s。若排队超过 20 辆将自动触发延长策略。`,
-      tone: 'amber' as const,
-    }
+    return { title: `中度拥堵 — 维持配时，监控排队变化`, body: `当前${phaseName.value}相位，拥堵指数 ${Math.round(it.congestionIndex)}。车流密度偏高但仍在可控范围，建议维持标准配时 ${suggestDuration.value}s。`, tone: 'amber' as const, source: 'local' as const }
   }
-
-  // 轻度拥堵
   if (it.congestionIndex >= 30) {
-    return {
-      title: `轻度拥堵 — 标准配时运行`,
-      body: `当前${phaseName.value}相位，路口整体畅通。按标准配时方案运行，下一相位${nextPhaseName.value}，预计持续 ${PHASE_DURATION[PHASE_ORDER[(aiPhaseIndex.value + 1) % PHASE_ORDER.length]!] ?? 30}s。AI 持续监控中，若车流密度上升将自动调整。`,
-      tone: 'emerald' as const,
-    }
+    return { title: `轻度拥堵 — 标准配时运行`, body: `当前${phaseName.value}相位，路口整体畅通。按标准配时方案运行。`, tone: 'emerald' as const, source: 'local' as const }
   }
-
-  // 畅通
-  return {
-    title: `✅ 路口畅通 — 标准配时运行`,
-    body: `当前${phaseName.value}相位，路口车流顺畅，拥堵指数仅 ${Math.round(it.congestionIndex)}。AI 按基础配时方案运行，下一相位${nextPhaseName.value}，持续 ${PHASE_DURATION[PHASE_ORDER[(aiPhaseIndex.value + 1) % PHASE_ORDER.length]!] ?? 30}s。`,
-    tone: 'emerald' as const,
-  }
+  return { title: `✅ 路口畅通 — 标准配时运行`, body: `当前${phaseName.value}相位，路口车流顺畅，拥堵指数仅 ${Math.round(it.congestionIndex)}。`, tone: 'emerald' as const, source: 'local' as const }
 })
 
 // ---- 控制操作 ----
@@ -400,9 +394,9 @@ const phaseProgressColor = computed(() => {
       <!-- ===== AI 决策建议（突出区域） ===== -->
       <div class="sc-ai-section" :class="`sc-ai-section--${aiSuggestion.tone}`">
         <div class="sc-ai-section__head">
-          <span class="sc-ai-section__icon">🧠</span>
-          <span class="sc-ai-section__label">AI 决策建议</span>
-          <span class="sc-ai-section__pulse" />
+          <span class="sc-ai-section__icon">{{ aiSuggestion.source === 'ai' ? '🤖' : aiSuggestion.source === 'waiting' ? '⏳' : '🧠' }}</span>
+          <span class="sc-ai-section__label">{{ aiSuggestion.source === 'ai' ? 'AI 模型决策' : aiSuggestion.source === 'waiting' ? '等待 AI 决策' : '本地规则建议' }}</span>
+          <span class="sc-ai-section__pulse" :class="{ 'sc-ai-section__pulse--live': aiSuggestion.source === 'ai', 'sc-ai-section__pulse--waiting': aiSuggestion.source === 'waiting' }" />
         </div>
         <div class="sc-ai-section__title" :class="aiSuggestion.tone !== 'default' ? `text-${aiSuggestion.tone}` : ''">
           {{ aiSuggestion.title }}
@@ -709,6 +703,16 @@ const phaseProgressColor = computed(() => {
   background: #00d4ff;
   box-shadow: 0 0 10px rgba(0, 212, 255, 0.8);
   animation: status-dot-breathe 1.2s ease-in-out infinite;
+}
+.sc-ai-section__pulse--live {
+  background: #22d3a0;
+  box-shadow: 0 0 12px rgba(34, 211, 160, 0.9);
+  animation: status-dot-breathe 0.8s ease-in-out infinite;
+}
+.sc-ai-section__pulse--waiting {
+  background: #f5a623;
+  box-shadow: 0 0 10px rgba(245, 166, 35, 0.6);
+  animation: status-dot-breathe 2s ease-in-out infinite;
 }
 
 .sc-ai-section__title {
