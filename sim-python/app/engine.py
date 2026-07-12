@@ -23,6 +23,7 @@ from app.config import (
 )
 from app.errors import ApiError
 from app.ev_service import EVPriorityService
+from app.safety_guard import SafetyGuard
 from app.models import JsonDict
 from app.roadnet_parser import BUSINESS_PHASE_CODE_TO_INDEX, BUSINESS_PHASE_INDEXES, FIRST_BUSINESS_PHASE_INDEX, PHASE_CODES, RoadnetParser
 from app.scene_registry import SceneDefinition, SceneRegistry
@@ -74,6 +75,7 @@ class RealCityFlowEngine(SimulationEngine):
         self.phase_indexes: dict[str, dict[str, list[int]]] = {}
         self.lane_movement_maps: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
         self.ev_service = EVPriorityService()
+        self.safety_guard = SafetyGuard()
 
     def active_session_count(self) -> int:
         self.cleanup_expired_sessions()
@@ -212,7 +214,8 @@ class RealCityFlowEngine(SimulationEngine):
                     )
                 cityflow_phase_id = phase_index - 1
                 try:
-                    session.engine.set_tl_phase(intersection_id, cityflow_phase_id)
+                    sim_time = float(session.engine.get_current_time())
+                    ok = self._safe_set_tl_phase(session, intersection_id, cityflow_phase_id, sim_time)
                 except Exception as ex:
                     raise ApiError(
                         status=500,
@@ -220,14 +223,14 @@ class RealCityFlowEngine(SimulationEngine):
                         message=f"failed to set phase for {intersection_id}: {ex}",
                         retryable=True,
                     ) from ex
-                session.current_phases[intersection_id] = phase_index
-                applied.append({
-                    "intersectionId": intersection_id,
-                    "phaseIndex": phase_index,
-                    "cityflowPhaseId": cityflow_phase_id,
-                    "phaseCode": PHASE_CODES.get(phase_index) or decision.get("phaseCode"),
-                    "status": "applied",
-                })
+                if ok:
+                    applied.append({
+                        "intersectionId": intersection_id,
+                        "phaseIndex": phase_index,
+                        "cityflowPhaseId": cityflow_phase_id,
+                        "phaseCode": PHASE_CODES.get(phase_index) or decision.get("phaseCode"),
+                        "status": "applied",
+                    })
             if applied:
                 session.external_control_enabled = True
         return {
@@ -324,8 +327,7 @@ class RealCityFlowEngine(SimulationEngine):
                     ev_overrides, ev_events, ev_status = self.ev_service.step(session.sid, session.engine, sim_time)
                     for intersection_id, phase_index in ev_overrides.items():
                         try:
-                            session.engine.set_tl_phase(intersection_id, phase_index - 1)
-                            session.current_phases[intersection_id] = phase_index
+                            self._safe_set_tl_phase(session, intersection_id, phase_index - 1, sim_time, is_emergency=True)
                         except Exception:
                             continue
             vehicles = self._vehicle_states(session, road_by_id)
@@ -654,9 +656,8 @@ class RealCityFlowEngine(SimulationEngine):
             controllable_phase_indexes = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
             cycle_phase_indexes = controllable_phase_indexes or phase_indexes
             phase_index = cycle_phase_indexes[int(sim_time // 10) % len(cycle_phase_indexes)]
-            session.current_phases[intersection_id] = phase_index
             try:
-                session.engine.set_tl_phase(intersection_id, phase_index - 1)
+                self._safe_set_tl_phase(session, intersection_id, phase_index - 1, sim_time)
             except Exception:
                 # CityFlow 0.1 does not expose get_tl_phase; keep returning the
                 # session-recorded phase so visualization remains debuggable.
@@ -729,6 +730,42 @@ class RealCityFlowEngine(SimulationEngine):
         if phase_index in legacy_business_index_to_cityflow_phase:
             return legacy_business_index_to_cityflow_phase[phase_index]
         return phase_index
+
+    def _safe_set_tl_phase(self, session, intersection_id, cityflow_phase_id,
+                            sim_time, is_emergency=False):
+        phase_index = cityflow_phase_id + 1
+        current = session.current_phases.get(intersection_id)
+        if current is None:
+            session.engine.set_tl_phase(intersection_id, cityflow_phase_id)
+            session.current_phases[intersection_id] = phase_index
+            return True
+
+        roadnet_raw = self.road_index.get(session.scene_id, {})
+        roadnet_roads = list(roadnet_raw.values())
+
+        ok, msg, safe_phase = self.safety_guard.guard(
+            sid=session.sid,
+            inter_id=intersection_id,
+            current_phase=current,
+            target_phase=phase_index,
+            sim_time=sim_time,
+            current_phases=session.current_phases,
+            roadnet_roads=roadnet_roads,
+            is_emergency=is_emergency,
+        )
+
+        if ok:
+            session.engine.set_tl_phase(intersection_id, cityflow_phase_id)
+            session.current_phases[intersection_id] = safe_phase
+            return True
+        else:
+            # Rejected: keep current phase, log warning
+            import logging
+            logging.getLogger('traffic.safety').warning(
+                'Safety guard BLOCKED phase change. sid=%s inter=%s current=%s target=%s reason=%s',
+                session.sid, intersection_id, current, phase_index, msg
+            )
+            return False
 
 
 @dataclass
