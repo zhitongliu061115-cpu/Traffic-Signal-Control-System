@@ -6,7 +6,7 @@ import com.traffic.runtime.query.RuntimeQueryDtos.IntersectionDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.MovementSnapshot;
 import com.traffic.runtime.query.RuntimeQueryDtos.RoadDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.SignalSnapshot;
-import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -24,10 +24,10 @@ public class CongestionDiagnosisService {
     private static final double SEVERE_WAIT_SECONDS = 90.0;
     private static final double LOW_SPEED = 3.0;
 
-    private final RuntimeQueryService runtimeQueryService;
+    private final LiveSimulationStateService liveSimulationStateService;
 
-    public CongestionDiagnosisService(RuntimeQueryService runtimeQueryService) {
-        this.runtimeQueryService = runtimeQueryService;
+    public CongestionDiagnosisService(LiveSimulationStateService liveSimulationStateService) {
+        this.liveSimulationStateService = liveSimulationStateService;
     }
 
     public DiagnosisReport diagnoseCongestion(String targetType, String targetId, String sid, String sceneCode) {
@@ -42,7 +42,7 @@ public class CongestionDiagnosisService {
     }
 
     private DiagnosisReport diagnoseIntersection(String intersectionId, String sid, String sceneCode) {
-        IntersectionDetail detail = runtimeQueryService.getIntersectionDetail(intersectionId, sid, sceneCode);
+        IntersectionDetail detail = liveSimulationStateService.getIntersectionDetail(intersectionId, sid, sceneCode);
         List<String> evidence = new ArrayList<>();
         List<String> causes = new ArrayList<>();
         List<String> recommendations = new ArrayList<>();
@@ -111,7 +111,7 @@ public class CongestionDiagnosisService {
     }
 
     private DiagnosisReport diagnoseRoad(String roadId, String sid, String sceneCode) {
-        RoadDetail detail = runtimeQueryService.getRoadDetail(roadId, sid, sceneCode);
+        RoadDetail detail = liveSimulationStateService.getRoadDetail(roadId, sid, sceneCode);
         List<String> evidence = new ArrayList<>();
         List<String> causes = new ArrayList<>();
         List<String> recommendations = new ArrayList<>();
@@ -160,7 +160,7 @@ public class CongestionDiagnosisService {
     }
 
     private DiagnosisReport diagnoseCurrentNetwork(String sid) {
-        CurrentSimulationState state = runtimeQueryService.getCurrentSimulationState(sid);
+        CurrentSimulationState state = liveSimulationStateService.getCurrentSimulationState(sid);
         List<SignalSnapshot> congestedSignals = state.signals().stream()
                 .filter(signal -> signal.queueCount() >= HIGH_QUEUE || signal.avgWait() >= HIGH_WAIT_SECONDS
                         || isCongestedLevel(signal.level()))

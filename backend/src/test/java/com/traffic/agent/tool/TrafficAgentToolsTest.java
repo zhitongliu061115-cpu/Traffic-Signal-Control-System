@@ -1,7 +1,7 @@
 package com.traffic.agent.tool;
 
 import com.traffic.common.exception.BusinessException;
-import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -14,10 +14,10 @@ class TrafficAgentToolsTest {
 
     @Test
     void runtimeToolReturnsStructuredFailureInsteadOfThrowing() {
-        RuntimeQueryService runtimeQueryService = mock(RuntimeQueryService.class);
-        when(runtimeQueryService.getCurrentSimulationState("missing"))
+        LiveSimulationStateService liveSimulationStateService = mock(LiveSimulationStateService.class);
+        when(liveSimulationStateService.getCurrentSimulationState("missing"))
                 .thenThrow(new BusinessException("未找到仿真会话：missing"));
-        TrafficRuntimeAgentTools tools = new TrafficRuntimeAgentTools(runtimeQueryService);
+        TrafficRuntimeAgentTools tools = new TrafficRuntimeAgentTools(liveSimulationStateService);
 
         AgentToolResult result = tools.getCurrentSimulationState("missing");
 

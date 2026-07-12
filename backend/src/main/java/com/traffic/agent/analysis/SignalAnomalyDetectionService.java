@@ -6,6 +6,7 @@ import com.traffic.runtime.query.RuntimeQueryDtos.IntersectionDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.MovementSnapshot;
 import com.traffic.runtime.query.RuntimeQueryDtos.SafetyEventSummary;
 import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -23,9 +24,14 @@ public class SignalAnomalyDetectionService {
     private static final int LONG_PHASE_SECONDS = 120;
 
     private final RuntimeQueryService runtimeQueryService;
+    private final LiveSimulationStateService liveSimulationStateService;
 
-    public SignalAnomalyDetectionService(RuntimeQueryService runtimeQueryService) {
+    public SignalAnomalyDetectionService(
+            RuntimeQueryService runtimeQueryService,
+            LiveSimulationStateService liveSimulationStateService
+    ) {
         this.runtimeQueryService = runtimeQueryService;
+        this.liveSimulationStateService = liveSimulationStateService;
     }
 
     public DiagnosisReport detectSignalAnomaly(String sid, String intersectionId, Integer limit) {
@@ -91,7 +97,7 @@ public class SignalAnomalyDetectionService {
         }
 
         if (intersectionId != null && !intersectionId.isBlank()) {
-            IntersectionDetail detail = runtimeQueryService.getIntersectionDetail(intersectionId, sid, null);
+            IntersectionDetail detail = liveSimulationStateService.getIntersectionDetail(intersectionId, sid, null);
             MovementSnapshot blocked = detail.movements().stream()
                     .filter(movement -> movement.queueLen() >= HIGH_QUEUE || movement.avgWaitTime() >= HIGH_WAIT_SECONDS)
                     .max(Comparator.comparingInt(MovementSnapshot::queueLen))

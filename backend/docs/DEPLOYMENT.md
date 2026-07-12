@@ -232,7 +232,7 @@ traffic:
 - `AGENT_LANGCHAIN4J_ENABLED` 默认是 `false`。需要切换到 LangChain4j `ChatModel` 客户端时再改为 `true`，并确保 `DASHSCOPE_API_KEY` 或 `BAILIAN_API_KEY` 已配置。
 - 不引入 `langchain4j-spring-boot-starter`，不要求升级 Spring Boot。
 - `DASHSCOPE_API_KEY` / `BAILIAN_API_KEY` 不应写入文档、日志或 Git；本地联调可以先写 `application.yml`，稳定后应改为环境变量或部署密钥。
-- Agent 工具层位于 `com.traffic.agent.tool`，只读工具调用 `RuntimeQueryService` 等后端 Service；实时交通状态仍必须通过后端数据库、CityFlow 和 Traffic-R 查询，不能由模型凭空生成。
+- Agent 工具层位于 `com.traffic.agent.tool`，只读工具只能调用后端 Service。实时交通状态工具读取 Spring Boot 内存中的 `LiveSimulationStateService` 最近帧缓存；历史复盘、决策、推理、fallback、告警和审计工具读取 PostgreSQL。模型不能凭空生成实时状态；实时缓存为空时必须返回“无法获取实时状态”。
 
 ## 4. 后续同机部署方案
 

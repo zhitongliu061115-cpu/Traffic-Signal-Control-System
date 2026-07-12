@@ -23,7 +23,7 @@ Agent 可见语义化工具
 - 日志类、审计类、表级查询可以保留为后端内部能力，不默认暴露给模型。
 - 所有工具调用必须可审计：记录会话、消息、工具名、参数、结果摘要、状态、耗时和错误。
 - 所有控制类工具只生成草案或建议，不直接执行信号控制。
-- 实时交通状态来自 CityFlow / PostgreSQL 真实数据；规范、算法、部署等知识来自项目知识库。
+- 实时交通状态来自 CityFlow 最新帧在 Spring Boot 内存中的 `LiveSimulationStateService` 缓存；PostgreSQL 只作为决策、推理、安全、fallback、告警、应急、Agent 审计和后续低频摘要的复盘数据源；规范、算法、部署等知识来自项目知识库。
 
 ## 2. 当前已实现能力
 
@@ -35,7 +35,7 @@ Agent 可见语义化工具
 | --- | --- | --- | --- |
 | `get_current_simulation_state` | 已实现 | 查询当前或指定仿真会话整体状态、最新帧、信号状态 | 保留为核心工具 |
 | `get_intersection_detail` | 已实现 | 查询指定路口相位、movement 状态、相位列表、roadLink | 保留为核心工具，后续补 nearby vehicles |
-| `get_road_detail` | 已实现 | 查询道路基础信息、lane 列表、最新道路快照 | 保留为核心工具 |
+| `get_road_detail` | 已实现 | 查询道路基础信息、lane 列表、内存实时道路状态 | 保留为核心工具 |
 | `get_latest_control_decisions` | 已实现 | 查询最近控制决策 | 保留为核心工具 |
 | `get_decision_trace` | 已实现基础版 | 查询指定决策和 trace | 后续增强为聚合 Traffic-R、安全层、fallback、执行结果 |
 | `get_system_health` | 已实现基础版 | 查询数据库视角健康摘要 | 后续增强为 Spring Boot、CityFlow、Traffic-R、WebSocket、数据库统一健康 |
@@ -48,7 +48,7 @@ Agent 可见语义化工具
 
 这些工具支持可选 `messageId` 参数。传入后会自动写入 `agent_tool_call`。
 
-同时已新增 LangChain4j 工具封装包 `com.traffic.agent.tool`，包括 `TrafficRuntimeAgentTools`、`TrafficDecisionAgentTools`、`TrafficHealthAgentTools`、`TrafficKnowledgeAgentTools`、`TrafficDiagnosisAgentTools` 和 `EmergencyAgentTools`。这些 `@Tool` 方法不调用 Controller，也不通过 `RestTemplate` 自调用本后端，而是调用 `RuntimeQueryService` 等后端 Service。
+同时已新增 LangChain4j 工具封装包 `com.traffic.agent.tool`，包括 `TrafficRuntimeAgentTools`、`TrafficDecisionAgentTools`、`TrafficHealthAgentTools`、`TrafficKnowledgeAgentTools`、`TrafficDiagnosisAgentTools` 和 `EmergencyAgentTools`。这些 `@Tool` 方法不调用 Controller，也不通过 `RestTemplate` 自调用本后端；实时状态类工具调用 `LiveSimulationStateService`，历史复盘类工具调用 `RuntimeQueryService` 等后端 Service。
 
 ### 2.2 Agent 会话与审计
 
@@ -247,7 +247,7 @@ Agent 可见语义化工具
 1. 百炼模型 API：用于最终自然语言生成。
 2. 绑定知识库的百炼应用 API：用于项目文档、交通规范、算法说明和部署资料的知识库问答。
 
-实时交通数据不得放入百炼知识库，必须从本项目数据库和 CityFlow 状态查询。
+实时交通数据不得放入百炼知识库，也不应默认全量写入 PostgreSQL 快照表；当前实时状态必须从 `LiveSimulationStateService` 内存缓存查询，历史复盘数据从 PostgreSQL 查询。
 
 ### 6.2.1 LangChain4j 接入状态
 
@@ -280,7 +280,7 @@ traffic:
 
 - 不允许模型直接访问 SQL。
 - 不允许 Agent 工具直接调用 Controller。
-- LangChain4j 工具应调用 `RuntimeQueryService`、`AgentDataService` 和后续分析服务。
+- LangChain4j 工具应调用后端 Service：实时状态调用 `LiveSimulationStateService`，历史复盘调用 `RuntimeQueryService`，审计调用 `AgentDataService`，诊断调用后续分析服务。
 - 控制类能力只允许生成草案，不允许直接下发相位或切换策略。
 
 ### 6.3 知识库内容范围

@@ -1,24 +1,24 @@
 package com.traffic.agent.tool;
 
-import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
 
 @Component
 public class TrafficRuntimeAgentTools {
 
-    private final RuntimeQueryService runtimeQueryService;
+    private final LiveSimulationStateService liveSimulationStateService;
 
-    public TrafficRuntimeAgentTools(RuntimeQueryService runtimeQueryService) {
-        this.runtimeQueryService = runtimeQueryService;
+    public TrafficRuntimeAgentTools(LiveSimulationStateService liveSimulationStateService) {
+        this.liveSimulationStateService = liveSimulationStateService;
     }
 
     @Tool(name = "get_current_simulation_state", value = "查询当前仿真整体状态，包括会话、最新帧、车辆数、速度、等待和信号状态。只读。")
     public AgentToolResult getCurrentSimulationState(String sid) {
         return AgentToolSupport.run(
                 "get_current_simulation_state",
-                () -> runtimeQueryService.getCurrentSimulationState(blankToNull(sid)),
-                "来自 RuntimeQueryService 的当前仿真状态"
+                () -> liveSimulationStateService.getCurrentSimulationState(blankToNull(sid)),
+                "来自 LiveSimulationStateService 内存缓存的当前仿真状态"
         );
     }
 
@@ -26,8 +26,8 @@ public class TrafficRuntimeAgentTools {
     public AgentToolResult getIntersectionDetail(String intersectionId, String sid, String sceneCode) {
         return AgentToolSupport.run(
                 "get_intersection_detail",
-                () -> runtimeQueryService.getIntersectionDetail(intersectionId, blankToNull(sid), blankToNull(sceneCode)),
-                "来自 RuntimeQueryService 的路口详情"
+                () -> liveSimulationStateService.getIntersectionDetail(intersectionId, blankToNull(sid), blankToNull(sceneCode)),
+                "来自 LiveSimulationStateService 内存缓存的路口详情"
         );
     }
 
@@ -35,8 +35,8 @@ public class TrafficRuntimeAgentTools {
     public AgentToolResult getRoadDetail(String roadId, String sid, String sceneCode) {
         return AgentToolSupport.run(
                 "get_road_detail",
-                () -> runtimeQueryService.getRoadDetail(roadId, blankToNull(sid), blankToNull(sceneCode)),
-                "来自 RuntimeQueryService 的道路详情"
+                () -> liveSimulationStateService.getRoadDetail(roadId, blankToNull(sid), blankToNull(sceneCode)),
+                "来自 LiveSimulationStateService 内存缓存的道路详情"
         );
     }
 

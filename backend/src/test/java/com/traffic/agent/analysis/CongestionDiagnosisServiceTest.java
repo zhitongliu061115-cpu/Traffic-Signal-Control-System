@@ -4,7 +4,7 @@ import com.traffic.agent.analysis.AgentAnalysisDtos.DiagnosisReport;
 import com.traffic.runtime.query.RuntimeQueryDtos.IntersectionDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.MovementSnapshot;
 import com.traffic.runtime.query.RuntimeQueryDtos.SignalSnapshot;
-import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -17,7 +17,7 @@ class CongestionDiagnosisServiceTest {
 
     @Test
     void diagnosisContainsConcreteEvidenceAndSafeRecommendation() {
-        RuntimeQueryService runtimeQueryService = mock(RuntimeQueryService.class);
+        LiveSimulationStateService liveSimulationStateService = mock(LiveSimulationStateService.class);
         IntersectionDetail detail = new IntersectionDetail(
                 "intersection-uuid",
                 "jinan_3x4",
@@ -35,9 +35,9 @@ class CongestionDiagnosisServiceTest {
                 List.of(),
                 List.of()
         );
-        when(runtimeQueryService.getIntersectionDetail("intersection_3", "sid-1", null)).thenReturn(detail);
+        when(liveSimulationStateService.getIntersectionDetail("intersection_3", "sid-1", null)).thenReturn(detail);
 
-        DiagnosisReport report = new CongestionDiagnosisService(runtimeQueryService)
+        DiagnosisReport report = new CongestionDiagnosisService(liveSimulationStateService)
                 .diagnoseCongestion("intersection", "intersection_3", "sid-1", null);
 
         assertTrue(report.conclusion().contains("intersection_3"));

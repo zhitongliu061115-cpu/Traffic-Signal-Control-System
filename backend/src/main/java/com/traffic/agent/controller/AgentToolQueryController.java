@@ -14,6 +14,7 @@ import com.traffic.runtime.query.RuntimeQueryDtos.RoadDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.SafetyEventSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.SystemHealthResponse;
 import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,10 +30,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentToolQueryController {
 
     private final RuntimeQueryService runtimeQueryService;
+    private final LiveSimulationStateService liveSimulationStateService;
     private final AgentDataService agentDataService;
 
-    public AgentToolQueryController(RuntimeQueryService runtimeQueryService, AgentDataService agentDataService) {
+    public AgentToolQueryController(
+            RuntimeQueryService runtimeQueryService,
+            LiveSimulationStateService liveSimulationStateService,
+            AgentDataService agentDataService
+    ) {
         this.runtimeQueryService = runtimeQueryService;
+        this.liveSimulationStateService = liveSimulationStateService;
         this.agentDataService = agentDataService;
     }
 
@@ -45,7 +52,7 @@ public class AgentToolQueryController {
                 messageId,
                 "get_current_simulation_state",
                 args("sid", sid),
-                () -> runtimeQueryService.getCurrentSimulationState(sid)
+                () -> liveSimulationStateService.getCurrentSimulationState(sid)
         );
     }
 
@@ -60,7 +67,7 @@ public class AgentToolQueryController {
                 messageId,
                 "get_intersection_detail",
                 args("intersectionId", intersectionId, "sid", sid, "sceneCode", sceneCode),
-                () -> runtimeQueryService.getIntersectionDetail(intersectionId, sid, sceneCode)
+                () -> liveSimulationStateService.getIntersectionDetail(intersectionId, sid, sceneCode)
         );
     }
 
@@ -75,7 +82,7 @@ public class AgentToolQueryController {
                 messageId,
                 "get_road_detail",
                 args("roadId", roadId, "sid", sid, "sceneCode", sceneCode),
-                () -> runtimeQueryService.getRoadDetail(roadId, sid, sceneCode)
+                () -> liveSimulationStateService.getRoadDetail(roadId, sid, sceneCode)
         );
     }
 

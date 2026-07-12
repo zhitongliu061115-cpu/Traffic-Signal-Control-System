@@ -168,6 +168,28 @@ public class RuntimePersistenceService {
         }
     }
 
+    public void persistRuntimeEvents(
+            SimulationRuntimeSession session,
+            SimFrameData frame,
+            List<ControlDecision> decisions
+    ) {
+        if (session == null || frame == null) {
+            return;
+        }
+        try {
+            UUID scenePk = ensureScene(session.getSceneId());
+            UUID sessionPk = ensureSessionExists(session, scenePk);
+            persistDecisions(scenePk, sessionPk, frame, decisions);
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "runtime event persistence skipped. sid={}, simTime={}, error={}",
+                    session.getSid(),
+                    frame.simTime(),
+                    ex.getMessage()
+            );
+        }
+    }
+
     private void ensureIntersections(UUID scenePk, List<IntersectionDto> intersections) {
         if (intersections == null) {
             return;

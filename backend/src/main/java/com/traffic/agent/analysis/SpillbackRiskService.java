@@ -5,7 +5,7 @@ import com.traffic.common.exception.BusinessException;
 import com.traffic.runtime.query.RuntimeQueryDtos.IntersectionDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.RoadDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.RoadLinkInfo;
-import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.simulation.state.LiveSimulationStateService;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -21,10 +21,10 @@ public class SpillbackRiskService {
     private static final double LOW_SPEED = 3.0;
     private static final double SEVERE_LOW_SPEED = 1.5;
 
-    private final RuntimeQueryService runtimeQueryService;
+    private final LiveSimulationStateService liveSimulationStateService;
 
-    public SpillbackRiskService(RuntimeQueryService runtimeQueryService) {
-        this.runtimeQueryService = runtimeQueryService;
+    public SpillbackRiskService(LiveSimulationStateService liveSimulationStateService) {
+        this.liveSimulationStateService = liveSimulationStateService;
     }
 
     public DiagnosisReport detectSpillbackRisk(String sid, String roadId, String intersectionId, String sceneCode) {
@@ -48,7 +48,7 @@ public class SpillbackRiskService {
     }
 
     private DiagnosisReport detectRoadSpillback(String sid, String roadId, String sceneCode) {
-        RoadDetail road = runtimeQueryService.getRoadDetail(roadId, sid, sceneCode);
+        RoadDetail road = liveSimulationStateService.getRoadDetail(roadId, sid, sceneCode);
         List<String> evidence = new ArrayList<>();
         List<String> causes = new ArrayList<>();
         List<String> recommendations = new ArrayList<>();
@@ -93,7 +93,7 @@ public class SpillbackRiskService {
     }
 
     private DiagnosisReport detectIntersectionSpillback(String sid, String intersectionId, String sceneCode) {
-        IntersectionDetail intersection = runtimeQueryService.getIntersectionDetail(intersectionId, sid, sceneCode);
+        IntersectionDetail intersection = liveSimulationStateService.getIntersectionDetail(intersectionId, sid, sceneCode);
         List<String> evidence = new ArrayList<>();
         List<String> causes = new ArrayList<>();
         List<String> recommendations = new ArrayList<>();
@@ -108,7 +108,7 @@ public class SpillbackRiskService {
                 continue;
             }
             try {
-                RoadDetail downstream = runtimeQueryService.getRoadDetail(link.toRoadId(), sid, sceneCode);
+                RoadDetail downstream = liveSimulationStateService.getRoadDetail(link.toRoadId(), sid, sceneCode);
                 if (downstream.latestState() == null) {
                     evidence.add("downstream road=" + link.toRoadId() + " 没有 road_state_snapshot");
                     continue;
