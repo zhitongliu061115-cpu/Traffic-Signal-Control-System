@@ -36,6 +36,7 @@ let roadLayer: ReturnType<typeof addAMapRoadLayer> | null = null
 let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
 let emergencyLine: AMap.Polyline | null = null
 let vehicleLayer: VehicleLayer | null = null
+let vehicleUpdateTimer: ReturnType<typeof setTimeout> | null = null
 
 async function bootstrapMap(): Promise<void> {
   if (!mapBox.value) return
@@ -171,19 +172,28 @@ watch(selectedIntersectionId, (id) => {
 // ---- 仿真车辆图层：路网就绪后按帧刷新 ----
 watch([simulationVehicles, simRoadnet, simulationStatus], () => {
   if (simulationStatus.value !== 'running' || !amapInstance || !simRoadnet.value) {
+    if (vehicleUpdateTimer) {
+      clearTimeout(vehicleUpdateTimer)
+      vehicleUpdateTimer = null
+    }
     vehicleLayer?.dispose()
     vehicleLayer = null
     return
   }
-  if (!vehicleLayer) {
-    vehicleLayer = createVehicleLayer(
-      amapInstance.map,
-      simRoadnet.value as SimRoadnetResponse,
-      roads.value,
-      intersections.value,
-    )
-  }
-  vehicleLayer.update(simulationVehicles.value as SimVehicleState[])
+  if (vehicleUpdateTimer !== null) return
+  vehicleUpdateTimer = setTimeout(() => {
+    vehicleUpdateTimer = null
+    if (simulationStatus.value !== 'running' || !amapInstance || !simRoadnet.value) return
+    if (!vehicleLayer) {
+      vehicleLayer = createVehicleLayer(
+        amapInstance.map,
+        simRoadnet.value as SimRoadnetResponse,
+        roads.value,
+        intersections.value,
+      )
+    }
+    vehicleLayer.update(simulationVehicles.value as SimVehicleState[])
+  }, 500)
 })
 
 function onMapDblClick(): void {
@@ -193,6 +203,7 @@ function onMapDblClick(): void {
 setTimeout(bootstrapMap, 100)
 
 onBeforeUnmount(() => {
+  if (vehicleUpdateTimer) clearTimeout(vehicleUpdateTimer)
   roadLayer?.dispose()
   tlMarkers?.dispose()
   vehicleLayer?.dispose()

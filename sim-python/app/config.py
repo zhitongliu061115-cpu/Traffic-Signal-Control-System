@@ -6,7 +6,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_SCENE_ID = "jinan_3x4"
 DEFAULT_FRAME_STEP_SECONDS = 1.0
-DEFAULT_VISIBLE_VEHICLE_LIMIT = int(os.getenv("SIM_VISIBLE_VEHICLE_LIMIT", "300"))
+DEFAULT_VISIBLE_VEHICLE_LIMIT = int(os.getenv("SIM_VISIBLE_VEHICLE_LIMIT", "150"))
 DEFAULT_REALTIME_TICK_SECONDS = float(os.getenv("SIM_REALTIME_TICK_SECONDS", "0.1"))
 DEFAULT_MIN_REALTIME_TICK_SECONDS = float(os.getenv("SIM_MIN_REALTIME_TICK_SECONDS", "0.02"))
 # 0 means "do not reject new sessions by count". Session lifecycle is protected
