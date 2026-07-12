@@ -71,6 +71,9 @@ const PHASE_DURATIONS: Record<SignalPhase, number> = {
 
 let trendTick = 0 // 不放在 state 里避免响应式开销
 
+/** 跟踪仿真中每个路口的相位开始时间（CityFlow simTime），用于准确计算剩余绿灯秒数 */
+const simPhaseTimers = new Map<string, { phaseStartTime: number; phaseCode: string }>()
+
 export const useTrafficStore = defineStore('traffic', () => {
   // =========================================================
   // 1. State
@@ -132,7 +135,7 @@ export const useTrafficStore = defineStore('traffic', () => {
   // ---- 仿真状态 ----
   const simulationStatus = ref<SimulationStatus>('booting')
   const simulationSid = ref<string | null>(null)
-  const simulationSceneId = ref('jinan_3x4')
+  const simulationSceneId = ref('xian')
   const simulationSpeed = ref(1.0)
   const simulationControllerType = ref('fixed-time')
   const simulationSimTime = ref(0)
@@ -989,8 +992,16 @@ export const useTrafficStore = defineStore('traffic', () => {
       if (!it) continue
       it.currentPhase = phaseMap[sig.phaseCode] ?? it.currentPhase
       it.deviceStatus = 'online'
-      // 仿真每 10s 切一次相位，从 simTime 推算倒计时
-      it.greenRemain = 10 - (frame.simTime % 10)
+      // 用相位开始时间 + 时长推算真实剩余秒数
+      const prev = simPhaseTimers.get(sig.intersectionId)
+      if (!prev || prev.phaseCode !== sig.phaseCode) {
+        simPhaseTimers.set(sig.intersectionId, { phaseStartTime: frame.simTime, phaseCode: sig.phaseCode })
+      }
+      const timer = simPhaseTimers.get(sig.intersectionId)!
+      const mappedPhase = phaseMap[sig.phaseCode]
+      const duration = mappedPhase ? (PHASE_DURATIONS[mappedPhase] ?? 30) : 30
+      const elapsed = frame.simTime - timer.phaseStartTime
+      it.greenRemain = Math.max(0, Math.round(duration - elapsed))
     }
 
     // ---- 路口排队/延误（按转置键精确匹配）----
@@ -1211,6 +1222,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     simulationMetrics.value = null
     simulationErrorMessage.value = null
     roadCongestionSmooth.clear()
+    simPhaseTimers.clear()
   }
 
   /** 重置所有数据到初始状态 */

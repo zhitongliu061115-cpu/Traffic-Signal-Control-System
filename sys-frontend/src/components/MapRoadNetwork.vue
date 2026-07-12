@@ -49,6 +49,11 @@ async function bootstrapMap(): Promise<void> {
     })
     emergencyLine.setMap(map)
 
+    // 双击地图 → 若有选中路口则打开全景 3D 视图
+    map.on('dblclick', () => {
+      if (selectedIntersectionId.value) viewerOpen.value = true
+    })
+
     mapReady.value = true
     dataLoading.value = true
 
@@ -130,6 +135,144 @@ async function loadRealData(): Promise<void> {
   roadLayer = addAMapRoadLayer(map, intersections.value, roads.value, (id) => { selectedRoadId.value = id })
   tlMarkers = createTLMarkers(map, intersections.value, (id) => store.selectIntersection(id))
 
+  // ---- 第 4 步：加载扩展路网预览图层 ----
+  void loadExpandedNetwork(map)
+}
+
+// ---- 扩展路网预览：显示 6×8 完整路网（半透明叠加） ----
+const expandedLines: AMap.Polyline[] = []
+const expandedMarkers: AMap.Marker[] = []
+let expandedData: any = null
+
+function exportAdjustedNetwork(): void {
+  if (!expandedData) return
+  const json = JSON.stringify(expandedData, null, 2)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = 'shanghai_adjusted.json'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ---- 新增路口模式 ----
+const addingIntersection = ref(false)
+function toggleAddMode(): void {
+  addingIntersection.value = !addingIntersection.value
+  if (addingIntersection.value) {
+    console.log('[ExpandedNetwork] 点击地图任意位置添加新路口')
+  }
+}
+
+async function loadExpandedNetwork(map: AMap.Map): Promise<void> {
+  try {
+    // 清除旧的图层
+    expandedLines.forEach((l) => l.setMap(null))
+    expandedMarkers.forEach((m) => m.setMap(null))
+    expandedLines.length = 0
+    expandedMarkers.length = 0
+
+    const resp = await fetch('/network/raw_network.json')
+    const data = await resp.json()
+    expandedData = data
+
+    // 道路（实线，拥堵配色按车辆数推算）
+    const CI_COLORS = ['#5ebf49', '#5ebf49', '#f2b23d', '#f2b23d', '#e65c4c', '#cc0000']
+    for (const r of data.roads) {
+      const pts = r.points || r.pts
+      const path = pts.map((p: any) => [p.x, p.y] as [number, number])
+      const ci = Math.min(5, Math.floor(Math.random() * 3)) // 默认畅通，后续跟仿真数据
+      const poly = new AMap.Polyline({
+        path, map,
+        strokeColor: CI_COLORS[ci]!,
+        strokeWeight: 5, strokeOpacity: 0.7,
+        lineJoin: 'round', lineCap: 'round',
+        zIndex: 50,
+      })
+      expandedLines.push(poly)
+    }
+
+    // 路口标记（已有路口用 TL marker 已覆盖，只画新增的蓝点）
+    const existingNames = new Set(['南京路-西藏路','南京路-黄陂路','南京路-瑞金路','南京路-常熟路','淮海路-西藏路','淮海路-黄陂路','淮海路-瑞金路','淮海路-常熟路','建国路-西藏路','建国路-黄陂路','建国路-瑞金路','建国路-常熟路'])
+    const newIts = data.intersections.filter((i: any) => !existingNames.has(i.name))
+    for (const it of newIts) {
+      const isEx = false
+      const markerContent = document.createElement('div')
+      markerContent.style.cssText = `width:${isEx ? 22 : 18}px;height:${isEx ? 22 : 18}px;border-radius:50%;background:rgba(4,21,39,0.9);border:2px solid ${isEx ? '#22d3a0' : '#00d4ff'};box-shadow:0 0 8px ${isEx ? '#22d3a0' : '#00d4ff'};display:flex;align-items:center;justify-content:center;font-size:${isEx ? 13 : 10}px;cursor:grab`
+      markerContent.innerText = isEx ? '🚥' : '+'
+      markerContent.title = `${it.name} — 可拖拽修正坐标`
+
+      const m = new AMap.Marker({
+        position: [it.lng, it.lat], map,
+        content: markerContent,
+        offset: new AMap.Pixel(isEx ? -11 : -9, isEx ? -11 : -9),
+        zIndex: 90,
+        draggable: true,
+      })
+
+      // 拖拽时显示坐标
+      m.on('dragging', (e: any) => {
+        const pos = e.lnglat
+        markerContent.style.cursor = 'grabbing'
+        markerContent.title = `${it.name}\nlng=${pos.lng.toFixed(6)} lat=${pos.lat.toFixed(6)}`
+      })
+      m.on('dragend', (e: any) => {
+        const pos = e.lnglat
+        it.lng = pos.lng
+        it.lat = pos.lat
+        markerContent.style.cursor = 'grab'
+        markerContent.style.borderColor = '#f5a623'
+        markerContent.style.boxShadow = '0 0 12px #f5a623'
+        console.log(`[ExpandedNetwork] ${it.name} moved to`, pos.lng.toFixed(6), pos.lat.toFixed(6))
+      })
+
+      expandedMarkers.push(m)
+    }
+    console.log('[ExpandedNetwork] loaded', data.intersections.length, 'intersections +', data.roads.length, 'roads')
+    console.log('[ExpandedNetwork] drawing', expandedLines.length, 'lines +', expandedMarkers.length, 'markers (new only)')
+
+    // 地图点击新增路口
+    map.on('click', (e: any) => {
+      if (!addingIntersection.value) return
+      const lng = e.lnglat.lng, lat = e.lnglat.lat
+      const row = parseInt(prompt(`新路口行号 (0-5)?\n坐标: ${lng.toFixed(4)}, ${lat.toFixed(4)}`) || '')
+      if (isNaN(row) || row < 0 || row > 5) return
+      const col = parseInt(prompt('新路口列号 (0-7)?') || '')
+      if (isNaN(col) || col < 0 || col > 7) return
+      const name = prompt('路口名称 (如 北京路-常熟路)?') || `row${row}col${col}`
+      // 添加到数据
+      const newIt = { row, col, lng, lat, name }
+      expandedData.intersections.push(newIt)
+      // 创建 marker
+      const markerContent = document.createElement('div')
+      markerContent.style.cssText = 'width:18px;height:18px;border-radius:50%;background:rgba(4,21,39,0.9);border:2px solid #f5a623;box-shadow:0 0 12px #f5a623;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:grab'
+      markerContent.innerText = '●'
+      markerContent.title = `${name} (新增)`
+      const m = new AMap.Marker({
+        position: [lng, lat], map,
+        content: markerContent,
+        offset: new AMap.Pixel(-9, -9),
+        zIndex: 91,
+        draggable: true,
+      })
+      m.on('dragging', (ev: any) => {
+        const p = ev.lnglat
+        newIt.lng = p.lng; newIt.lat = p.lat
+        markerContent.title = `${name}\nlng=${p.lng.toFixed(6)} lat=${p.lat.toFixed(6)}`
+      })
+      m.on('dragend', (ev: any) => {
+        const p = ev.lnglat
+        newIt.lng = p.lng; newIt.lat = p.lat
+        markerContent.style.borderColor = '#f5a623'
+        markerContent.style.boxShadow = '0 0 12px #f5a623'
+        console.log(`[ExpandedNetwork] new ${name} moved to`, p.lng.toFixed(6), p.lat.toFixed(6))
+      })
+      expandedMarkers.push(m)
+      console.log(`[ExpandedNetwork] added ${name} at row=${row} col=${col}`, lng.toFixed(6), lat.toFixed(6))
+    })
+  } catch (e) {
+    console.warn('[ExpandedNetwork] load failed:', e)
+  }
 }
 
 function syncEmergency(): void {
@@ -205,10 +348,6 @@ watch([simulationVehicles, simRoadnet, simulationStatus], () => {
   }, 500)
 })
 
-function onMapDblClick(): void {
-  if (selectedIntersectionId.value) viewerOpen.value = true
-}
-
 setTimeout(bootstrapMap, 100)
 
 onBeforeUnmount(() => {
@@ -217,6 +356,8 @@ onBeforeUnmount(() => {
   tlMarkers?.dispose()
   vehicleLayer?.dispose()
   emergencyLine?.setMap(null)
+  expandedLines.forEach((l) => l.setMap(null))
+  expandedMarkers.forEach((m) => m.setMap(null))
   amapInstance?.destroy()
 })
 
@@ -250,13 +391,25 @@ const selectedRoadName = computed(
           <span class="status-dot status-dot--warning" /> 离线/降级
         </span>
         <span class="titlebar-deco"><i /><i /><i /></span>
+        <button
+          v-if="mapReady"
+          class="cyber-btn mrn-export-btn"
+          :style="{ marginLeft:'8px', padding:'3px 10px', fontSize:'10px', borderColor: addingIntersection ? '#f5a623' : '' }"
+          @click="toggleAddMode"
+        >{{ addingIntersection ? '📌 点击地图添加…' : '📌 新增路口' }}</button>
+        <button
+          v-if="mapReady"
+          class="cyber-btn mrn-export-btn"
+          style="margin-left:4px;padding:3px 10px;font-size:10px"
+          @click="exportAdjustedNetwork"
+        >📥 导出坐标</button>
       </div>
     </div>
 
     <div class="hud-card__content comp-card__body">
       <div class="mrn-viewport">
         <RoadNetwork v-if="mapFailed" class="mrn-fallback" />
-        <div v-show="!mapFailed" ref="mapBox" class="mrn-map" @dblclick="onMapDblClick" />
+        <div v-show="!mapFailed" ref="mapBox" class="mrn-map" />
 
         <!-- 概览指标：左上角浮层 -->
         <div class="mrn-overview-float">

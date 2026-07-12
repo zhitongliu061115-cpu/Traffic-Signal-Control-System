@@ -48,6 +48,9 @@ const { intersections, roads, vehicles, simulationVehicles, simulationSignals, s
 const viewerBox = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const modelFound = ref(false)
+/** 模型状态：loading | glb | procedural | error */
+const modelStatus = ref<'loading' | 'glb' | 'procedural' | 'error'>('loading')
+const glbErrorMsg = ref('')
 
 const intersection = computed(() =>
   intersections.value.find((it) => it.id === props.intersectionId) ?? null,
@@ -110,7 +113,8 @@ function deriveIntersectionState(
   // 当前相位
   const sig = simSignals.find((s) => s.intersectionId === cfId)
   const currentPhase = sig ? (SIGNAL_PHASE_MAP[sig.phaseCode] ?? 'eastwest_straight') : 'eastwest_straight'
-  const greenRemain = 10 - (simTime % 10)
+  // 倒计时：优先用 store 已计算的准确值，降级才用 10s 估算
+  const greenRemain = shIt.greenRemain > 0 ? shIt.greenRemain : 10 - (simTime % 10)
 
   return { northCount: north, southCount: south, eastCount: east, westCount: west, currentPhase, greenRemain }
 }
@@ -224,35 +228,32 @@ function buildProceduralIntersection(): Group {
     g.add(zV)
   }
 
-  // 3D 红绿灯柱（四角，每个朝向对应道路）
+  // 3D 红绿灯柱（四角，用纯 Three.js 几何体 + 发光球体替代 GLB）
+  const poleMat = new MeshStandardMaterial({ color: 0x4a5568, roughness: 0.5, metalness: 0.3 })
+  const redMat = new MeshStandardMaterial({ color: 0xff4d6d, emissive: 0x330000, emissiveIntensity: 0.8 })
+  const yellowMat = new MeshStandardMaterial({ color: 0xf5a623, emissive: 0x332200, emissiveIntensity: 0.6 })
+  const greenMat = new MeshStandardMaterial({ color: 0x22d3a0, emissive: 0x002211, emissiveIntensity: 0.9 })
   const tlConfigs: [number, number, number][] = [
     [-ROAD_W / 2 - 6, 0, -ROAD_W / 2 - 6], // 西南角
     [ROAD_W / 2 + 6, 0, -ROAD_W / 2 - 6],  // 东南角
     [-ROAD_W / 2 - 6, 0, ROAD_W / 2 + 6],  // 西北角
     [ROAD_W / 2 + 6, 0, ROAD_W / 2 + 6],   // 东北角
   ]
-  const tlRotations: number[] = [
-    0,            // 西南 → 面向东
-    Math.PI,      // 东南 → 面向西
-    -Math.PI / 2, // 西北 → 面向南
-    Math.PI / 2,  // 东北 → 面向北
-  ]
-  const loader = new GLTFLoader()
-  tlConfigs.forEach(([x, y, z], idx) => {
-    loader.load(
-      '/models/traffic-light.glb',
-      (gltf) => {
-        const model = gltf.scene
-        model.position.set(x, y, z)
-        model.scale.setScalar(12)
-        model.rotation.set(0, tlRotations[idx]!, 0)
-        g.add(model)
-        console.log('[3D] traffic-light loaded at', x, z, 'rotation', tlRotations[idx])
-      },
-      undefined,
-      (err) => console.error('[3D] GLB load error:', err),
-    )
-  })
+  for (const [tx, ty, tz] of tlConfigs) {
+    // 灯柱
+    const pole = new Mesh(new CylinderGeometry(0.8, 1.0, 18, 8), poleMat)
+    pole.position.set(tx, 9, tz)
+    g.add(pole)
+    // 横臂
+    const arm = new Mesh(new BoxGeometry(5, 0.6, 0.6), poleMat)
+    arm.position.set(tx + 2.5, 17, tz)
+    g.add(arm)
+    // 三色信号灯
+    const lightGeom = new SphereGeometry(1.2, 8, 8)
+    const redLight = new Mesh(lightGeom, redMat); redLight.position.set(tx + 3.5, 18.5, tz); g.add(redLight)
+    const yellowLight = new Mesh(lightGeom, yellowMat); yellowLight.position.set(tx + 4.5, 17.5, tz); g.add(yellowLight)
+    const greenLight = new Mesh(lightGeom, greenMat); greenLight.position.set(tx + 3.5, 16.5, tz); g.add(greenLight)
+  }
 
   // 雷达（四角各一个）
   const radarGeom = new SphereGeometry(3, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2)
@@ -304,21 +305,17 @@ function buildProceduralIntersection(): Group {
   return g
 }
 
+// ---- 模块级 GLB 缓存（跨弹窗实例共享） ----
+let cachedSceneGLB: THREE.Group | null = null
+
 /**
- * 预留：加载真实 GLTF 模型。
- * 放入 public/models/{id}.glb 后，取消注释即可自动加载真实路口。
+ * 加载路口 3D 场景：优先 GLB 精模 → 降级程序化几何 → 兜底错误提示
+ * 放入 public/models/{id}.glb 后自动加载。
  */
 function loadModel(id: string): void {
-  // const loader = new GLTFLoader()
-  // loader.load(
-  //   `/models/${id}.glb`,
-  //   (gltf) => { scene?.add(gltf.scene); modelFound.value = true; loading.value = false },
-  //   undefined,
-  //   () => { buildFallback(); loading.value = false },  // 加载失败 → 占位
-  // )
   void id
   buildFallback()
-  loading.value = false
+  // NOTE: loading 状态由 buildFallback 的异步回调管理，不在此处设置
 }
 
 let rootGroup: Group | null = null
@@ -329,83 +326,134 @@ function buildFallback(): void {
   scene.add(rootGroup)
   modelFound.value = true
 
+  // GLB 缓存命中 → 直接 clone 使用
+  if (cachedSceneGLB) {
+    const clone = cachedSceneGLB.clone(true)
+    rootGroup.add(clone)
+    modelFound.value = true
+    modelStatus.value = 'glb'
+    loading.value = false
+    setupSceneGLB(clone)
+    return
+  }
+
   // 加载用户编辑的场景 GLB
   const sceneLoader = new GLTFLoader()
   sceneLoader.load(
     '/models/scene.glb',
     (gltf) => {
+      cachedSceneGLB = gltf.scene // 缓存到模块级
       gltf.scene.position.set(0, 0, 0)
       rootGroup!.add(gltf.scene)
-      console.log("[3D] scene.glb loaded")
+      console.log("[3D] scene.glb loaded + cached")
+      modelFound.value = true
+      modelStatus.value = 'glb'
       loading.value = false
-
-      // 在 Blender 标记的 tl_label_* 空物体上挂倒计时 Sprite
-      const tlSprites: Sprite[] = []
-      const tlLabels = ['tl_label_0', 'tl_label_1', 'tl_label_2', 'tl_label_3']
-      gltf.scene.traverse((child) => {
-        const name = (child as any).name || ''
-        const idx = tlLabels.findIndex(l => name.includes(l))
-        if (idx >= 0) {
-          const canvas = document.createElement('canvas')
-          canvas.width = 64; canvas.height = 48
-          const ctx = canvas.getContext('2d')!
-          const tex = new CanvasTexture(canvas)
-          tex.minFilter = LinearFilter
-          const sprite = new Sprite(new SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }))
-          sprite.scale.set(6, 4, 1)
-          sprite.userData = { canvas, ctx, idx: tlLabels.findIndex(l => name.includes(l)) }
-          child.add(sprite)
-          tlSprites.push(sprite)
-        }
-      })
-
-      function updateTLSprite() {
-        const it = intersection.value
-        if (!it) return
-        const isEW = it.currentPhase.startsWith('eastwest')
-        const rem = Math.round(it.greenRemain)
-        const allRed = it.currentPhase === 'all_red' || it.deviceStatus !== 'online'
-        // SW/SE=东西向, NW/NE=南北向
-        const ewSet = new Set([0, 1])
-        for (const s of tlSprites) {
-          const idx = s.userData.idx as number
-          const isActiveDir = ewSet.has(idx) ? isEW : !isEW
-          const color = allRed ? '#FF4D6D' : isActiveDir ? '#22D3A0' : '#FF4D6D'
-          const c = s.userData.canvas as HTMLCanvasElement
-          const ctx = c.getContext('2d')!
-          ctx.clearRect(0, 0, c.width, c.height)
-          ctx.fillStyle = color
-          ctx.beginPath(); ctx.arc(32, 24, 16, 0, Math.PI * 2); ctx.fill()
-          ctx.fillStyle = '#fff'
-          ctx.font = 'bold 16px Rajdhani, sans-serif'
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-          ctx.fillText(String(rem), 32, 22)
-          ;(s.material as SpriteMaterial).map!.needsUpdate = true
-        }
-      }
-      updateTLSprite()
-      tlSpriteUpdaters.push(updateTLSprite)
-      const dashMat = new MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222, emissiveIntensity: 0.3 })
-      const m4 = new Matrix4()
-      for (const dir of ["H", "V"] as const) {
-        const isH = dir === "H"
-        const dGeom = isH ? new BoxGeometry(12, 1.15, 0.4) : new BoxGeometry(0.4, 1.15, 12)
-        const dPos: Array<[number, number, number]> = []
-        for (let pos = -70; pos <= 70; pos += 18) {
-          for (const offset of [-12, -6, 6, 12]) {
-            if (isH) dPos.push([pos, 0.5, offset])
-            else     dPos.push([offset, 0.5, pos])
-          }
-        }
-        const dIM = new InstancedMesh(dGeom, dashMat, dPos.length)
-        dPos.forEach(([x, y, z], i) => { m4.identity().setPosition(x, y, z); dIM.setMatrixAt(i, m4) })
-        dIM.instanceMatrix.needsUpdate = true
-        rootGroup!.add(dIM)
-      }
+      setupSceneGLB(gltf.scene)
     },
     undefined,
-    (err) => { console.error('[3D] scene.glb load error:', err); modelFound!.value = false },
+    (err) => {
+      console.error('[3D] scene.glb load error:', err)
+      // 降级：用程序化几何构建路口实景
+      try {
+        const procGroup = buildProceduralIntersection()
+        rootGroup!.add(procGroup)
+        modelFound.value = false
+        modelStatus.value = 'procedural'
+        loading.value = false
+        console.log('[3D] procedural fallback rendered')
+      } catch (e) {
+        console.error('[3D] procedural fallback also failed:', e)
+        modelFound.value = false
+        modelStatus.value = 'error'
+        glbErrorMsg.value = '3D 模型加载失败，程序化场景也无法构建。请检查模型文件。'
+        loading.value = false
+      }
+    },
   )
+}
+
+/** 设置 scene.glb 中的交通灯倒计时精灵、车道线等 */
+function setupSceneGLB(gltfScene: THREE.Group): void {
+  const tlSprites: Sprite[] = []
+  const tlLabels = ['tl_label_0', 'tl_label_1', 'tl_label_2', 'tl_label_3']
+  gltfScene.traverse((child) => {
+    const name = (child as any).name || ''
+    const idx = tlLabels.findIndex(l => name.includes(l))
+    if (idx >= 0) {
+      const canvas = document.createElement('canvas')
+      canvas.width = 64; canvas.height = 48
+      const ctx = canvas.getContext('2d')!
+      const tex = new CanvasTexture(canvas)
+      tex.minFilter = LinearFilter
+      const sprite = new Sprite(new SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }))
+      sprite.scale.set(6, 4, 1)
+      sprite.userData = { canvas, ctx, idx: tlLabels.findIndex(l => name.includes(l)), lastRemain: -1, lastColor: '' }
+      child.add(sprite)
+      tlSprites.push(sprite)
+    }
+  })
+
+  function updateTLSprite() {
+    const it = intersection.value
+    if (!it) return
+    const isEW = it.currentPhase.startsWith('eastwest')
+    const rem = Math.round(it.greenRemain)
+    const allRed = it.currentPhase === 'all_red' || it.deviceStatus !== 'online'
+    const ewSet = new Set([0, 1])
+
+    // Dirty-check：先检查是否有任何精灵需要更新
+    let anyChanged = false
+    for (const s of tlSprites) {
+      const ud = s.userData as { idx: number; lastRemain: number; lastColor: string }
+      const isActiveDir = ewSet.has(ud.idx) ? isEW : !isEW
+      const color = allRed ? '#FF4D6D' : isActiveDir ? '#22D3A0' : '#FF4D6D'
+      if (ud.lastRemain !== rem || ud.lastColor !== color) { anyChanged = true; break }
+    }
+    if (!anyChanged) return // 无变化，跳过所有绘制
+
+    for (const s of tlSprites) {
+      const ud = s.userData as { idx: number; lastRemain: number; lastColor: string }
+      const isActiveDir = ewSet.has(ud.idx) ? isEW : !isEW
+      const color = allRed ? '#FF4D6D' : isActiveDir ? '#22D3A0' : '#FF4D6D'
+      if (ud.lastRemain === rem && ud.lastColor === color) continue // 单精灵无变化
+
+      ud.lastRemain = rem
+      ud.lastColor = color
+
+      const c = ud.canvas as unknown as HTMLCanvasElement
+      const ctx = c.getContext('2d')!
+      ctx.clearRect(0, 0, c.width, c.height)
+      ctx.fillStyle = color
+      ctx.beginPath(); ctx.arc(32, 24, 16, 0, Math.PI * 2); ctx.fill()
+      ctx.fillStyle = '#fff'
+      ctx.font = 'bold 16px Rajdhani, sans-serif'
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+      ctx.fillText(String(rem), 32, 22)
+      ;(s.material as SpriteMaterial).map!.needsUpdate = true
+    }
+  }
+  updateTLSprite()
+  tlSpriteUpdaters.push(updateTLSprite)
+
+  // 车道虚线
+  const dashMat = new MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222, emissiveIntensity: 0.3 })
+  const m4 = new Matrix4()
+  for (const dir of ["H", "V"] as const) {
+    const isH = dir === "H"
+    const dGeom = isH ? new BoxGeometry(12, 1.15, 0.4) : new BoxGeometry(0.4, 1.15, 12)
+    const dPos: Array<[number, number, number]> = []
+    for (let pos = -70; pos <= 70; pos += 18) {
+      for (const offset of [-12, -6, 6, 12]) {
+        if (isH) dPos.push([pos, 0.5, offset])
+        else     dPos.push([offset, 0.5, pos])
+      }
+    }
+    const dIM = new InstancedMesh(dGeom, dashMat, dPos.length)
+    dPos.forEach(([x, y, z], i) => { m4.identity().setPosition(x, y, z); dIM.setMatrixAt(i, m4) })
+    dIM.instanceMatrix.needsUpdate = true
+    rootGroup!.add(dIM)
+  }
 }
 
 function exportToGLB(): void {
@@ -476,7 +524,11 @@ onMounted(async () => {
 
   // 加载模型（当前走占位）
   if (props.intersectionId) loadModel(props.intersectionId)
-  else { buildFallback(); loading.value = false }
+  else buildFallback()
+
+  // 渲染节流：只在有变化时渲染
+  let needsRender = true
+  controls.addEventListener('change', () => { needsRender = true })
 
   // 渲染循环
   const loop = (now: number) => {
@@ -486,15 +538,31 @@ onMounted(async () => {
     tlSpriteUpdaters.forEach((fn) => fn())
     if (vehicleAnimator && intersection.value) {
       vehicleAnimator.setIntersection(intersection.value)
-      if (simState.value) {
-        // 仿真运行中：按四方向车辆数 + 相位驱动车流
-        vehicleAnimator.updateFromSim(simState.value, deltaMs)
+      if (simulationStatus.value === 'running' && simRoadnet.value) {
+        // 仿真运行中：直接用 CityFlow 真实车辆坐标渲染
+        needsRender = true
+        const cfKey = `${intersection.value.col}_${intersection.value.row}`
+        const cfIt = simRoadnet.value.intersections.find(
+          (i) => i.id === `intersection_${cfKey}` && !i.virtual,
+        )
+        if (cfIt) {
+          vehicleAnimator.updateFromSimVehicles(
+            simulationVehicles.value as SimVehicleState[],
+            simRoadnet.value,
+            intersection.value,
+          )
+        }
       } else {
-        // 降级：mock 车辆数据
+        // 降级：mock 车辆数据，同时隐藏所有真实仿真车辆
+        needsRender = true
+        vehicleAnimator.hideAllRealCars()
         vehicleAnimator.update(vehicles.value, roads.value)
       }
     }
-    if (renderer && scene && camera) renderer.render(scene, camera)
+    if (needsRender && renderer && scene && camera) {
+      renderer.render(scene, camera)
+      needsRender = false
+    }
     rafId = requestAnimationFrame(loop)
   }
   rafId = requestAnimationFrame(loop)
@@ -557,7 +625,7 @@ function onOverlayClick(ev: MouseEvent): void {
               {{ intersection?.name ?? '路口' }} · 三维实景
             </div>
             <div class="i3d-header__sub">
-              {{ modelFound ? 'GLTF 真实路口模型' : '程序化实景占位（放入 .glb 自动加载）' }}
+              {{ modelStatus === 'glb' ? 'GLTF 真实路口模型' : modelStatus === 'procedural' ? '程序化实景（GLB 未加载，使用内置模型）' : modelStatus === 'error' ? '模型加载失败' : '加载中…' }}
             </div>
           </div>
         </div>
@@ -568,6 +636,10 @@ function onOverlayClick(ev: MouseEvent): void {
       <div class="i3d-body">
         <div ref="viewerBox" class="i3d-canvas" />
         <div v-if="loading" class="i3d-loading">加载三维实景中…</div>
+        <div v-if="modelStatus === 'error'" class="i3d-error-banner">
+          <span class="i3d-error-icon">⚠</span>
+          <span>{{ glbErrorMsg }}</span>
+        </div>
 
         <!-- 右下角路口信息 -->
         <div v-if="intersection" class="i3d-info">
@@ -711,6 +783,22 @@ function onOverlayClick(ev: MouseEvent): void {
   color: #00d4ff;
   letter-spacing: 0.1em;
 }
+
+.i3d-error-banner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: rgba(255, 77, 109, 0.12);
+  border: 1px solid rgba(255, 77, 109, 0.35);
+  color: #ff4d6d;
+  font-size: 13px;
+}
+.i3d-error-icon { font-size: 20px; }
 
 .i3d-info {
   position: absolute;

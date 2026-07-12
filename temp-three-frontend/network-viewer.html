@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>上海扩展路网预览</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%}
+  #map{width:100%;height:100%}
+  .info-panel{
+    position:absolute;top:12px;left:12px;z-index:100;
+    background:rgba(4,21,39,0.92);border:1px solid rgba(0,212,255,0.4);
+    padding:10px 14px;color:#e8f4ff;font-family:Rajdhani,'PingFang SC',sans-serif;
+    font-size:12px;border-radius:4px;
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="info-panel" id="info">加载中...</div>
+<script src="https://webapi.amap.com/maps?v=2.0&key=177a0670648f7f7b711e935b0b4bddbd"></script>
+<script>
+async function init() {
+  const resp = await fetch('/network/raw_network.json')
+  const data = await resp.json()
+
+  const map = new AMap.Map('map', {
+    center: [121.465, 31.225],
+    zoom: 14,
+    mapStyle: 'amap://styles/dark',
+  })
+
+  // 画道路
+  const colors = ['#22d3a0','#3a8fff','#f5a623','#ff4d6d','#7c5cff','#00d4ff','#ff6b9b','#7af7ff']
+  data.roads.forEach((r, i) => {
+    const path = r.points.map(p => [p.x, p.y])
+    new AMap.Polyline({
+      path, map,
+      strokeColor: colors[i % colors.length],
+      strokeWeight: 3, strokeOpacity: 0.7,
+    })
+  })
+
+  // 画路口
+  const existing = new Set(data.intersections.filter(i => i.name.match(/^(南京|淮海|建国)/)).map(i => `${i.row},${i.col}`))
+  data.intersections.forEach((it, i) => {
+    const isExisting = existing.has(`${it.row},${it.col}`)
+    new AMap.Marker({
+      position: [it.lng, it.lat], map,
+      content: `<div style="width:${isExisting?14:10}px;height:${isExisting?14:10}px;border-radius:50%;background:${isExisting?'#22d3a0':'#00d4ff'};border:2px solid rgba(255,255,255,0.3);display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:700">${isExisting?'●':'+'}</div>`,
+      offset: new AMap.Pixel(-7, -7),
+    })
+    new AMap.Marker({
+      position: [it.lng, it.lat], map,
+      content: `<div style="font-size:9px;color:#8da8c5;text-shadow:0 0 3px rgba(0,0,0,0.8);white-space:nowrap;transform:translate(-50%,-20px)">${it.name}</div>`,
+      offset: new AMap.Pixel(0, 0),
+    })
+  })
+
+  // 画路名标签在每条路中点
+  data.roads.forEach(r => {
+    const mid = r.points[Math.floor(r.points.length/2)]
+    if (!mid) return
+    const fromIt = data.intersections.find(i => i.row === r.from_row && i.col === r.from_col)
+    const toIt = data.intersections.find(i => i.row === r.to_row && i.col === r.to_col)
+    if (!fromIt || !toIt) return
+  })
+
+  document.getElementById('info').innerHTML =
+    `<b>上海扩展路网</b><br>路口: ${data.intersections.length} | 道路: ${data.roads.length}<br>🟢=已有 | 🔵=新增`
+}
+init()
+</script>
+</body>
+</html>

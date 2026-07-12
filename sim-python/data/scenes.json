@@ -14,6 +14,22 @@
       "roadnetFile": "roadnet_3_4.json",
       "flowFile": "flow_3_4_jinan_stress.json",
       "cityflowConfigMode": "generated"
+    },
+    {
+      "sceneId": "shanghai",
+      "name": "Shanghai curved roadnet",
+      "sceneDir": "shanghai",
+      "roadnetFile": "roadnet.json",
+      "flowFile": "flow.json",
+      "cityflowConfigMode": "generated"
+    },
+    {
+      "sceneId": "xian",
+      "name": "Xian 4x5 grid roadnet",
+      "sceneDir": "xian",
+      "roadnetFile": "roadnet.json",
+      "flowFile": "flow.json",
+      "cityflowConfigMode": "generated"
     }
   ]
 }

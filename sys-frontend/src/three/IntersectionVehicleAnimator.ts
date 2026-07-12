@@ -4,11 +4,23 @@
 // ================================================================
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import type { Vehicle, Road, Intersection, SignalPhase } from '@/types/traffic'
+import type { Vehicle, Road, Intersection, SignalPhase, SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 import { laneType, LaneType, canPassIntersection, isNearStopLine, STOP_PROGRESS } from './TrafficRules'
 
 const LANE_W = 6
 const CAR_SCALE = 1.5
+
+/** 递归释放 Three.js Object3D 及其子节点的几何体和材质 */
+function disposeTree(obj: THREE.Object3D): void {
+  obj.traverse((child) => {
+    const m = child as THREE.Mesh
+    if (m.geometry) m.geometry.dispose()
+    if (m.material) {
+      if (Array.isArray(m.material)) m.material.forEach((x) => x.dispose())
+      else m.material.dispose()
+    }
+  })
+}
 
 // ---- 仿真驱动模式常量 ----
 const STOP_LINE = 24        // 停止线距路口中心
@@ -16,6 +28,13 @@ const CAR_GAP = 11          // 排队车距
 const APPROACH_SPEED = 26   // 绿灯通行速度（单位/秒）
 const EXIT_DIST = 2 * STOP_LINE + 34 // 越过此距离视为驶出路口，回收到队尾
 const MAX_QUEUE = 10        // 每方向最大展示车辆数
+
+// ---- CityFlow → 3D 坐标映射常量（已验证） ----
+const RADIUS_X = 220        // X 轴检测半径（CityFlow 单位）
+const RADIUS_Y = 420        // Y 轴检测半径（CityFlow 单位）
+const SCALE_X = 0.409       // CityFlow X → 3D X (90/220)
+const SCALE_Z = 0.214       // CityFlow Y → 3D Z (90/420)
+const ROAD_Y = 0.8          // 路面高度
 
 type Dir = 'north' | 'south' | 'east' | 'west'
 const DIRS: Dir[] = ['north', 'south', 'east', 'west']
@@ -69,6 +88,8 @@ export class IntersectionVehicleAnimator {
   private intersection: Intersection | null = null
   // ---- 仿真驱动模式：四方向进场车队 ----
   private simCars = new Map<Dir, SimCar[]>(DIRS.map((d) => [d, []]))
+  // ---- 真实仿真车辆池：key=vehicle.id, value=3D car group ----
+  private realCarPool = new Map<string, THREE.Group>()
 
   constructor(private intersectionId: string, private roadLength = 90) {}
 
@@ -181,9 +202,9 @@ export class IntersectionVehicleAnimator {
       const isH = this.isHorizontal(road)
       // 位置方向：离开路口时反转坐标映射（progress 0→1 变成 远→近）
       const posDir = fromIntersection ? -1 : 1
-      // 车头朝向：优先用后端 angle，降级用道路方向
+      // 车头朝向：优先用后端 angle（CityFlow 0°=正东 CCW），降级用道路方向
       const heading = v.angle !== undefined
-        ? THREE.MathUtils.degToRad(90 - v.angle)
+        ? -THREE.MathUtils.degToRad(v.angle)
         : this.roadHeading(road)
 
       if (isH) {
@@ -311,10 +332,118 @@ export class IntersectionVehicleAnimator {
     }
   }
 
-  /** 清空仿真车队（切换路口或关闭弹窗时调用） */
+  // ================================================================
+  // 真实仿真车辆渲染：直接映射 SimVehicleState → 3D 场景
+  // 替代旧的 "统计→伪造" 管线，让 3D 全景真实反映 CityFlow 仿真
+  // ================================================================
+
+  /**
+   * 用 CityFlow 仿真车辆直接更新 3D 场景。
+   * @param vehicles 仿真帧中的车辆列表
+   * @param roadnet CityFlow 静态路网（用于获取路口中心坐标）
+   * @param shIt 当前选中的上海路口
+   */
+  updateFromSimVehicles(
+    vehicles: SimVehicleState[],
+    roadnet: SimRoadnetResponse,
+    shIt: Intersection,
+  ): void {
+    if (!this.loaded) return
+
+    // 找 CityFlow 路口中心
+    const cfKey = `${shIt.col}_${shIt.row}`
+    const cfId = `intersection_${cfKey}`
+    const cfIt = roadnet.intersections.find((i) => i.id === cfId && !i.virtual)
+    if (!cfIt) return
+    const cx = cfIt.x
+    const cy = cfIt.y
+
+    const activeIds = new Set<string>()
+
+    for (const v of vehicles) {
+      const dx = v.x - cx
+      const dy = v.y - cy
+
+      // 过滤：超出检测半径的车辆不渲染
+      if (Math.abs(dx) > RADIUS_X && Math.abs(dy) > RADIUS_Y) continue
+      // 过滤：既不在东西向道路也不在南北向道路上的跳过
+      const onEW = Math.abs(dx) > Math.abs(dy)
+      if (onEW && (Math.abs(dx) > RADIUS_X || Math.abs(dy) > 30)) continue
+      if (!onEW && (Math.abs(dy) > RADIUS_Y || Math.abs(dx) > 30)) continue
+
+      activeIds.add(v.id)
+
+      // 对象池：复用或创建
+      let group = this.realCarPool.get(v.id)
+      if (!group) {
+        group = this.makeRealCar(v.speed < 0.5 ? 'stop' : 'straight')
+        this.realCarPool.set(v.id, group)
+      }
+
+      // 车道基础偏移：lane 0(左/近黄线)→ -6, lane 1(中)→ 0, lane 2(右/近路沿)→ +6
+      const laneBase = (v.lane - 1) * LANE_W
+
+      // 朝向：CityFlow angle 0°=正东(CCW)，转为 Three.js Y 旋转
+      // GLB 小车 forward=+X，Y=0→朝东, Y=π/2→朝南, Y=π→朝西, Y=-π/2→朝北
+      const heading = -THREE.MathUtils.degToRad(v.angle)
+
+      if (onEW) {
+        // 东西向道路：沿 X 轴
+        // 东臂(dx>0): 车头朝西，左=南(-Z)，车道偏移 z负=近黄线 ← 与 placeSimCar 一致
+        // 西臂(dx<0): 车头朝东，左=北(+Z)，车道偏移 z正=近黄线 ← 需翻转符号
+        const zSign = dx >= 0 ? 1 : -1
+        group.position.set(dx * SCALE_X, ROAD_Y, zSign * laneBase)
+      } else {
+        // 南北向道路：沿 Z 轴
+        // 北臂(dy>0): 车头朝南，左=东(+X)，车道偏移 x正=近黄线
+        // 南臂(dy<0): 车头朝北，左=西(-X)，车道偏移 x负=近黄线
+        const xSign = dy >= 0 ? -1 : 1
+        group.position.set(xSign * laneBase, ROAD_Y, dy * SCALE_Z)
+      }
+      group.rotation.set(0, heading, 0)
+      group.visible = true
+    }
+
+    // 隐藏不在本帧中的车辆
+    for (const [id, group] of this.realCarPool) {
+      if (!activeIds.has(id)) group.visible = false
+    }
+  }
+
+  /** 为真实仿真车辆创建 3D 模型（从模板克隆） */
+  private makeRealCar(clip: 'straight' | 'stop'): THREE.Group {
+    const group = new THREE.Group()
+    const tplName = clip === 'straight' ? 'straight' : 'stop'
+    const tpl = this.templates.get(tplName)
+    if (tpl) {
+      group.add(tpl.scene.clone(true))
+    }
+    this.group.add(group)
+    return group
+  }
+
+  /** 隐藏所有真实仿真车辆（切换到 mock 模式时调用） */
+  hideAllRealCars(): void {
+    for (const [, group] of this.realCarPool) group.visible = false
+  }
+
+  /** 更新车辆的 stop/straight 模型（根据速度切换） */
+  private setRealCarClip(group: THREE.Group, speed: number): void {
+    const clip: 'straight' | 'stop' = speed < 0.5 ? 'stop' : 'straight'
+    const tplName = clip === 'straight' ? 'straight' : 'stop'
+    const tpl = this.templates.get(tplName)
+    if (!tpl) return
+    // 只在模型真的需要切换时才重建
+    // 简单方案：总是用 straight 模型，通过 visible 区分
+    group.clear()
+    group.add(tpl.scene.clone(true))
+  }
   clearSimCars(): void {
     for (const cars of this.simCars.values()) {
-      for (const car of cars) this.group.remove(car.group)
+      for (const car of cars) {
+        disposeTree(car.group)
+        this.group.remove(car.group)
+      }
       cars.length = 0
     }
   }
@@ -341,9 +470,26 @@ export class IntersectionVehicleAnimator {
   }
 
   dispose(): void {
-    for (const inst of this.instances.values()) this.group.remove(inst.group)
+    // 先递归释放所有车辆实例的 GPU 资源，再从场景图移除
+    for (const inst of this.instances.values()) {
+      disposeTree(inst.group)
+      this.group.remove(inst.group)
+    }
     this.instances.clear()
+    // 释放真实仿真车辆池
+    for (const [, group] of this.realCarPool) {
+      disposeTree(group)
+      this.group.remove(group)
+    }
+    this.realCarPool.clear()
     this.clearSimCars()
+    // 释放模板克隆缓存（如果有的话）
+    for (const tpl of this.templates.values()) {
+      disposeTree(tpl.scene)
+    }
+    this.templates.clear()
+    // 释放 animator 自身的 group
+    disposeTree(this.group)
   }
 }
 

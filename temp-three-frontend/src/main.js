@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import './styles.css';
 
-const DEFAULT_SCENE_ID = 'jinan_3x4_stress';
+const DEFAULT_SCENE_ID = 'shanghai';
 const DEFAULT_API_BASE = 'http://127.0.0.1:8080';
 const API_BASE = new URLSearchParams(window.location.search).get('api') || DEFAULT_API_BASE;
 const WS_BASE = API_BASE.replace(/^http/, 'ws');

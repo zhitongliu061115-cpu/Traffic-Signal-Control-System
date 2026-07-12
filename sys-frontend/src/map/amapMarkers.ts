@@ -158,8 +158,16 @@ export function createTLMarkers(
       content,
       offset: new AMap.Pixel(-11, -11),
       zIndex: 100,
+      draggable: true,
     })
     marker.setMap(map)
+
+    marker.on('dragging', (e: any) => {
+      const p = e.lnglat
+      it.lng = p.lng; it.lat = p.lat
+      latestData.get(it.id)!.lng = p.lng
+      latestData.get(it.id)!.lat = p.lat
+    })
 
     marker.on('mouseover', () => {
       hoveredId = it.id

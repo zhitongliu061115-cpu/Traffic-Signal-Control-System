@@ -6,7 +6,7 @@ import AMapLoader from '@amap/amap-jsapi-loader'
 const AMAP_KEY = '177a0670648f7f7b711e935b0b4bddbd'
 const LOAD_TIMEOUT_MS = 12000 // 12 秒超时
 
-const CENTER: [number, number] = [121.4644, 31.2240]
+const CENTER: [number, number] = [108.948, 34.260]
 
 export interface AMapInstance {
   map: AMap.Map
@@ -39,6 +39,7 @@ export async function initAMap(
       viewMode: '3D',
       mapStyle: 'amap://styles/dark',
       resizeEnable: true,
+      doubleClickZoom: false,
     })
 
     console.log('[AMap] 地图初始化成功')
