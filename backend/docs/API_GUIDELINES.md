@@ -605,7 +605,14 @@ GET /api/v1/agent/tools/get_decision_trace/{decisionId}
 GET /api/v1/agent/tools/get_decision_trace/{decisionId}/enhanced
 ```
 
-`decisionId` 必须是 `control_decision.id`。基础接口返回决策摘要和 `control_decision_trace` 阶段记录；增强接口返回 `AgentToolResult`，额外聚合 Traffic-R 推理结果、安全层事件、fallback 事件、trace 时间线和 CityFlow 下发 metadata，适合 Agent 回答“为什么模型选了 A，最后执行 B”。
+`decisionId` 必须是 `control_decision.id`。返回内容包括：
+
+- 决策摘要与 `strategy_input -> candidate_scoring -> strategy_selected -> cityflow_applied/failed -> effect_evaluated` 阶段记录。
+- MaxPressure 决策的全部候选相位评分、movement 分解、排名和选中标记。
+- 达到评估窗口后生成的 `control_decision_effect`，包含排队、等待、速度和通行量的 before/after/delta 及效果标签。
+- 增强 Agent 工具会额外聚合 Traffic-R 推理结果、安全层事件、fallback 事件、trace 时间线和 CityFlow 下发 metadata，适合回答“为什么模型选了 A，最后执行 B”。
+
+效果默认在决策后 30 秒生成，因此刚创建的决策允许 `effect=null`。接口只读，不会触发补算或控制动作。
 
 #### 系统健康 / `get_system_health`
 

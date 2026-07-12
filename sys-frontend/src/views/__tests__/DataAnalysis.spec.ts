@@ -29,8 +29,18 @@ describe('DataAnalysis', () => {
     expect(wrapper.findAll('.heatmap-cell')).toHaveLength(28)
     expect(wrapper.findAll('.scatter-point-group')).toHaveLength(48)
     expect(wrapper.findAll('.composition-status-card')).toHaveLength(4)
+    expect(wrapper.text()).toContain('今日累计通行量')
+    expect(wrapper.text()).toContain('昨日累计')
+    expect(wrapper.text()).toContain('排队改善46%')
     expect(wrapper.findAll('.detail-table-row')).toHaveLength(12)
     expect(wrapper.find('.ai-float-trigger').exists()).toBe(true)
+
+    const dateCards = wrapper.findAll('.daily-date-card')
+    expect(dateCards).toHaveLength(12)
+    const yesterday = new Date()
+    yesterday.setDate(yesterday.getDate() - 1)
+    const yesterdayLabel = `${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`
+    expect(dateCards[dateCards.length - 1]?.text()).toContain(yesterdayLabel)
 
     wrapper.unmount()
   })

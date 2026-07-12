@@ -106,6 +106,25 @@ interface ChartPoint {
   y: number
 }
 
+interface ForecastPoint {
+  flow: number
+  minute: string
+  queue: number
+  risk: string
+  tone: 'amber' | 'emerald' | 'rose'
+  wait: number
+}
+
+interface IntersectionForecastPoint {
+  flow: number
+  id: string
+  label: string
+  queue: number
+  risk: string
+  tone: 'amber' | 'emerald' | 'rose'
+  wait: number
+}
+
 interface BarShape {
   height: number
   width: number
@@ -179,6 +198,7 @@ const hoveredScatterTone = ref<Tone | null>(null)
 const hoveredScatterRiskChart = ref<string | null>(null)
 const hoveredScatterTrendChart = ref<string | null>(null)
 const hiddenTones = ref<Set<Tone>>(new Set())
+const forecastTick = ref(0)
 const metricDeltas = ref<Record<string, { tone: 'down' | 'up'; value: string }>>({})
 const metricFlash = ref<Record<string, 'down' | 'up'>>({})
 const metricTrendPoints = ref<Record<string, number[]>>({})
@@ -190,6 +210,7 @@ const tooltipPosition = ref({ x: 0, y: 0 })
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let syncTimer: ReturnType<typeof setInterval> | null = null
 let scanTimer: ReturnType<typeof setInterval> | null = null
+let forecastTimer: ReturnType<typeof setInterval> | null = null
 let liveMetricTimer: ReturnType<typeof setInterval> | null = null
 let hourlyTimer: ReturnType<typeof setInterval> | null = null
 let energyTimer: ReturnType<typeof setInterval> | null = null
@@ -239,7 +260,7 @@ const statusDistribution = ref<StatusBucket[]>([
   { count: 0, label: '离线', tone: 'slate' },
 ])
 
-const dailySeries = reactive<DailyPoint[]>([
+const dailySeries = reactive<DailyPoint[]>(withHistoricalDates([
   { date: '06-28', electricity: 42860, hvac: 0, occupancy: 28.6, water: 0 },
   { date: '06-29', electricity: 46210, hvac: 0, occupancy: 31.2, water: 0 },
   { date: '06-30', electricity: 48780, hvac: 0, occupancy: 35.8, water: 0 },
@@ -252,7 +273,7 @@ const dailySeries = reactive<DailyPoint[]>([
   { date: '07-07', electricity: 70420, hvac: 0, occupancy: 56.7, water: 0 },
   { date: '07-08', electricity: 74180, hvac: 0, occupancy: 61.8, water: 0 },
   { date: '07-09', electricity: 64280, hvac: 0, occupancy: 46.8, water: 0 },
-])
+]))
 
 const hourlySeries = ref<HourlyPoint[]>([
   { electricity: 320, hour: '00:00', hvac: 24, occupancy: 32, temperature: 5.4 },
@@ -591,6 +612,27 @@ function replaceReactiveArray<T>(target: T[], source: T[]) {
   target.splice(0, target.length, ...source)
 }
 
+function previousDateLabels(count: number, reference = now.value) {
+  return Array.from({ length: count }, (_, index) => {
+    const offset = count - index
+    const date = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate() - offset)
+    return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  })
+}
+
+function withHistoricalDates(points: DailyPoint[]) {
+  const source = points.slice(-12)
+  const labels = previousDateLabels(source.length)
+  return source.map((point, index) => ({ ...point, date: labels[index] ?? point.date }))
+}
+
+function withHistoricalHeatmapDates(cells: HeatmapCell[]) {
+  const sourceDates = [...new Set(cells.map((cell) => cell.date))]
+  const labels = previousDateLabels(sourceDates.length)
+  const dateMapping = new Map(sourceDates.map((date, index) => [date, labels[index] ?? date]))
+  return cells.map((cell) => ({ ...cell, date: dateMapping.get(cell.date) ?? cell.date }))
+}
+
 function applyBootstrapData(data: DataAnalysisBootstrapData) {
   sampleCount.value = data.sampleCount
   sampleRate.value = data.sampleRate
@@ -598,10 +640,10 @@ function applyBootstrapData(data: DataAnalysisBootstrapData) {
   sampledPointId.value = data.sampledPointId
   metrics.value = data.metrics
   statusDistribution.value = data.statusDistribution
-  replaceReactiveArray(dailySeries, data.dailySeries)
+  replaceReactiveArray(dailySeries, withHistoricalDates(data.dailySeries))
   hourlySeries.value = data.hourlySeries
   buildingSummaries.value = data.buildingSummaries
-  replaceReactiveArray(heatmap, data.heatmap)
+  replaceReactiveArray(heatmap, withHistoricalHeatmapDates(data.heatmap))
   composition.value = data.composition
   replaceReactiveArray(scatterPoints, data.scatterPoints)
   records.value = data.records
@@ -645,6 +687,8 @@ const heatmapHours = computed(() => [...new Set(heatmap.map((item) => item.hour)
 const peakHeatmapCell = computed(() =>
   heatmap.reduce((best, item) => (item.electricity > best.electricity ? item : best)),
 )
+const previousDayLabel = computed(() => previousDateLabels(1)[0] ?? '')
+const peakHeatmapDisplay = computed(() => `${previousDayLabel.value} ${peakHeatmapCell.value.hour}`)
 const averageHeatmapElectricity = computed(
   () => heatmap.reduce((sum, item) => sum + item.electricity, 0) / heatmap.length,
 )
@@ -767,9 +811,130 @@ const strategySeries = [
   { color: colors.cyan, key: 'trafficR1', label: 'Traffic-R1' },
 ] as const
 
+const forecastTimelineBase = [
+  { flow: 1180, minute: '当前', queue: 8.2, wait: 34 },
+  { flow: 1235, minute: '+2分钟', queue: 8.9, wait: 37 },
+  { flow: 1290, minute: '+4分钟', queue: 9.7, wait: 41 },
+  { flow: 1368, minute: '+6分钟', queue: 10.8, wait: 46 },
+  { flow: 1446, minute: '+8分钟', queue: 11.8, wait: 51 },
+  { flow: 1512, minute: '+10分钟', queue: 12.6, wait: 56 },
+]
+
+const forecastIntersectionBase = [
+  { flow: 820, id: 'intersection_1_1', label: '路口 1-1', queue: 5.4, trend: 0.8, wait: 22 },
+  { flow: 910, id: 'intersection_1_2', label: '路口 1-2', queue: 6.1, trend: 1.0, wait: 25 },
+  { flow: 980, id: 'intersection_1_3', label: '路口 1-3', queue: 6.8, trend: 1.1, wait: 28 },
+  { flow: 1120, id: 'intersection_1_4', label: '路口 1-4', queue: 8.2, trend: 1.4, wait: 34 },
+  { flow: 900, id: 'intersection_2_1', label: '路口 2-1', queue: 6.4, trend: 0.9, wait: 27 },
+  { flow: 1040, id: 'intersection_2_2', label: '路口 2-2', queue: 7.6, trend: 1.2, wait: 32 },
+  { flow: 1160, id: 'intersection_2_3', label: '路口 2-3', queue: 8.7, trend: 1.5, wait: 36 },
+  { flow: 1280, id: 'intersection_2_4', label: '路口 2-4', queue: 9.8, trend: 1.7, wait: 42 },
+  { flow: 1080, id: 'intersection_3_1', label: '路口 3-1', queue: 8.4, trend: 1.3, wait: 35 },
+  { flow: 1260, id: 'intersection_3_2', label: '路口 3-2', queue: 10.2, trend: 1.8, wait: 44 },
+  { flow: 1340, id: 'intersection_3_3', label: '路口 3-3', queue: 11.1, trend: 2.0, wait: 49 },
+  { flow: 1460, id: 'intersection_3_4', label: '路口 3-4', queue: 12.0, trend: 2.2, wait: 54 },
+]
+
+function forecastWave(index: number, scale: number) {
+  return (
+    Math.sin(forecastTick.value * 0.72 + index * 0.67) * scale +
+    Math.cos(forecastTick.value * 0.34 + index * 0.41) * scale * 0.36
+  )
+}
+
+function forecastRisk(queue: number): Pick<ForecastPoint, 'risk' | 'tone'> {
+  if (queue >= 11.6) return { risk: '拥堵', tone: 'rose' }
+  if (queue >= 8.2) return { risk: '缓行', tone: 'amber' }
+  return { risk: '畅通', tone: 'emerald' }
+}
+
+const intersectionForecasts = computed<IntersectionForecastPoint[]>(() =>
+  forecastIntersectionBase.map((item, index) => {
+    const queue = clamp(item.queue + forecastWave(index, 0.72) + item.trend * 0.18, 3.5, 15.8)
+    const wait = Math.round(clamp(item.wait + (queue - item.queue) * 3.4 + forecastWave(index + 3, 3.4), 16, 72))
+    const flow = Math.round(clamp(item.flow + forecastWave(index + 5, 46) + item.trend * 18, 720, 1680))
+    const risk = forecastRisk(queue)
+
+    return {
+      flow,
+      id: item.id,
+      label: item.label,
+      queue,
+      risk: risk.risk,
+      tone: risk.tone,
+      wait,
+    }
+  }),
+)
+
+const shortTermForecast = computed<ForecastPoint[]>(() => {
+  const networkQueue =
+    intersectionForecasts.value.reduce((sum, point) => sum + point.queue, 0) / intersectionForecasts.value.length
+  const networkFlow =
+    intersectionForecasts.value.reduce((sum, point) => sum + point.flow, 0) / intersectionForecasts.value.length
+
+  return forecastTimelineBase.map((point, index) => {
+    const queue = clamp(networkQueue + index * 0.62 + forecastWave(index + 7, 0.28), 4.5, 15.8)
+    const wait = Math.round(clamp(point.wait + (queue - point.queue) * 3.2 + forecastWave(index + 10, 2.8), 20, 72))
+    const flow = Math.round(clamp(networkFlow + index * 64 + forecastWave(index + 14, 32), 800, 1700))
+    const risk = forecastRisk(queue)
+
+    return {
+      flow,
+      minute: point.minute,
+      queue,
+      risk: risk.risk,
+      tone: risk.tone,
+      wait,
+    }
+  })
+})
+
+const forecastPeak = computed(() =>
+  shortTermForecast.value.reduce((best, point) => (point.queue > best.queue ? point : best)),
+)
+
+const forecastPeakIntersection = computed(() =>
+  intersectionForecasts.value.reduce((best, point) => (point.queue > best.queue ? point : best)),
+)
+
+const forecastAverageQueue = computed(
+  () => intersectionForecasts.value.reduce((sum, point) => sum + point.queue, 0) / intersectionForecasts.value.length,
+)
+
+const forecastRiskSummary = computed(() => {
+  const jammed = intersectionForecasts.value.filter((point) => point.tone === 'rose').length
+  const slow = intersectionForecasts.value.filter((point) => point.tone === 'amber').length
+  return { jammed, slow }
+})
+
+const forecastChart = computed(() => {
+  const width = 640
+  const height = 260
+  const padding = 48
+  const flowIndex = shortTermForecast.value.map((point) => point.flow / 100)
+  const queueValues = shortTermForecast.value.map((point) => point.queue)
+  const extent = axisExtent([0, ...flowIndex, ...queueValues])
+  const flowPoints = buildLinePoints(flowIndex, width, height, padding, extent.min, extent.max)
+  const queuePoints = buildLinePoints(queueValues, width, height, padding, extent.min, extent.max)
+
+  return {
+    areaPath: buildAreaPath(queuePoints, height, padding),
+    extent,
+    flowPath: buildLinePath(flowPoints),
+    flowPoints,
+    height,
+    padding,
+    queuePath: buildLinePath(queuePoints),
+    queuePoints,
+    ticks: buildAxisTicks(extent.min, extent.max),
+    width,
+  }
+})
+
 const queueImprovement = computed(() => {
   const queueMetric = strategyMetrics[0]!
-  return Math.round(((queueMetric.trafficR1 - queueMetric.baseline) / queueMetric.baseline) * 100)
+  return Math.round(((queueMetric.baseline - queueMetric.trafficR1) / queueMetric.baseline) * 100)
 })
 
 function seedMetricTrends() {
@@ -1540,6 +1705,9 @@ onMounted(() => {
     }))
   }, 20000)
 
+  forecastTimer = setInterval(() => {
+    forecastTick.value += 1
+  }, 2600)
   scheduleTableInsert()
   scheduleRandomEvent()
   document.addEventListener('pointerover', handleTooltipShow)
@@ -1551,6 +1719,7 @@ onUnmounted(() => {
   if (clockTimer) clearInterval(clockTimer)
   if (syncTimer) clearInterval(syncTimer)
   if (scanTimer) clearInterval(scanTimer)
+  if (forecastTimer) clearInterval(forecastTimer)
   if (liveMetricTimer) clearInterval(liveMetricTimer)
   if (hourlyTimer) clearInterval(hourlyTimer)
   if (energyTimer) clearInterval(energyTimer)
@@ -2346,7 +2515,7 @@ function ratio(value: number, total: number) {
                   tooltipAttrs({
                     rows: [
                       { label: '拥堵路口数', tone: 'rose', value: `${warningCount} 个` },
-                      { label: '趋势', tone: 'amber', value: '今日累计只增不减' },
+                      { label: '趋势', tone: 'amber', value: '随当前仿真帧实时更新' },
                     ],
                     title: '拥堵路口数',
                   })
@@ -2530,7 +2699,7 @@ function ratio(value: number, total: number) {
                 v-bind="tooltipAttrs(heatmapCellTooltip(peakHeatmapCell))"
               >
                 <span>峰值时段</span>
-                <b class="text-amber">{{ peakHeatmapCell.date }} {{ peakHeatmapCell.hour }}</b>
+                <b class="text-amber">{{ peakHeatmapDisplay }}</b>
               </div>
               <div
                 class="heatmap-metric-card"
@@ -2811,16 +2980,16 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '统计周期', value: '今日累计' },
+                      { label: '统计周期', value: '昨日累计' },
                       { label: '同比', tone: 'cyan', value: '+5.2%' },
                       { label: '环比', tone: 'amber', value: '+1.8%' },
                     ],
-                    title: '今日累计绿灯时长',
+                    title: '昨日累计绿灯时长',
                   })
                 "
               >
                 <b>{{ formatNumber(hoveredComposition ? (composition.find((item) => item.label === hoveredComposition)?.value ?? compositionTotal) : compositionTotal, 0) }}</b>
-                <span>{{ hoveredComposition ?? '今日累计' }}</span>
+                <span>{{ hoveredComposition ?? '昨日累计' }}</span>
               </div>
             </div>
             <div class="composition-grid">
@@ -3203,6 +3372,159 @@ function ratio(value: number, total: number) {
                 </div>
               </div>
             </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="forecast-grid">
+        <article class="hud-drawn-card data-analysis-card-frame panel-card forecast-overview-panel">
+          <header class="hud-panel-titlebar">
+            <div class="titlebar-inner">
+              <span class="hud-title-mark" />
+              <span class="hud-glyph">
+                <svg viewBox="0 0 40 40"><path d="M11 25c4.2-6.8 7.8-8.4 11-4.8 2.7 3.1 4.7 3.4 7 .8M29 21v-6h-6M12 29h16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" /></svg>
+              </span>
+              <h2>短时交通预测</h2>
+              <span class="titlebar-deco"><i /><i /><i /></span>
+            </div>
+          </header>
+          <div class="pill-row">
+            <span class="hud-pill">未来10分钟</span>
+            <span class="hud-pill hud-pill-emerald">EWMA 趋势预测</span>
+            <span class="hud-pill hud-pill-neutral">覆盖12个路口</span>
+          </div>
+          <div class="forecast-kpi-strip">
+            <div
+              class="forecast-kpi-card"
+              v-bind="
+                tooltipAttrs({
+                  rows: [
+                    { label: '路网规模', value: '3 × 4 网格' },
+                    { label: '预测路口数', tone: 'cyan', value: `${intersectionForecasts.length} 个` },
+                  ],
+                  title: '预测覆盖范围',
+                })
+              "
+            >
+              <span>覆盖路口</span>
+              <b>{{ intersectionForecasts.length }} 个</b>
+            </div>
+            <div
+              class="forecast-kpi-card"
+              v-bind="
+                tooltipAttrs({
+                  rows: [
+                    { label: '预测均值', value: `${forecastAverageQueue.toFixed(1)} 辆` },
+                    { label: '风险判断', tone: 'amber', value: '缓行转拥堵' },
+                  ],
+                  title: '预测平均排队',
+                })
+              "
+            >
+              <span>平均排队</span>
+              <b>{{ forecastAverageQueue.toFixed(1) }} 辆</b>
+            </div>
+            <div
+              class="forecast-kpi-card"
+              v-bind="
+                tooltipAttrs({
+                  rows: [
+                    { label: '风险路口', value: forecastPeakIntersection.label },
+                    { label: '预测排队', tone: 'rose', value: `${forecastPeakIntersection.queue.toFixed(1)} 辆` },
+                    { label: '预计等待', tone: 'rose', value: `${forecastPeakIntersection.wait} 秒` },
+                  ],
+                  title: '最高风险路口',
+                })
+              "
+            >
+              <span>最高风险</span>
+              <b class="text-amber">{{ forecastPeakIntersection.label }}</b>
+            </div>
+          </div>
+          <div class="forecast-network-toolbar">
+            <span><i class="forecast-live-dot" />预测刷新中</span>
+            <b>{{ forecastRiskSummary.jammed }} 拥堵 · {{ forecastRiskSummary.slow }} 缓行</b>
+          </div>
+          <div class="forecast-intersection-grid">
+            <div
+              v-for="point in intersectionForecasts"
+              :key="point.id"
+              class="forecast-intersection-card"
+              :data-risk="point.tone"
+              :data-peak="point.id === forecastPeakIntersection.id"
+              v-bind="
+                tooltipAttrs({
+                  rows: [
+                    { label: '预测车流', value: `${point.flow} 辆/h` },
+                    { label: '预测排队', value: `${point.queue.toFixed(1)} 辆` },
+                    { label: '预测等待', value: `${point.wait} 秒` },
+                  ],
+                  title: `${point.label} 交通状态预测`,
+                })
+              "
+            >
+              <span>{{ point.label }}</span>
+              <b>{{ point.risk }}</b>
+              <small>{{ point.queue.toFixed(1) }} 辆 · {{ point.wait }} 秒</small>
+            </div>
+          </div>
+        </article>
+
+        <article class="hud-drawn-card data-analysis-card-frame panel-card forecast-chart-panel">
+          <header class="hud-panel-titlebar">
+            <div class="titlebar-inner">
+              <span class="hud-title-mark" />
+              <span class="hud-glyph">
+                <svg viewBox="0 0 40 40"><path d="M10.5 27.5h19M12 25l4.6-5.4 4.8 2.6 6.1-8.4M27.5 13.8h-5.4M27.5 13.8v5.4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" /></svg>
+              </span>
+              <h2>未来十分钟预测折线</h2>
+              <span class="titlebar-deco"><i /><i /><i /></span>
+            </div>
+          </header>
+          <div class="forecast-chart-summary">
+            <div class="forecast-line-legend">
+              <span><i class="legend-cyan" />预测车流指数</span>
+              <span><i class="legend-amber" />预测排队长度</span>
+            </div>
+            <div class="forecast-chart-note">{{ forecastPeak.minute }} 峰值 {{ forecastPeak.queue.toFixed(1) }} 辆</div>
+          </div>
+          <div class="tech-chart-frame forecast-line-frame">
+            <svg class="chart-svg" :viewBox="`0 0 ${forecastChart.width} ${forecastChart.height}`">
+              <defs>
+                <linearGradient id="forecastQueueFillVue" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stop-color="#ffb800" stop-opacity="0.26" />
+                  <stop offset="100%" stop-color="#ffb800" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <g v-for="tick in forecastChart.ticks" :key="`forecast-y-${tick}`">
+                <line stroke="rgba(141,168,197,0.2)" stroke-dasharray="5 8" :x1="forecastChart.padding" :x2="forecastChart.width - forecastChart.padding" :y1="axisY(tick, forecastChart.extent.min, forecastChart.extent.max, forecastChart.height, forecastChart.padding)" :y2="axisY(tick, forecastChart.extent.min, forecastChart.extent.max, forecastChart.height, forecastChart.padding)" />
+                <text class="axis-text" text-anchor="end" :x="forecastChart.padding - 9" :y="axisY(tick, forecastChart.extent.min, forecastChart.extent.max, forecastChart.height, forecastChart.padding)">{{ axisTickLabel(tick, 1) }}</text>
+              </g>
+              <line stroke="rgba(122,247,255,0.38)" :x1="forecastChart.padding" :x2="forecastChart.padding" :y1="forecastChart.padding" :y2="forecastChart.height - forecastChart.padding" />
+              <line stroke="rgba(122,247,255,0.38)" :x1="forecastChart.padding" :x2="forecastChart.width - forecastChart.padding" :y1="forecastChart.height - forecastChart.padding" :y2="forecastChart.height - forecastChart.padding" />
+              <text class="axis-title" :x="forecastChart.padding" :y="forecastChart.padding - 17">预测指数</text>
+              <path :d="forecastChart.areaPath" fill="url(#forecastQueueFillVue)" />
+              <path class="forecast-flow-line" :d="forecastChart.flowPath" fill="none" stroke="#7af7ff" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.2" />
+              <path class="forecast-queue-line" :d="forecastChart.queuePath" fill="none" stroke="#ffb800" stroke-linecap="round" stroke-linejoin="round" stroke-width="3.2" />
+              <g
+                v-for="(point, index) in shortTermForecast"
+                :key="`forecast-node-${point.minute}`"
+                v-bind="
+                  tooltipAttrs({
+                    rows: [
+                      { label: '预测车流', value: `${point.flow} 辆/h` },
+                      { label: '预测排队', tone: point.tone, value: `${point.queue.toFixed(1)} 辆` },
+                      { label: '拥堵风险', tone: point.tone, value: point.risk },
+                    ],
+                    title: `${point.minute} 预测点`,
+                  })
+                "
+              >
+                <circle class="forecast-flow-node" fill="#061829" r="4.5" stroke="#7af7ff" stroke-width="2" :cx="forecastChart.flowPoints[index]?.x" :cy="forecastChart.flowPoints[index]?.y" />
+                <circle class="forecast-queue-node" fill="#061829" r="5" stroke="#ffb800" stroke-width="2" :cx="forecastChart.queuePoints[index]?.x" :cy="forecastChart.queuePoints[index]?.y" />
+                <text class="axis-text" text-anchor="middle" :x="forecastChart.queuePoints[index]?.x" :y="forecastChart.height - forecastChart.padding + 22">{{ point.minute }}</text>
+              </g>
+            </svg>
           </div>
         </article>
       </section>
@@ -3818,6 +4140,8 @@ function ratio(value: number, total: number) {
 .composition-legend-item,
 .scatter-legend,
 .scatter-stat-card,
+.forecast-kpi-card,
+.forecast-intersection-card,
 .detail-table-value,
 .detail-status-badge,
 .detail-table-head,
@@ -5225,6 +5549,260 @@ function ratio(value: number, total: number) {
   }
 }
 
+.forecast-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.forecast-overview-panel,
+.forecast-chart-panel {
+  min-height: 392px;
+}
+
+.forecast-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.forecast-kpi-card {
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  background:
+    linear-gradient(135deg, rgba(122, 247, 255, 0.09), transparent 56%),
+    rgba(8, 47, 73, 0.22);
+  padding: 10px 12px;
+  box-shadow: inset 0 0 14px rgba(0, 212, 255, 0.04);
+
+  span,
+  small {
+    display: block;
+    color: rgba(207, 250, 254, 0.72);
+    font-size: 13px;
+    font-weight: 800;
+  }
+
+  b {
+    display: block;
+    margin-top: 5px;
+    color: #f0fbff;
+    font-family: var(--font-num);
+    font-size: 22px;
+    line-height: 1;
+  }
+
+  small {
+    margin-top: 7px;
+    overflow: hidden;
+    color: rgba(224, 240, 255, 0.62);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: rgba(0, 212, 255, 0.72);
+    background-color: rgba(0, 212, 255, 0.09);
+    box-shadow: 0 0 16px rgba(0, 212, 255, 0.18);
+  }
+}
+
+.forecast-network-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 8px;
+  color: rgba(207, 250, 254, 0.76);
+  font-size: 13px;
+  font-weight: 800;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  b {
+    color: #f0fbff;
+    font-family: var(--font-num);
+    font-size: 15px;
+    line-height: 1;
+  }
+}
+
+.forecast-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-cyan-bright);
+  box-shadow: 0 0 10px rgba(122, 247, 255, 0.9);
+  animation: status-dot-breathe 1s ease-in-out infinite;
+}
+
+.forecast-intersection-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.forecast-intersection-card {
+  position: relative;
+  min-height: 74px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  background:
+    linear-gradient(135deg, rgba(122, 247, 255, 0.09), transparent 56%),
+    rgba(8, 47, 73, 0.22);
+  padding: 9px 10px 9px 13px;
+  box-shadow: inset 0 0 14px rgba(0, 212, 255, 0.04);
+
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--color-cyan);
+    box-shadow: 0 0 12px currentColor;
+  }
+
+  &[data-risk='amber']::before {
+    color: var(--color-amber);
+    background: var(--color-amber);
+  }
+
+  &[data-risk='rose'] {
+    border-color: rgba(255, 77, 109, 0.34);
+    background:
+      linear-gradient(135deg, rgba(255, 77, 109, 0.11), transparent 58%),
+      rgba(8, 47, 73, 0.22);
+
+    &::before {
+      color: var(--color-rose);
+      background: var(--color-rose);
+    }
+
+    b {
+      color: #fecdd3;
+    }
+  }
+
+  &[data-risk='emerald']::before {
+    color: var(--color-emerald);
+    background: var(--color-emerald);
+  }
+
+  &[data-peak='true'] {
+    border-color: rgba(255, 184, 0, 0.62);
+    box-shadow: 0 0 18px rgba(255, 184, 0, 0.18), inset 0 0 16px rgba(255, 184, 0, 0.05);
+  }
+
+  span,
+  small {
+    display: block;
+    color: rgba(207, 250, 254, 0.72);
+    font-size: 12px;
+    font-weight: 800;
+  }
+
+  b {
+    display: block;
+    margin-top: 5px;
+    color: #f0fbff;
+    font-size: 17px;
+    line-height: 1;
+  }
+
+  small {
+    margin-top: 7px;
+    overflow: hidden;
+    color: rgba(224, 240, 255, 0.62);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: rgba(0, 212, 255, 0.72);
+    background-color: rgba(0, 212, 255, 0.09);
+    box-shadow: 0 0 16px rgba(0, 212, 255, 0.18);
+  }
+}
+
+.forecast-chart-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.forecast-line-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: rgba(207, 250, 254, 0.82);
+  font-size: 13px;
+  font-weight: 800;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  i {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    box-shadow: 0 0 10px currentColor;
+  }
+}
+
+.legend-cyan {
+  color: var(--color-cyan-bright);
+  background: var(--color-cyan-bright);
+}
+
+.legend-amber {
+  color: var(--color-amber);
+  background: var(--color-amber);
+}
+
+.forecast-chart-note {
+  color: rgba(207, 250, 254, 0.58);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.forecast-line-frame {
+  min-height: 272px;
+  padding: 12px 16px 10px;
+}
+
+.forecast-flow-line,
+.forecast-queue-line {
+  filter: drop-shadow(0 0 10px rgba(122, 247, 255, 0.45));
+}
+
+.forecast-queue-line {
+  filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.45));
+}
+
+.forecast-flow-node,
+.forecast-queue-node {
+  transition: r 180ms ease, filter 180ms ease;
+}
+
+g:hover > .forecast-flow-node,
+g:hover > .forecast-queue-node {
+  r: 7px;
+  filter: drop-shadow(0 0 12px currentColor);
+}
+
 .detail-panel {
   min-height: 520px;
 }
@@ -5688,7 +6266,8 @@ td {
   }
 
   .data-analysis-main-grid,
-  .scatter-grid {
+  .scatter-grid,
+  .forecast-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -5707,7 +6286,9 @@ td {
   .daily-card-grid,
   .composition-grid,
   .heatmap-metrics,
-  .hourly-summary-grid {
+  .hourly-summary-grid,
+  .forecast-kpi-strip,
+  .forecast-intersection-grid {
     grid-template-columns: 1fr;
   }
 

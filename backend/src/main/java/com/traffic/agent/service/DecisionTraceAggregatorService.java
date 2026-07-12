@@ -4,9 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.traffic.runtime.query.RuntimeQueryDtos.ControlDecisionSummary;
+import com.traffic.runtime.query.RuntimeQueryDtos.DecisionEffectSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.DecisionTraceEntry;
 import com.traffic.runtime.query.RuntimeQueryDtos.DecisionTraceResponse;
 import com.traffic.runtime.query.RuntimeQueryDtos.FallbackEventSummary;
+import com.traffic.runtime.query.RuntimeQueryDtos.MaxPressureScoreSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.ModelInferenceLogSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.SafetyEventSummary;
 import com.traffic.runtime.query.RuntimeQueryService;
@@ -66,6 +68,9 @@ public class DecisionTraceAggregatorService {
         return new EnhancedDecisionTrace(
                 decision,
                 metadata,
+                base.traces(),
+                base.maxPressureScores(),
+                base.effect(),
                 inferenceLogs,
                 safetyEvents,
                 fallbackEvents,
@@ -178,6 +183,9 @@ public class DecisionTraceAggregatorService {
     public record EnhancedDecisionTrace(
             ControlDecisionSummary decision,
             Map<String, Object> decisionMetadata,
+            List<DecisionTraceEntry> recordedTraces,
+            List<MaxPressureScoreSummary> maxPressureScores,
+            DecisionEffectSummary effect,
             List<ModelInferenceLogSummary> trafficRInference,
             List<SafetyEventSummary> safetyEvents,
             List<FallbackEventSummary> fallbackEvents,

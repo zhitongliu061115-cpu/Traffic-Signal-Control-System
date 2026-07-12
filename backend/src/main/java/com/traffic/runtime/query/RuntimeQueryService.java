@@ -5,6 +5,7 @@ import com.traffic.runtime.query.RuntimeQueryDtos.ControlDecisionSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.CurrentSimulationState;
 import com.traffic.runtime.query.RuntimeQueryDtos.DecisionTraceEntry;
 import com.traffic.runtime.query.RuntimeQueryDtos.DecisionTraceResponse;
+import com.traffic.runtime.query.RuntimeQueryDtos.DecisionEffectSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.AlertEventSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.EmergencyEventSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.FallbackEventSummary;
@@ -13,6 +14,7 @@ import com.traffic.runtime.query.RuntimeQueryDtos.InferenceResultSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.IntersectionDetail;
 import com.traffic.runtime.query.RuntimeQueryDtos.LaneInfo;
 import com.traffic.runtime.query.RuntimeQueryDtos.ModelInferenceLogSummary;
+import com.traffic.runtime.query.RuntimeQueryDtos.MaxPressureScoreSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.MovementSnapshot;
 import com.traffic.runtime.query.RuntimeQueryDtos.PhaseInfo;
 import com.traffic.runtime.query.RuntimeQueryDtos.RoadDetail;
@@ -213,7 +215,58 @@ public class RuntimeQueryService {
                 rs.getString("message"),
                 instant(rs, "created_at")
         ));
-        return new DecisionTraceResponse(decision, traces);
+        List<MaxPressureScoreSummary> maxPressureScores = jdbcTemplate.query("""
+                select mps.id, sp.id as phase_id, sp.phase_index, sp.phase_code,
+                       mps.pressure_score, mps.detail_payload, mps.created_at
+                from max_pressure_score mps
+                join signal_phase sp on sp.id = mps.phase_id
+                where mps.decision_id = :decisionId
+                order by mps.pressure_score desc, sp.phase_index
+                """, params, (rs, rowNum) -> new MaxPressureScoreSummary(
+                uuidString(rs, "id"),
+                uuidString(rs, "phase_id"),
+                rs.getInt("phase_index"),
+                rs.getString("phase_code"),
+                rs.getDouble("pressure_score"),
+                rs.getString("detail_payload"),
+                instant(rs, "created_at")
+        ));
+        DecisionEffectSummary effect = jdbcTemplate.query("""
+                select id, before_frame_id, after_frame_id, horizon_sec,
+                       queue_before, queue_after, queue_delta,
+                       avg_wait_before, avg_wait_after, avg_wait_delta,
+                       avg_speed_before, avg_speed_after, avg_speed_delta,
+                       throughput_before, throughput_after, throughput_delta,
+                       evaluation_label, detail_payload, created_at
+                from control_decision_effect
+                where decision_id = :decisionId
+                """, params, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            return new DecisionEffectSummary(
+                    uuidString(rs, "id"),
+                    uuidString(rs, "before_frame_id"),
+                    uuidString(rs, "after_frame_id"),
+                    rs.getInt("horizon_sec"),
+                    rs.getInt("queue_before"),
+                    rs.getInt("queue_after"),
+                    rs.getInt("queue_delta"),
+                    rs.getDouble("avg_wait_before"),
+                    rs.getDouble("avg_wait_after"),
+                    rs.getDouble("avg_wait_delta"),
+                    rs.getDouble("avg_speed_before"),
+                    rs.getDouble("avg_speed_after"),
+                    rs.getDouble("avg_speed_delta"),
+                    rs.getInt("throughput_before"),
+                    rs.getInt("throughput_after"),
+                    rs.getInt("throughput_delta"),
+                    rs.getString("evaluation_label"),
+                    rs.getString("detail_payload"),
+                    instant(rs, "created_at")
+            );
+        });
+        return new DecisionTraceResponse(decision, traces, maxPressureScores, effect);
     }
 
     public List<ModelInferenceLogSummary> getModelInferenceLog(
@@ -304,6 +357,8 @@ public class RuntimeQueryService {
                 "simulation_session",
                 "simulation_frame",
                 "control_decision",
+                "control_decision_effect",
+                "max_pressure_score",
                 "traffic_r_inference_log",
                 "strategy_fallback_event",
                 "safety_constraint_event",

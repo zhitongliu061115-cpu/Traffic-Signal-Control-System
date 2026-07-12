@@ -156,7 +156,7 @@ public class RuntimePersistenceService {
             persistMovementSnapshots(scenePk, framePk, frame.laneStates());
             persistIntersectionSnapshots(scenePk, framePk, frame.intersections(), frame.signals());
             persistVehicleSnapshots(scenePk, framePk, frame.vehicles());
-            persistDecisions(scenePk, sessionPk, frame, decisions);
+            persistDecisions(scenePk, sessionPk, framePk, frame, decisions);
         } catch (RuntimeException ex) {
             log.warn(
                     "runtime frame persistence skipped. sid={}, seq={}, simTime={}, error={}",
@@ -179,7 +179,7 @@ public class RuntimePersistenceService {
         try {
             UUID scenePk = ensureScene(session.getSceneId());
             UUID sessionPk = ensureSessionExists(session, scenePk);
-            persistDecisions(scenePk, sessionPk, frame, decisions);
+            persistDecisions(scenePk, sessionPk, null, frame, decisions);
         } catch (RuntimeException ex) {
             log.warn(
                     "runtime event persistence skipped. sid={}, simTime={}, error={}",
@@ -654,6 +654,7 @@ public class RuntimePersistenceService {
     private void persistDecisions(
             UUID scenePk,
             UUID sessionPk,
+            UUID framePk,
             SimFrameData frame,
             List<ControlDecision> decisions
     ) {
@@ -679,12 +680,15 @@ public class RuntimePersistenceService {
             UUID decisionPk = UUID.randomUUID();
             jdbcTemplate.update("""
                     insert into control_decision (
-                        id, session_id, intersection_id, sim_time, controller_type, requested_phase_id,
-                        final_phase_id, duration_sec, status, reason, confidence, metadata
+                        id, decision_key, input_frame_id, session_id, intersection_id, sim_time,
+                        controller_type, requested_phase_id, final_phase_id, duration_sec, status,
+                        reason, confidence, metadata
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     decisionPk,
+                    UUID.randomUUID().toString(),
+                    framePk,
                     sessionPk,
                     intersectionPk,
                     frame.simTime(),

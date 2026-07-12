@@ -1,6 +1,6 @@
 # 数据库结构说明
 
-更新时间：2026-07-11
+更新时间：2026-07-12
 
 本文档根据 `backend/src/main/resources/db/migration`、当前后端读取表，以及后端同学提供的《Traffic-Signal-Database-Schema-Design.xlsx》整理。核心迁移脚本已经从旧的 `cityflow_*` 扁平表，调整为按业务实体拆分的标准结构。
 
@@ -9,9 +9,9 @@
 | 场景 | 数据库 | 建表方式 | 说明 |
 | --- | --- | --- | --- |
 | 默认本地启动 | H2 内存库 | Flyway 自动执行 `db/migration` | 用于本地快速验证，应用重启后数据丢失。 |
-| `postgres` profile | PostgreSQL `traffic_signal` | Flyway 关闭，Hibernate 不建表 | 用于连接已有数据库，避免自动改动真实库结构。 |
+| `postgres` profile | PostgreSQL `traffic_signal` | Flyway 由 `TRAFFIC_DB_FLYWAY_ENABLED` 控制，Hibernate 不建表 | 用于连接共享数据库并执行版本化增量迁移。 |
 
-注意：`postgres` profile 中 `spring.flyway.enabled=false`，`spring.jpa.hibernate.ddl-auto=none`。因此本文档中的 Flyway 结构代表项目内置初始化结构，不一定等同于本机已有 PostgreSQL 的真实结构。
+注意：`postgres` profile 中 `spring.jpa.hibernate.ddl-auto=none`，结构只由 Flyway migration 演进。共享 PostgreSQL 已建立 V5 baseline 并执行后续迁移，禁止使用 Hibernate 自动补表。
 
 ## 实施原则
 
@@ -28,7 +28,7 @@
 | 路网与地图绑定 | `scene`、`intersection`、`road`、`lane`、`road_link`、`lane_link` |
 | 信号相位与安全约束 | `signal_phase`、`signal_phase_road_link`、`signal_timing_plan`、`signal_timing_plan_phase`、`safety_constraint`、`phase_transition_rule` |
 | 仿真会话与状态快照 | `simulation_session`、`simulation_frame`、`road_state_snapshot`、`lane_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot` |
-| 策略调度与模型审计 | `control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`max_pressure_score`、`strategy_fallback_event`、`safety_constraint_event` |
+| 策略调度与模型审计 | `control_decision`、`control_decision_trace`、`control_decision_effect`、`traffic_r_inference_log`、`max_pressure_score`、`strategy_fallback_event`、`safety_constraint_event` |
 | 区域、应急、Agent 与运维 | `control_region`、`control_region_intersection`、`emergency_event`、`emergency_route_node`、`emergency_signal_event`、`agent_conversation`、`agent_message`、`agent_tool_call`、`operation_audit_log`、`alert_event`、`service_health_snapshot` |
 | 认证与账号 | `auth_user` |
 | 当前保留的兼容/演示表 | `intersections`、`dashboard_*`、`analytics_*` |
@@ -54,6 +54,7 @@ erDiagram
   simulation_session ||--o{ control_decision : session_id
   control_decision ||--o{ control_decision_trace : decision_id
   control_decision ||--o{ max_pressure_score : decision_id
+  control_decision ||--o| control_decision_effect : decision_id
   simulation_session ||--o{ emergency_event : session_id
   emergency_event ||--o{ emergency_route_node : emergency_event_id
   emergency_event ||--o{ emergency_signal_event : emergency_event_id
@@ -90,14 +91,16 @@ erDiagram
 | `road_state_snapshot` | `id`; `(frame_id, road_id)` 唯一 | `frame_id`、`road_id`、`vehicle_count`、`queue_count`、`avg_speed`、`level` |
 | `lane_state_snapshot` | `id`; `(frame_id, lane_id)` 唯一 | `frame_id`、`lane_id`、`queue_len`、`vehicle_count`、`avg_wait_time`、`cell_1`、`cell_2`、`cell_3`、`cell_4` |
 | `intersection_state_snapshot` | `id`; `(frame_id, intersection_id)` 唯一 | `frame_id`、`intersection_id`、`queue_count`、`avg_wait`、`level`、`current_phase_id` |
+| `intersection_movement_state_snapshot` | `id`; `(frame_id, intersection_id, movement_code)` 唯一 | `frame_id`、`intersection_id`、`movement_code`、`queue_len`、`vehicle_count`、`avg_wait_time`、`avg_speed`、`cell_1` 至 `cell_4` |
 | `vehicle_state_snapshot` | `id`; `(frame_id, vehicle_id)` 唯一 | `frame_id`、`vehicle_id`、`road_id`、`lane_id`、`x`、`y`、`angle`、`speed`、`vehicle_type` |
 
 ## 策略调度与模型审计
 
 | 表 | 主键/唯一约束 | 字段 |
 | --- | --- | --- |
-| `control_decision` | `id` | `session_id`、`intersection_id`、`sim_time`、`controller_type`、`requested_phase_id`、`final_phase_id`、`duration_sec`、`status`、`reason` |
+| `control_decision` | `id`; `decision_key` 唯一 | `input_frame_id`、`session_id`、`intersection_id`、`sim_time`、`controller_type`、`requested_phase_id`、`final_phase_id`、`duration_sec`、`status`、`reason`、`confidence`、`metadata` |
 | `control_decision_trace` | `id` | `decision_id`、`stage`、`input_payload`、`output_payload`、`message` |
+| `control_decision_effect` | `id`; `decision_id` 唯一 | `before_frame_id`、`after_frame_id`、`horizon_sec`、排队/等待/速度/通行量的 before、after、delta、`evaluation_label`、`detail_payload` |
 | `traffic_r_inference_log` | `id` | `session_id`、`sim_time`、`request_payload`、`prompt_text`、`raw_output`、`parsed_phase_code`、`valid`、`latency_ms`、`error_message` |
 | `max_pressure_score` | `id`; `(decision_id, phase_id)` 唯一 | `decision_id`、`phase_id`、`pressure_score`、`detail_payload` |
 | `strategy_fallback_event` | `id` | `session_id`、`intersection_id`、`from_strategy`、`to_strategy`、`reason`、`sim_time` |
@@ -162,9 +165,9 @@ erDiagram
 | `DataAnalysisRepository` | `analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` |
 | `AuthUserRepository` | `auth_user` |
 | `DatabaseStatusService` | 标准核心表、`intersections`、`dashboard_intersection`、`analytics_overview` |
-| `RuntimePersistenceService` | 默认主链路写入 `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link`、`simulation_session`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event`；不再默认写入全量仿真帧和车辆/道路/路口快照 |
+| `RuntimePersistenceService` | 默认主链路写入 `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link`、`simulation_session`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event`；保留显式写入 `simulation_frame` 和各类 snapshot 的能力，并记录决策输入帧，但不再默认持久化全量仿真帧和车辆/道路/路口快照 |
 | `LiveSimulationStateService` | 不访问数据库；在内存中保存每个运行中 `sid` 的 roadnet 和最近 5 帧，用于 Agent 实时状态查询与诊断 |
-| `RuntimeQueryService` | 只读查询历史/复盘数据：`simulation_session`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event`、`safety_constraint_event`、`alert_event`、`emergency_event`、`service_health_snapshot`；保留对快照表的历史查询能力，但 Agent 实时状态工具不再依赖这些表 |
+| `RuntimeQueryService` | 只读查询历史/复盘数据：session/frame、路网、snapshot、`control_decision`、`control_decision_trace`、`control_decision_effect`、`max_pressure_score`、Traffic-R、fallback、安全和健康表；Agent 实时状态工具不再依赖这些表 |
 
 ## 后续注意事项
 
@@ -225,3 +228,15 @@ Agent 自身数据接口已由 `AgentDataService` 接入：
 | 创建/查询 Agent 会话 | `agent_conversation`、`simulation_session` | 支持关联业务 `sid` 和外部客户端会话标识 `external_session_id`；当前不再表示百炼平台 Agent 会话。 |
 | 创建/查询 Agent 消息 | `agent_message`、`agent_conversation` | 保存 `user`、`assistant`、`tool` 等角色消息。 |
 | 写入/查询工具调用审计 | `agent_tool_call`、`agent_message` | 保存工具名、参数、结果摘要、状态、耗时和错误。 |
+
+## 2026-07-12 MaxPressure Analysis Schema
+
+V7 保留已有 MaxPressure 分析数据所需的兼容结构：
+
+- `control_decision.decision_key` 为非空唯一键；`input_frame_id` 指向产生决策的输入帧。
+- `control_decision_effect` 保存已有决策的前后帧效果数据。
+- `max_pressure_score` 和 `control_decision_trace` 可由只读查询层返回给 Agent。
+- 运行时仅为普通控制决策生成随机 `decision_key` 并关联 `input_frame_id`，不再自动生成 MaxPressure 候选评分、细分轨迹或后续效果。
+- 系统不再输出 MaxPressure JSONL 审计日志，也不再通过异步 CityFlow 回调更新这类审计证据。
+
+Agent 仍可通过 `get_latest_control_decisions` 和 `get_decision_trace` 读取数据库中已经存在的分析数据。
