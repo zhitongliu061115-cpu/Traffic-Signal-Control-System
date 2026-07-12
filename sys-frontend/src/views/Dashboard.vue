@@ -7,7 +7,7 @@
 //   - 2s：   交通统计 + 道路指数 + 信号灯（中频）
 //   - 5s：   拥堵趋势 + 随机告警（低频）
 // ================================================================
-import { onMounted, onUnmounted, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useTrafficStore } from '@/stores/traffic'
 import { useSimulationWebSocket } from '@/composables/useSimulationWebSocket'
 import type { SimFrameData } from '@/types/traffic'
@@ -32,12 +32,38 @@ let vehicleTimer: ReturnType<typeof setInterval> | null = null
 let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
 let dataRetryTimer: ReturnType<typeof setInterval> | null = null
+const simulationStarting = ref(false)
 
 async function syncDashboardData(): Promise<void> {
   const loaded = await store.loadDashboardData()
   if (loaded && dataRetryTimer) {
     clearInterval(dataRetryTimer)
     dataRetryTimer = null
+  }
+}
+
+async function startSimulationFromDashboard(): Promise<void> {
+  if (simulationStarting.value || store.simulationStatus === 'running') return
+  simulationStarting.value = true
+  try {
+    const result = await store.initSimulationSession()
+    if (!result?.sid) {
+      simulationStarting.value = false
+      return
+    }
+    wsConnect(result.sid)
+    const stopWatch = watch(wsStatus, (s) => {
+      if (s === 'connected') {
+        stopWatch()
+        void store.resumeSimulation()
+        simulationStarting.value = false
+      } else if (s === 'error' || s === 'disconnected') {
+        stopWatch()
+        simulationStarting.value = false
+      }
+    })
+  } catch {
+    simulationStarting.value = false
   }
 }
 
@@ -56,25 +82,6 @@ onMounted(() => {
     void syncDashboardData()
   }, 3000)
 
-  // ---- 仿真初始化：创建会话 → 连接 WebSocket ----
-  async function initSimulation(): Promise<void> {
-    const result = await store.initSimulationSession()
-    if (result?.sid) {
-      wsConnect(result.sid)
-      // WebSocket 连接成功后自动启动仿真
-      const stopWatch = watch(wsStatus, (s) => {
-        if (s === 'connected') {
-          stopWatch()
-          store.resumeSimulation()
-        }
-      })
-    }
-  }
-
-  // 页面启动自动连接仿真 WebSocket（后端不可用时不影响 mock 模式运行）
-  void initSimulation()
-
-  // ---- Mock 定时器控制 ----
   function startMockTimers(): void {
     if (vehicleTimer) return // 已启动
     vehicleTimer = setInterval(() => {
@@ -99,7 +106,6 @@ onMounted(() => {
   // 初始启动 mock 定时器
   startMockTimers()
 
-  // ---- 仿真运行后关闭 mock，仿真停止后恢复 mock ----
   watch(
     () => store.simulationStatus,
     (status) => {
@@ -137,7 +143,6 @@ watch(
       store.handleSimFrame(frame as SimFrameData)
     }
   },
-  { deep: true },
 )
 
 // ---- AI 控制决策 → Store ----
@@ -169,6 +174,15 @@ onUnmounted(() => {
 
     <!-- ============ 顶部：宿主导航栏 (8%) ============ -->
     <SystemWorkbenchHeader active-page="network" class="ts-topbar" />
+
+    <button
+      class="ts-sim-start"
+      type="button"
+      :disabled="simulationStarting || store.simulationStatus === 'running'"
+      @click="void startSimulationFromDashboard()"
+    >
+      {{ store.simulationStatus === 'running' ? '仿真运行中' : simulationStarting ? '启动中' : '启动仿真' }}
+    </button>
 
     <!-- ============ 主体：左-中-右三栏 (65%) ============ -->
     <main class="ts-body">
@@ -212,6 +226,26 @@ onUnmounted(() => {
 }
 
 /* 主体三栏区：占满顶部栏之外的全部空间 */
+.ts-sim-start {
+  position: absolute;
+  top: 18px;
+  right: 24px;
+  z-index: 20;
+  min-width: 96px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(0, 212, 255, 0.45);
+  background: rgba(4, 21, 39, 0.82);
+  color: #7af7ff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ts-sim-start:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
 .ts-body {
   flex: 1 1 0;
   display: grid;
