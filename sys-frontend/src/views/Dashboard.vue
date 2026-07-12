@@ -33,6 +33,7 @@ let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
 let dataRetryTimer: ReturnType<typeof setInterval> | null = null
 const simulationStarting = ref(false)
+let dashboardStartingSimulation = false
 
 async function syncDashboardData(): Promise<void> {
   const loaded = await store.loadDashboardData()
@@ -45,6 +46,7 @@ async function syncDashboardData(): Promise<void> {
 async function startSimulationFromDashboard(): Promise<void> {
   if (simulationStarting.value || store.simulationStatus === 'running') return
   simulationStarting.value = true
+  dashboardStartingSimulation = true
   try {
     const result = await store.initSimulationSession()
     if (!result?.sid) {
@@ -64,11 +66,14 @@ async function startSimulationFromDashboard(): Promise<void> {
     })
   } catch {
     simulationStarting.value = false
+  } finally {
+    dashboardStartingSimulation = false
   }
 }
 
 onMounted(() => {
   void syncDashboardData()
+  void startSimulationFromDashboard()
 
   dataRetryTimer = setInterval(() => {
     if (store.dataSourceStatus === 'database') {
@@ -118,12 +123,10 @@ onMounted(() => {
   )
 
   // ---- 策略切换：监听 simulationSid 变化自动重连 WebSocket ----
-  let sidReadyForReconnect = false
   watch(
     () => store.simulationSid,
-    (newSid, oldSid) => {
-      if (oldSid === undefined) return // 首次 ref 初始化，跳过
-      if (!sidReadyForReconnect) { sidReadyForReconnect = true; return } // 页面初始 initSimulation 跳过
+    (newSid) => {
+      if (dashboardStartingSimulation) return // Dashboard 首次启动流程会自行连接，避免重复连接
       if (!newSid) return // resetSimulationState 置空，跳过
       // recreate 触发的 sid 变化 → 断开旧连接 + 接新连接
       wsDisconnect()

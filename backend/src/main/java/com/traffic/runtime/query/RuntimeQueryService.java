@@ -762,7 +762,7 @@ public class RuntimeQueryService {
         if (!hasText(sid)) {
             return;
         }
-        sql.append(" and ").append(sessionAlias).append(".sid = :sid");
+        sql.append(" and ").append(sessionAlias).append(".sid = :sid ");
         params.addValue("sid", sid);
     }
 
@@ -783,7 +783,7 @@ public class RuntimeQueryService {
             sql.append(" or ").append(intersectionAlias).append(".id = :intersectionUuid");
             params.addValue("intersectionUuid", uuid);
         });
-        sql.append(")");
+        sql.append(") ");
     }
 
     private SessionSummary mapSession(ResultSet rs) throws SQLException {

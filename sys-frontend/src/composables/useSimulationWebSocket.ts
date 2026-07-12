@@ -51,7 +51,9 @@ export function useSimulationWebSocket() {
   // ---- 工具函数 ----
 
   function deriveWsBase(): string {
-    const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
+    const apiBase = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080')
+      .trim()
+      .replace(/\/$/, '')
     return apiBase.replace(/^http/, 'ws')
   }
 
