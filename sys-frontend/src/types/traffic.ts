@@ -219,9 +219,6 @@ export interface GlobalStatistics {
   greenWaveCount: number
   throughput: number
 }
-  /** 鍚炲悙閲?(宸插畬鎴愯溅杈嗘暟) */
-  throughput: number
-
 // ---- AI 对比指标 ----
 
 /** 单组对比指标 */

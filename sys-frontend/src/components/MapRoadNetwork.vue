@@ -142,7 +142,7 @@ function syncEmergency(): void {
       if (!it) {
         const m = id.match(/^intersection_(\d+)_(\d+)$/)
         if (m) {
-          const col = +m[1], row = +m[2]
+          const col = +m[1]!, row = +m[2]!
           it = intersections.value.find((i) => i.col === col && i.row === row)
         }
       }
