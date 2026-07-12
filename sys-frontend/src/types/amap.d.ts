@@ -20,6 +20,7 @@ declare namespace AMap {
     on(event: string, handler: (...args: any[]) => void): void
     getContainer(): HTMLElement
     getZoom(): number
+    setZoomAndCenter(zoom: number, center: [number, number]): void
     lngLatToContainer(lngLat: [number, number]): { x: number; y: number }
   }
 

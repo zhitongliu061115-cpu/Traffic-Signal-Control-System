@@ -38,6 +38,7 @@ function visualRoadPoints(road: any) {
 const levelColors: Record<string, number> = {
   free: 0x33d17a, slow: 0xffb020, jammed: 0xff4d5a, unknown: 0x7f8c9a,
 }
+const unknownLevelColor = levelColors.unknown!
 
 // ---- 坐标 ----
 function worldPoint(p: { x: number; y: number }) {
@@ -168,7 +169,7 @@ function drawRoads() {
     const pts = visualRoadPoints(sr)
     const meshes: THREE.Mesh[] = []
     for (let i = 0; i < pts.length - 1; i++) {
-      const m = makeRoadSegmentMesh(pts[i]!, pts[i + 1]!, visualLaneCount(), levelColors.unknown)
+      const m = makeRoadSegmentMesh(pts[i]!, pts[i + 1]!, visualLaneCount(), unknownLevelColor)
       m.userData.roadId = sr.id
       roadGroup.add(m)
       meshes.push(m)
@@ -208,11 +209,12 @@ function buildSignalApproaches() {
 
 function updateRoadStates(roads: any[]) {
   for (const r of roads) {
-    const color = levelColors[r.level] ?? levelColors.unknown
+    const color = levelColors[r.level] ?? unknownLevelColor
     const meshes = roadMeshesById.get(r.id) || []
     for (const m of meshes) {
-      m.material.color.setHex(color)
-      ;(m.material as any).emissive?.setHex(r.level === 'jammed' ? 0x2c0508 : 0x000000)
+      const material = m.material as THREE.MeshStandardMaterial
+      material.color.setHex(color)
+      material.emissive?.setHex(r.level === 'jammed' ? 0x2c0508 : 0x000000)
     }
   }
 }

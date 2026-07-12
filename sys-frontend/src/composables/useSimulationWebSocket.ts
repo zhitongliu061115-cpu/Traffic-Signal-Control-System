@@ -105,11 +105,12 @@ export function useSimulationWebSocket() {
       } else if (message.type === 'control.decision') {
         const decisions = message.data as unknown as ControlDecision[]
         if (Array.isArray(decisions) && decisions.length > 0) {
-          lastControlDecision.value = decisions[0]!
+          const decision = decisions[0]!
+          lastControlDecision.value = decision
           console.log(
-            `[SimWS] AI decision | intersection=${decisions[0].intersectionId} ` +
-            `phase=${decisions[0].phaseCode} confidence=${(decisions[0].confidence * 100).toFixed(0)}% ` +
-            `reason=${decisions[0].reason}`,
+            `[SimWS] AI decision | intersection=${decision.intersectionId} ` +
+            `phase=${decision.phaseCode} confidence=${(decision.confidence * 100).toFixed(0)}% ` +
+            `reason=${decision.reason}`,
           )
         }
       } else {
