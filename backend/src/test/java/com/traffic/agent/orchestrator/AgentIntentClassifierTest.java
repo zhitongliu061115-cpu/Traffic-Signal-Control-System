@@ -17,7 +17,11 @@ class AgentIntentClassifierTest {
         AgentLlmClient llmClient = mock(AgentLlmClient.class);
         AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
         when(toolExecutor.allowedTools()).thenReturn(List.of("get_current_simulation_state"));
-        when(llmClient.chat(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        when(llmClient.chat(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()
+        ))
                 .thenReturn(new AgentLlmClient.LlmResult("""
                         ```json
                         {
@@ -60,7 +64,11 @@ class AgentIntentClassifierTest {
         AgentLlmClient llmClient = mock(AgentLlmClient.class);
         AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
         when(toolExecutor.allowedTools()).thenReturn(List.of("get_current_simulation_state"));
-        when(llmClient.chat(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        when(llmClient.chat(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()
+        ))
                 .thenReturn(new AgentLlmClient.LlmResult("我觉得应该查询状态，但这里不是 JSON", "test", false));
 
         AgentIntentClassifier classifier = new AgentIntentClassifier(llmClient, toolExecutor, new ObjectMapper());

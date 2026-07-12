@@ -28,7 +28,7 @@ interface SubscribeMessage {
   data: SubscribeBody
 }
 
-const DEFAULT_FRAME_INTERVAL_MS = 200
+const DEFAULT_FRAME_INTERVAL_MS = 500
 const RECONNECT_DELAY_MS = 3000
 const MAX_RECONNECT_ATTEMPTS = 5
 

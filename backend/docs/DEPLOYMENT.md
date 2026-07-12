@@ -210,28 +210,54 @@ Traffic-R 在线批量推理当前测试平均约 7 秒，不能按 `cityflow.fr
 
 注意：`http://127.0.0.1:16008` 只适用于“本地 Windows 通过 SSH 隧道访问云端模型”的联调场景。后续如果 Spring Boot、Python CityFlow、Traffic-R 模型都部署在同一台云服务器上，不能继续使用 `16008` 隧道端口。
 
+### Agent LLM API Key 调试配置（2026-07-12）
+
+当前 `/api/v1/agent/chat` 已切换为后端自建 Agent 编排流程：前端只调用 Spring Boot，Spring Boot 使用 LangChain4j 的 OpenAI-compatible `ChatModel` 调用模型 API Key；不再在编排层自动 fallback 到百炼平台 Agent 应用 API。
+
+本地测试建议在 `.env` 中配置：
+
+```properties
+AGENT_LANGCHAIN4J_ENABLED=true
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=qwen-plus
+LLM_API_KEY=你的模型APIKey
+AGENT_MODEL_TEMPERATURE=0.2
+AGENT_MODEL_TIMEOUT_SECONDS=60
+AGENT_MODEL_ENABLE_THINKING=false
+```
+
+兼容说明：
+
+- `LLM_API_KEY` 优先级高于 `DASHSCOPE_API_KEY`；`LLM_BASE_URL` / `LLM_MODEL` 优先级高于 `DASHSCOPE_COMPATIBLE_BASE_URL` / `DASHSCOPE_MODEL`。
+- 百炼 Qwen3 非流式调用要求 `enable_thinking=false`，当前通过 `AGENT_MODEL_ENABLE_THINKING=false` 传入 OpenAI-compatible 自定义参数；如果后续改为流式或更换模型，再按模型要求调整。
+- 旧 `bailian.*` 与 `BailianAgentService` 代码仍保留，但 `/api/v1/agent/chat` 当前不会因为 LangChain4j 未配置而自动调用百炼 Agent 应用代理。
+- 如果未配置 key，接口会返回 `Agent LLM is not configured...`；如果 key、base-url 或模型名错误，会返回 `Agent LLM call failed...`，并在后端 `AGENT_DEBUG` 日志中记录异常。
+- 临时调试日志 logger 为 `AGENT_DEBUG`，会记录 `agent.chat.start/end/error`、`agent.llm.request/response/error`、`agent.tool.start/result/error`。日志会截断长文本并脱敏 key/token/password/authorization 字段，但仍可能包含用户问题、工具参数、工具结果和模型返回，联调结束后应降低日志级别。
+- 后端日志默认写入 `logs/traffic-signal-backend.log`，也可以通过 `BACKEND_LOG_FILE` 覆盖。默认从 `backend` 目录启动 Spring Boot 时，可用 `Get-Content .\logs\traffic-signal-backend.log -Wait -Tail 200` 实时查看；日志目录已在 `.gitignore` 中忽略，不应提交。
+
 ### Agent LangChain4j / 百炼模型配置
 
-当前后端已完成 LangChain4j 依赖配置、Agent 编排层和第一批 `@Tool` 工具封装，但默认不启用 LangChain4j 模型客户端：
+当前后端已完成 LangChain4j 依赖配置、Agent 编排层和第一批 `@Tool` 工具封装，默认通过 OpenAI-compatible LLM API Key 调用模型：
 
 ```yaml
 traffic:
   agent:
     langchain4j:
-      enabled: ${AGENT_LANGCHAIN4J_ENABLED:false}
-      base-url: ${DASHSCOPE_COMPATIBLE_BASE_URL:${BAILIAN_COMPATIBLE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
-      api-key: ${DASHSCOPE_API_KEY:${BAILIAN_API_KEY:}}
-      model-name: ${DASHSCOPE_MODEL:${BAILIAN_MODEL:qwen-plus}}
+      enabled: ${AGENT_LANGCHAIN4J_ENABLED:true}
+      base-url: ${LLM_BASE_URL:${DASHSCOPE_COMPATIBLE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
+      api-key: ${LLM_API_KEY:${DASHSCOPE_API_KEY:}}
+      model-name: ${LLM_MODEL:${DASHSCOPE_MODEL:qwen-plus}}
       temperature: ${AGENT_MODEL_TEMPERATURE:0.2}
       timeout-seconds: ${AGENT_MODEL_TIMEOUT_SECONDS:60}
+      enable-thinking: ${AGENT_MODEL_ENABLE_THINKING:false}
 ```
 
 部署注意：
 
-- 当前仍保留原有 `bailian.*` 配置和 `BailianAgentService`。`/api/v1/agent/chat` 已统一经过 `AgentOrchestratorService`，但 `AGENT_LANGCHAIN4J_ENABLED=false` 时编排层会复用 `BailianAgentService` 调用百炼模型。
-- `AGENT_LANGCHAIN4J_ENABLED` 默认是 `false`。需要切换到 LangChain4j `ChatModel` 客户端时再改为 `true`，并确保 `DASHSCOPE_API_KEY` 或 `BAILIAN_API_KEY` 已配置。
+- 当前仍保留原有 `bailian.*` 配置和 `BailianAgentService`，用于旧测试和兼容代码；`/api/v1/agent/chat` 当前不会自动 fallback 到该服务。
+- `AGENT_LANGCHAIN4J_ENABLED` 默认是 `true`。需要确保 `LLM_API_KEY` 或 `DASHSCOPE_API_KEY` 已配置；如果临时关闭该开关，`/api/v1/agent/chat` 会返回模型未配置错误。
 - 不引入 `langchain4j-spring-boot-starter`，不要求升级 Spring Boot。
-- `DASHSCOPE_API_KEY` / `BAILIAN_API_KEY` 不应写入文档、日志或 Git；本地联调可以先写 `application.yml`，稳定后应改为环境变量或部署密钥。
+- `LLM_API_KEY` / `DASHSCOPE_API_KEY` 不应写入文档、日志或 Git；本地联调建议写入 `.env`，稳定后应改为环境变量或部署密钥。
 - Agent 工具层位于 `com.traffic.agent.tool`，只读工具只能调用后端 Service。实时交通状态工具读取 Spring Boot 内存中的 `LiveSimulationStateService` 最近帧缓存；历史复盘、决策、推理、fallback、告警和审计工具读取 PostgreSQL。模型不能凭空生成实时状态；实时缓存为空时必须返回“无法获取实时状态”。
 
 ## 4. 后续同机部署方案

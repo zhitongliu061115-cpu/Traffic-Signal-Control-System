@@ -11,7 +11,7 @@ const NORMAL_FILL = '#2fd7ff'
 const STOPPED_FILL = '#f5a623'
 const EMERGENCY_FILL = '#ff2d4d'
 const NORMAL_STROKE = '#0a3d5c'
-const MAX_MARKERS = 200
+const MAX_MARKERS = 120
 
 /** 鍗曟潯璺殑鏄犲皠缂撳瓨 */
 interface RoadMapping {

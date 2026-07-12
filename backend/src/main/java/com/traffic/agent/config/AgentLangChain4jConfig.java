@@ -3,6 +3,7 @@ package com.traffic.agent.config;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import java.time.Duration;
+import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -21,6 +22,7 @@ public class AgentLangChain4jConfig {
                 .apiKey(normalizeApiKey(properties.getApiKey()))
                 .modelName(normalizeModelName(properties.getModelName()))
                 .temperature(properties.getTemperature())
+                .customParameters(Map.of("enable_thinking", properties.isEnableThinking()))
                 .timeout(Duration.ofSeconds(Math.max(properties.getTimeoutSeconds(), 1)))
                 .maxRetries(1)
                 .build();

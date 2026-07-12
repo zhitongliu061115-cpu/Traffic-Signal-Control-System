@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // ================================================================
 // AiAssistant — 悬浮式智能体辅助决策问答
-// 通过后端代理连接阿里百炼，失败时使用本地交通规则兜底
+// 通过 Spring Boot 后端自建 Agent 编排层调用模型和工具
 // ================================================================
 import { computed, nextTick, ref } from 'vue'
 import { storeToRefs } from 'pinia'
@@ -27,8 +27,9 @@ interface ApiResponse<T> {
 interface AgentChatResponse {
   reply: string
   sessionId?: string | null
-  source: 'bailian' | 'config' | string
+  source: string
   fallback: boolean
+  conversationId?: string | null
 }
 
 let msgId = 0
@@ -49,7 +50,8 @@ const isThinking = ref(false)
 const chatBody = ref<HTMLDivElement | null>(null)
 const inputRef = ref<HTMLInputElement | null>(null)
 const sessionId = ref<string | null>(null)
-const assistantStatusText = ref('百炼待连接')
+const conversationId = ref<string | null>(null)
+const assistantStatusText = ref('后端 Agent 待连接')
 
 const messages = ref<ChatMessage[]>([
   createWelcomeMessage(),
@@ -86,7 +88,8 @@ function toggleAssistant(): void {
 function startNewConversation(): void {
   if (isThinking.value) return
   sessionId.value = null
-  assistantStatusText.value = '百炼待连接'
+  conversationId.value = null
+  assistantStatusText.value = '后端 Agent 待连接'
   input.value = ''
   messages.value = [createWelcomeMessage()]
   void nextTick(() => inputRef.value?.focus())
@@ -116,13 +119,15 @@ function buildTrafficContext(): Record<string, unknown> {
   }
 }
 
-async function requestBailianAssistant(userInput: string): Promise<string> {
+async function requestBackendAgent(userInput: string): Promise<string> {
   const response = await fetch(`${apiBaseUrl.value}/api/v1/agent/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       message: userInput,
       sessionId: sessionId.value,
+      sid: store.simulationSid,
+      conversationId: conversationId.value,
       context: buildTrafficContext(),
     }),
   })
@@ -139,11 +144,12 @@ async function requestBailianAssistant(userInput: string): Promise<string> {
   }
 
   if (!payload?.success || !payload.data?.reply) {
-    throw new Error(payload?.message || '百炼响应为空')
+    throw new Error(payload?.message || '后端 Agent 响应为空')
   }
 
   sessionId.value = payload.data.sessionId ?? sessionId.value
-  assistantStatusText.value = payload.data.fallback ? '配置待完成' : '百炼在线'
+  conversationId.value = payload.data.conversationId ?? conversationId.value
+  assistantStatusText.value = payload.data.fallback ? 'Agent 兜底响应' : '后端 Agent 在线'
   return payload.data.reply
 }
 
@@ -153,64 +159,14 @@ function formatAssistantError(error: unknown): string {
   return fallback.length > 140 ? `${fallback.slice(0, 140)}...` : fallback
 }
 
-function localMatch(input_: string): string | null {
-  const q = input_.trim()
-
-  if (/哪个.*拥堵|最.*堵|拥堵.*路口|路口.*拥堵/.test(q)) {
-    const sorted = [...intersections.value].sort((a, b) => b.congestionIndex - a.congestionIndex)
-    const top = sorted[0]
-    if (!top) return null
-    const count = roads.value.filter((r) => r.from === top.id || r.to === top.id).length
-    return `当前 **${top.name}**（${top.id}）拥堵指数最高，达到 **${Math.round(top.congestionIndex)}**，排队 ${top.queueLength} 辆，平均延误 ${Math.round(top.averageDelay)}s。\n\n建议：延长当前${top.currentPhase === 'eastwest_straight' ? '东西' : top.currentPhase === 'northsouth_straight' ? '南北' : ''}方向绿灯 15 秒，提前放行下游 ${count} 条连接路段，并持续监控排队长度变化。\n\n状态：建议-待人工确认。`
-  }
-
-  if (/为什么.*延长|延长.*绿灯|绿灯.*延长|为什么.*绿灯/.test(q)) {
-    return `延长绿灯的核心原因是**当前车流密度持续上升**。\n\n当路口排队车辆超过阈值且拥堵指数较高时，系统会评估延长绿灯的边际收益，以降低平均等待时间。当前平均等待时间约 ${Math.round(statistics.value.averageWaitTime)}s；该说明来自本地实时状态兜底分析，最终建议仍需后端校验与人工确认。`
-  }
-
-  if (/应急.*车|救护|消防|怎么走|路线|通行/.test(q)) {
-    const ev = emergencyVehicle.value
-    const route = store.emergencyRoute
-      .map((id) => intersections.value.find((it) => it.id === id)?.name ?? id)
-      .join(' → ')
-    return ev.greenWaveActive
-      ? `应急车辆 **${ev.type === 'ambulance' ? '救护车' : '消防车'}**（${ev.id}）正在执行绿波通行。\n\n路线：**${route}**\n目标：${ev.destination}\n预计到达：**${ev.eta} 分钟**\n状态：建议-待人工确认，沿线 ${store.emergencyRoute.length} 个路口应依次优先放行。`
-      : `建议应急车辆沿 **${route}** 通行。该路线覆盖 ${store.emergencyRoute.length} 个路口，沿途可提前形成绿波窗口，预计通行时间从 ${store.compareMetrics.emergencyPassTime.traditional} 分钟缩短至 **${store.compareMetrics.emergencyPassTime.ai} 分钟**。\n\n状态：建议-待人工确认，请由人工确认后再发起控制流程。`
-  }
-
-  if (/设备.*离线|离线|故障|通信.*超时/.test(q)) {
-    const faults = intersections.value.filter((it) => it.deviceStatus !== 'online')
-    if (faults.length === 0) {
-      return '当前路网所有信号机 **均在线运行**，设备在线率 **100%**。未检测到离线或故障设备。'
-    }
-    const names = faults.map((it) => `**${it.name}**（${it.id}，${it.deviceStatus === 'fault' ? '故障' : '离线'}）`).join('\n- ')
-    return `当前检测到 **${faults.length} 台**信号设备异常：\n- ${names}\n\n建议：立即派单巡检通信模块与硬件连接；受影响路口切换降级控制；若超过 30 分钟未恢复，建议启用临时移动信号灯。\n\n状态：建议-待人工确认。`
-  }
-
-  return null
-}
-
 async function queryAssistant(userInput: string): Promise<string> {
-  let bailianError = ''
   try {
-    return await requestBailianAssistant(userInput)
+    return await requestBackendAgent(userInput)
   } catch (error) {
-    bailianError = formatAssistantError(error)
-    assistantStatusText.value = '本地兜底'
+    const agentError = formatAssistantError(error)
+    assistantStatusText.value = '后端 Agent 异常'
+    return `后端 Agent 调用失败：${agentError}\n\n请检查后端服务、模型 API Key、LLM_BASE_URL / LLM_MODEL 配置以及后端 Agent 运行日志。`
   }
-
-  const note = `注：百炼服务暂不可用（${bailianError}），已使用本地兜底分析。`
-  const local = localMatch(userInput)
-  if (local) {
-    return `${local}\n\n${note}`
-  }
-
-  const storeReply = store.askAssistant(userInput)
-  if (storeReply) {
-    return `${storeReply}\n\n${note}`
-  }
-
-  return `暂时无法连接百炼智能体，且本地兜底规则未覆盖该问题。原因：${bailianError}。请检查后端服务、BAILIAN_API_KEY 配置和百炼应用 ID 后重试。`
 }
 
 async function handleSend(): Promise<void> {

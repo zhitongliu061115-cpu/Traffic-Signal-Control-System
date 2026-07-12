@@ -33,7 +33,7 @@ describe('AiAssistant', () => {
     wrapper.unmount()
   })
 
-  it('sends chat requests through the backend Bailian proxy', async () => {
+  it('sends chat requests through the backend Agent endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -123,13 +123,13 @@ describe('AiAssistant', () => {
     wrapper.unmount()
   })
 
-  it('shows the backend Bailian failure reason when using local fallback', async () => {
+  it('shows the backend Agent failure reason without local fallback', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 400,
       json: async () => ({
         success: false,
-        message: '百炼调用失败：HTTP 401。请检查 BAILIAN_API_KEY。',
+        message: 'Agent LLM call failed: HTTP 401。请检查 LLM_API_KEY。',
         data: null,
       }),
     })
@@ -146,9 +146,10 @@ describe('AiAssistant', () => {
     await wrapper.find('.ai-send').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('本地兜底')
-    expect(wrapper.text()).toContain('百炼调用失败：HTTP 401')
-    expect(wrapper.text()).toContain('已使用本地兜底分析')
+    expect(wrapper.text()).toContain('后端 Agent 异常')
+    expect(wrapper.text()).toContain('Agent LLM call failed: HTTP 401')
+    expect(wrapper.text()).toContain('后端 Agent 调用失败')
+    expect(wrapper.text()).toContain('LLM_BASE_URL / LLM_MODEL')
 
     wrapper.unmount()
   })

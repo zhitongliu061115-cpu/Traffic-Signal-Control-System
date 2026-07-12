@@ -11,6 +11,7 @@ public class AgentLangChain4jProperties {
     private String modelName = "qwen-plus";
     private double temperature = 0.2;
     private long timeoutSeconds = 60;
+    private boolean enableThinking = false;
 
     public boolean isEnabled() {
         return enabled;
@@ -58,5 +59,13 @@ public class AgentLangChain4jProperties {
 
     public void setTimeoutSeconds(long timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
+    }
+
+    public boolean isEnableThinking() {
+        return enableThinking;
+    }
+
+    public void setEnableThinking(boolean enableThinking) {
+        this.enableThinking = enableThinking;
     }
 }

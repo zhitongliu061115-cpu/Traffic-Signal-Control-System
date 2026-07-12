@@ -25,7 +25,7 @@ public class AgentIntentClassifier {
     }
 
     public AgentPlan plan(AgentPlanningInput input) {
-        AgentLlmClient.LlmResult llmResult = llmClient.chat(plannerSystemPrompt(), plannerUserPrompt(input));
+        AgentLlmClient.LlmResult llmResult = llmClient.chat("tool_plan", plannerSystemPrompt(), plannerUserPrompt(input));
         String rawPlan = llmResult.text();
         try {
             AgentPlan parsed = parsePlan(rawPlan);

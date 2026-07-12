@@ -2,8 +2,11 @@ server:
   port: ${SERVER_PORT:8080}
 
 logging:
+  file:
+    name: ${BACKEND_LOG_FILE:logs/traffic-signal-backend.log}
   level:
     com.traffic.agent: DEBUG
+    AGENT_DEBUG: DEBUG
 
 spring:
   config:
@@ -56,24 +59,24 @@ auth:
   invite-code: ${AUTH_INVITE_CODE:123456}
   initial-account:
     username: ${AUTH_INITIAL_USERNAME:admin}
-    password: ${AUTH_INITIAL_PASSWORD:123456}
+    password: ${AUTH_INITIAL_PASSWORD:}
     email: ${AUTH_INITIAL_EMAIL:admin@traffic.local}
 
 cityflow:
   base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9000}
-  api-token: ${CITYFLOW_API_TOKEN:jLEc-o3L16migUKQ7f_OlH94qsjEstFf}
+  api-token: ${CITYFLOW_API_TOKEN:}
   client-id: ${CITYFLOW_CLIENT_ID:hcj}
   default-scene-id: jinan_3x4
-  frame-poll-interval-ms: 100
+  frame-poll-interval-ms: ${CITYFLOW_FRAME_POLL_INTERVAL_MS:500}
 
 traffic-r:
-  enabled: ${TRAFFIC_R_ENABLED:true}
+  enabled: ${TRAFFIC_R_ENABLED:false}
   base-url: ${TRAFFIC_R_BASE_URL:http://127.0.0.1:16008}
   health-path: ${TRAFFIC_R_HEALTH_PATH:/health}
   predict-path: ${TRAFFIC_R_PREDICT_PATH:/predict}
   batch-predict-path: ${TRAFFIC_R_BATCH_PREDICT_PATH:/predict-batch}
-  decision-interval-sec: ${TRAFFIC_R_DECISION_INTERVAL_SEC:10}
-  timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:30}
+  decision-interval-sec: ${TRAFFIC_R_DECISION_INTERVAL_SEC:20}
+  timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:5}
   fallback-controller: ${TRAFFIC_R_FALLBACK_CONTROLLER:max-pressure}
 
 bailian:
@@ -89,12 +92,13 @@ bailian:
 traffic:
   agent:
     langchain4j:
-      enabled: ${AGENT_LANGCHAIN4J_ENABLED:false}
-      base-url: ${DASHSCOPE_COMPATIBLE_BASE_URL:${BAILIAN_COMPATIBLE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
-      api-key: ${DASHSCOPE_API_KEY:${BAILIAN_API_KEY:}}
-      model-name: ${DASHSCOPE_MODEL:${BAILIAN_MODEL:qwen-plus}}
+      enabled: ${AGENT_LANGCHAIN4J_ENABLED:true}
+      base-url: ${LLM_BASE_URL:${DASHSCOPE_COMPATIBLE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
+      api-key: ${LLM_API_KEY:${DASHSCOPE_API_KEY:sk-ws-H.EMEIXEP.1XNE.MEUCIHWhOCZ_oD7oSqIrYymkRZZpq8DQrhiIi4P6gasppFI9AiEA2dYvsYJmR4nIkWjpZNJxfzc0R9WTiFzf4qITCUUWknA}}
+      model-name: ${LLM_MODEL:${DASHSCOPE_MODEL:qwen3-8b-5e18191e0066}}
       temperature: ${AGENT_MODEL_TEMPERATURE:0.2}
       timeout-seconds: ${AGENT_MODEL_TIMEOUT_SECONDS:60}
+      enable-thinking: ${AGENT_MODEL_ENABLE_THINKING:false}
 
 ---
 
@@ -114,8 +118,8 @@ spring:
       on-profile: postgres
   datasource:
     url: jdbc:postgresql://120.48.99.240:5432/traffic_signal
-    username: traffic_user
-    password: 123456
+    username: ${TRAFFIC_DB_USERNAME:traffic_user}
+    password: ${TRAFFIC_DB_PASSWORD:}
     driver-class-name: org.postgresql.Driver
   jpa:
     database-platform: org.hibernate.dialect.PostgreSQLDialect
