@@ -11,7 +11,7 @@ export type SystemMode = 'normal' | 'emergency'
 export type DeviceStatus = 'online' | 'offline' | 'fault'
 
 /** 车辆类型 */
-export type VehicleType = 'normal' | 'ambulance' | 'firetruck'
+export type VehicleType = 'normal' | 'ambulance' | 'fire_truck'
 
 /** 告警级别 */
 export type AlertLevel = 'emergency' | 'error' | 'warning' | 'info'
@@ -118,7 +118,7 @@ export interface Vehicle {
 /** 应急车辆（继承普通车辆 + 应急元信息） */
 export interface EmergencyVehicle {
   id: string
-  type: 'ambulance' | 'firetruck'
+  type: 'ambulance' | 'fire_truck'
   /** 当前所在路口 ID */
   currentIntersectionId: string
   /** 目的地方向描述 */
@@ -132,7 +132,7 @@ export interface EmergencyVehicle {
 // ---- 应急调度 ----
 
 /** 车辆类型（调度用，不含 normal） */
-export type EmergencyEvType = 'ambulance' | 'firetruck'
+export type EmergencyEvType = 'ambulance' | 'fire_truck'
 
 /** 应急调度请求（对齐后端 EvDispatchRequest，只需路口 ID） */
 export interface DispatchRequest {
@@ -154,9 +154,11 @@ export interface DispatchResponse {
   evId: string
   evType: string
   priority: number
+  cfVehicleId: string
   route: string[]
   routeRoads: string[]
   estimatedTravelTime: number
+  totalIntersections: number
 }
 
 /** 应急调度表单数据（本地组件用） */
@@ -217,6 +219,8 @@ export interface GlobalStatistics {
   greenWaveCount: number
   throughput: number
 }
+  /** 鍚炲悙閲?(宸插畬鎴愯溅杈嗘暟) */
+  throughput: number
 
 // ---- AI 对比指标 ----
 
@@ -310,6 +314,23 @@ export type SimulationStatus =
   | 'running'
   | 'finished'
 
+
+/** 路口车道状态（后端 IntersectionLaneStateDto） */
+export interface IntersectionLaneState {
+  intersectionId: string
+  lanes: LaneMovementState[]
+}
+
+/** 车道通行状态 */
+export interface LaneMovementState {
+  fromRoadId: string
+  toRoadId: string
+  vehicleCount: number
+  queueCount: number
+  avgSpeed: number
+  level: 'free' | 'slow' | 'jammed' | 'unknown'
+}
+
 /** 单帧车辆状态（后端 VehicleStateDto） */
 export interface SimVehicleState {
   id: string
@@ -354,15 +375,58 @@ export interface SimMetrics {
   throughput: number
 }
 
+
+
+/** EV 事件（后端 EvEventDto） */
+/** AI 鎺у埗鍐崇瓥锛圵ebSocket 鎺ㄩ€侊級 */
+export interface ControlDecision {
+  intersectionId: string
+  controllerType: string
+  phaseIndex: number
+  phaseCode: string
+  durationSec: number
+  confidence: number
+  reason: string
+  metadata?: Record<string, unknown>
+}
+
+export interface EvEventDto {
+  evId: string
+  evType: string
+  priority: number
+  intersectionId: string
+  decision: string
+  phaseIndex: number
+  phaseIndexBefore: number
+  timestamp: number
+  status: string
+  blockedBy?: string
+}
+
+/** EV 状态（后端 EvStatusDto） */
+export interface EvStatusDto {
+  evId: string
+  evType: string
+  priority: number
+  route: string[]
+  passedCount: number
+  totalCount: number
+  completed: boolean
+  elapsedTime: number
+}
+
 /** 单帧仿真数据（后端 SimFrameData） */
 export interface SimFrameData {
   simTime: number
   status?: 'running' | 'finished'
   vehicles: SimVehicleState[]
   roads: SimRoadState[]
+  laneStates?: Record<string, IntersectionLaneState>
   intersections: SimIntersectionState[]
   signals: SimSignalState[]
   metrics: SimMetrics
+  evEvents?: EvEventDto[]
+  evStatus?: EvStatusDto[]
 }
 
 /** WebSocket 消息信封（后端 WsMessage<T>） */

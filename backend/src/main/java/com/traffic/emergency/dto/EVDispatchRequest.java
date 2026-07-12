@@ -4,12 +4,14 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
 public record EVDispatchRequest(
-        @NotNull CoordDTO startCoord,
-        @NotNull CoordDTO endCoord,
+        CoordDTO startCoord,
+        CoordDTO endCoord,
         @NotBlank String evId,
         String evType,
         Integer priority,
-        Double maxSpeed
+        Double maxSpeed,
+        String startIntersection,
+        String endIntersection
 ) {
     public EVDispatchRequest {
         if (evType == null) evType = "fire_truck";

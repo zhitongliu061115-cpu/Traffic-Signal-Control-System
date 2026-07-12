@@ -195,6 +195,14 @@ class EVPriorityService:
                 retryable=False,
             ) from ex
 
+        # CityFlow push_vehicle may not immediately register the vehicle in the engine.
+        # Call next_step() to ensure the vehicle is registered before we try to find it.
+        try:
+            engine.next_step()
+            print(f'[dispatch] next_step called after push_vehicle', flush=True)
+        except Exception:
+            pass
+
         # Find the vehicle ID CityFlow assigned
         cf_vehicle_id = push_result.strip() if isinstance(push_result, str) and push_result.strip() else self._find_pushed_vehicle(engine, road_route[0], before_ids, sid)
 

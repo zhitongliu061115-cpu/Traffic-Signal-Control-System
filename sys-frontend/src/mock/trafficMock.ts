@@ -141,7 +141,7 @@ export const mockVehicles: Vehicle[] = [
   { id: 'V011', roadId: 'R12', progress: 0.30, speed: 34, type: 'normal', laneIndex: 0 },
   { id: 'V012', roadId: 'R15', progress: 0.55, speed: 40, type: 'normal', laneIndex: 2 },
   { id: 'E001', roadId: 'R01', progress: 0.40, speed: 62, type: 'ambulance', laneIndex: 0 },
-  { id: 'E002', roadId: 'R11', progress: 0.18, speed: 55, type: 'firetruck', laneIndex: 1 },
+  { id: 'E002', roadId: 'R11', progress: 0.18, speed: 55, type: 'fire_truck', laneIndex: 1 },
   { id: 'V013', roadId: 'R03', progress: 0.90, speed: 50, type: 'normal', laneIndex: 0 },
   { id: 'V014', roadId: 'R16', progress: 0.25, speed: 38, type: 'normal', laneIndex: 1 },
   { id: 'V015', roadId: 'R10', progress: 0.55, speed: 30, type: 'normal', laneIndex: 2 },

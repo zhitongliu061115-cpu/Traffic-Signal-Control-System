@@ -21,7 +21,7 @@ const store = useTrafficStore()
 const {
   intersections, roads, vehicles,
   systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId,
-  simulationVehicles, simulationStatus, simRoadnet,
+  simulationVehicles, simulationStatus, simRoadnet, emergencyCfVehicleId,
 } = storeToRefs(store)
 
 const mapBox = ref<HTMLDivElement | null>(null)
@@ -137,7 +137,15 @@ function syncEmergency(): void {
   if (systemMode.value === 'emergency') {
     const pts: [number, number][] = []
     for (const id of emergencyRoute.value) {
-      const it = intersections.value.find((i) => i.id === id)
+      // 优先直接匹配 mock ID，否则尝试 CityFlow intersection_{col}_{row} 格式反向映射
+      let it = intersections.value.find((i) => i.id === id)
+      if (!it) {
+        const m = id.match(/^intersection_(\d+)_(\d+)$/)
+        if (m) {
+          const col = +m[1], row = +m[2]
+          it = intersections.value.find((i) => i.col === col && i.row === row)
+        }
+      }
       if (it) pts.push([it.lng, it.lat])
     }
     emergencyLine.setPath(pts)
@@ -180,7 +188,7 @@ watch([simulationVehicles, simRoadnet, simulationStatus], () => {
     vehicleLayer = null
     return
   }
-  if (vehicleUpdateTimer !== null) return
+   if (vehicleUpdateTimer !== null) return
   vehicleUpdateTimer = setTimeout(() => {
     vehicleUpdateTimer = null
     if (simulationStatus.value !== 'running' || !amapInstance || !simRoadnet.value) return
@@ -192,7 +200,8 @@ watch([simulationVehicles, simRoadnet, simulationStatus], () => {
         intersections.value,
       )
     }
-    vehicleLayer.update(simulationVehicles.value as SimVehicleState[])
+    const evSet = emergencyCfVehicleId.value ? new Set([emergencyCfVehicleId.value]) : undefined
+    vehicleLayer.update(simulationVehicles.value as SimVehicleState[], evSet)
   }, 500)
 })
 

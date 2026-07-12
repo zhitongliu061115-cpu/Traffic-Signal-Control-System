@@ -1,18 +1,19 @@
-// ================================================================
-// amapVehicleLayer — 高德 CircleMarker 车辆图层（progress 映射）
-// CityFlow 车辆 (roadId, x, y) → 逐路 progress → 上海弯曲 path → lng/lat
-// 不改 roadnet，不改后端，不改 store
-// ================================================================
+﻿// =========================================================
+// amapVehicleLayer 鈥?楂樺痉 CircleMarker 杞﹁締鍥惧眰锛坧rogress 鏄犲皠锛?
+// CityFlow 杞﹁締 (roadId, x, y) 鈫?閫愯矾 progress 鈫?涓婃捣寮洸 path 鈫?lng/lat
+// 涓嶆敼 roadnet锛屼笉鏀瑰悗绔紝涓嶆敼 store
+// =========================================================
 import type { Road, Intersection, SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 
-// ---- 常量 ----
+// ---- 甯搁噺 ----
 const MARKER_RADIUS = 4.5
 const NORMAL_FILL = '#2fd7ff'
 const STOPPED_FILL = '#f5a623'
+const EMERGENCY_FILL = '#ff2d4d'
 const NORMAL_STROKE = '#0a3d5c'
 const MAX_MARKERS = 120
 
-/** 单条路的映射缓存 */
+/** 鍗曟潯璺殑鏄犲皠缂撳瓨 */
 interface RoadMapping {
   shanghaiRoad: Road
   cityFlowPoints: Array<{ x: number; y: number }>
@@ -22,11 +23,11 @@ interface RoadMapping {
 }
 
 export interface VehicleLayer {
-  update: (vehicles: SimVehicleState[]) => void
+  update: (vehicles: SimVehicleState[], evIds?: Set<string>) => void
   dispose: () => void
 }
 
-// ---- 工具：上海路口 → CityFlow 转置键 ----
+// ---- 宸ュ叿锛氫笂娴疯矾鍙?鈫?CityFlow 杞疆閿?----
 function toCityFlowKey(it: Intersection): string {
   return `${it.col}_${it.row}`
 }
@@ -35,7 +36,7 @@ function simEndpointKey(id: string): string | null {
   return m ? `${m[1]}_${m[2]}` : null
 }
 
-// ---- 工具：两点距离 / 投影 / polyline 长度 ----
+// ---- 宸ュ叿锛氫袱鐐硅窛绂?/ 鎶曞奖 / polyline 闀垮害 ----
 function dist2(a: { x: number; y: number }, b: { x: number; y: number }): number {
   const dx = a.x - b.x
   const dy = a.y - b.y
@@ -62,7 +63,7 @@ function polylineLength(pts: Array<{ x: number; y: number }>): number {
   return total
 }
 
-/** 点 (px,py) 在折线上的进度 0~1（投影最近点） */
+/** 鐐?(px,py) 鍦ㄦ姌绾夸笂鐨勮繘搴?0~1锛堟姇褰辨渶杩戠偣锛?*/
 function progressOnPolyline(
   px: number, py: number,
   pts: Array<{ x: number; y: number }>,
@@ -86,7 +87,7 @@ function progressOnPolyline(
   return Math.max(0, Math.min(1, bestT))
 }
 
-/** 沿 lng/lat 折线按 progress 插值 */
+/** 娌?lng/lat 鎶樼嚎鎸?progress 鎻掑€?*/
 function interpolateLngLat(
   path: [number, number][],
   progress: number,
@@ -119,29 +120,29 @@ function interpolateLngLat(
   return path[path.length - 1]!
 }
 
-// ================================================================
+// =========================================================
 export function createVehicleLayer(
   map: AMap.Map,
   simRoadnet: SimRoadnetResponse,
   shanghaiRoads: Road[],
   shanghaiIntersections: Intersection[],
 ): VehicleLayer {
-  // ---- 构建 CityFlow roadId → RoadMapping 索引（一次） ----
+  // ---- 鏋勫缓 CityFlow roadId 鈫?RoadMapping 绱㈠紩锛堜竴娆★級 ----
   const roadMapping = new Map<string, RoadMapping>()
 
-  // 上海路口 ID → 转置键
+  // 涓婃捣璺彛 ID 鈫?杞疆閿?
   const shIdToKey = new Map<string, string>()
   for (const it of shanghaiIntersections) {
     shIdToKey.set(it.id, toCityFlowKey(it))
   }
-  // 无序端点对 → 上海 Road
+  // 鏃犲簭绔偣瀵?鈫?涓婃捣 Road
   const pairToRoad = new Map<string, Road>()
   for (const r of shanghaiRoads) {
     const a = shIdToKey.get(r.from)
     const b = shIdToKey.get(r.to)
     if (a && b) pairToRoad.set([a, b].sort().join('|'), r)
   }
-  // 遍历 simRoadnet 构建映射
+  // 閬嶅巻 simRoadnet 鏋勫缓鏄犲皠
   for (const sr of simRoadnet.roads) {
     const a = simEndpointKey(sr.from)
     const b = simEndpointKey(sr.to)
@@ -155,12 +156,13 @@ export function createVehicleLayer(
     roadMapping.set(sr.id, {
       shanghaiRoad: shRoad,
       cityFlowPoints: cfPts,
+      flipped,
       totalLength: Math.max(1, polylineLength(cfPts)),
       flipped,
     })
   }
 
-  // ---- CircleMarker 对象池 ----
+  // ---- CircleMarker 瀵硅薄姹?----
   const pool: AMap.CircleMarker[] = []
   function ensurePool(n: number): void {
     while (pool.length < n && pool.length < MAX_MARKERS) {
@@ -180,9 +182,9 @@ export function createVehicleLayer(
     }
   }
 
-  // ---- 公开方法 ----
+  // ---- 鍏紑鏂规硶 ----
   return {
-    update(vehicles: SimVehicleState[]): void {
+    update(vehicles: SimVehicleState[], evIds?: Set<string>): void {
       ensurePool(Math.min(vehicles.length, MAX_MARKERS))
       let vi = 0
 
@@ -194,18 +196,23 @@ export function createVehicleLayer(
         // 如果 CityFlow 道路与上海道路方向相反，翻转 progress
         if (mapping.flipped) prog = 1 - prog
         // 映射到上海弯曲路径
+        // 璁＄畻 CityFlow 鐩磋矾涓婄殑 progress
+        let prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
+        // 濡傛灉 CityFlow 閬撹矾涓庝笂娴烽亾璺柟鍚戠浉鍙嶏紝缈昏浆 progress
+        if (mapping.flipped) prog = 1 - prog
+        // 鏄犲皠鍒颁笂娴峰集鏇茶矾寰?
         const [lng, lat] = interpolateLngLat(mapping.shanghaiRoad.path!, prog)
         if (vi < pool.length) {
           pool[vi]!.setCenter([lng, lat] as unknown as AMap.LngLat)
           pool[vi]!.setOptions({
-            fillColor: v.speed < 0.5 ? STOPPED_FILL : NORMAL_FILL,
+            fillColor: evIds?.has(v.id) ? EMERGENCY_FILL : (v.speed < 0.5 ? STOPPED_FILL : NORMAL_FILL),
           })
           pool[vi]!.show()
           vi++
         }
       }
 
-      // 隐藏剩余 markers
+      // 闅愯棌鍓╀綑 markers
       for (let i = vi; i < pool.length; i++) pool[i]!.hide()
     },
 
@@ -215,3 +222,4 @@ export function createVehicleLayer(
     },
   }
 }
+
