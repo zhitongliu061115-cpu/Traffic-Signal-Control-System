@@ -10,9 +10,11 @@ import com.traffic.agent.tool.TrafficHealthAgentTools;
 import com.traffic.agent.tool.TrafficKnowledgeAgentTools;
 import com.traffic.agent.tool.TrafficRuntimeAgentTools;
 import com.traffic.common.exception.BusinessException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -48,6 +50,7 @@ public class AgentToolExecutor {
     private final TrafficKnowledgeAgentTools knowledgeTools;
     private final TrafficDiagnosisAgentTools diagnosisTools;
     private final EmergencyAgentTools emergencyTools;
+    private final AgentDebugLogService debugLogService;
 
     public AgentToolExecutor(
             AgentDataService agentDataService,
@@ -58,6 +61,29 @@ public class AgentToolExecutor {
             TrafficDiagnosisAgentTools diagnosisTools,
             EmergencyAgentTools emergencyTools
     ) {
+        this(
+                agentDataService,
+                runtimeTools,
+                decisionTools,
+                healthTools,
+                knowledgeTools,
+                diagnosisTools,
+                emergencyTools,
+                new AgentDebugLogService(new ObjectMapper())
+        );
+    }
+
+    @Autowired
+    public AgentToolExecutor(
+            AgentDataService agentDataService,
+            TrafficRuntimeAgentTools runtimeTools,
+            TrafficDecisionAgentTools decisionTools,
+            TrafficHealthAgentTools healthTools,
+            TrafficKnowledgeAgentTools knowledgeTools,
+            TrafficDiagnosisAgentTools diagnosisTools,
+            EmergencyAgentTools emergencyTools,
+            AgentDebugLogService debugLogService
+    ) {
         this.agentDataService = agentDataService;
         this.runtimeTools = runtimeTools;
         this.decisionTools = decisionTools;
@@ -65,6 +91,7 @@ public class AgentToolExecutor {
         this.knowledgeTools = knowledgeTools;
         this.diagnosisTools = diagnosisTools;
         this.emergencyTools = emergencyTools;
+        this.debugLogService = debugLogService;
     }
 
     public List<String> allowedTools() {
@@ -75,11 +102,25 @@ public class AgentToolExecutor {
         String toolName = normalizeToolName(plannedCall.toolName());
         Map<String, Object> arguments = normalizeArguments(plannedCall.arguments());
         long startNanos = System.nanoTime();
+        debugLogService.info("agent.tool.start", Map.of(
+                "messageId", messageId,
+                "toolName", toolName,
+                "arguments", arguments,
+                "reason", plannedCall.reason() == null ? "" : plannedCall.reason()
+        ));
         try {
             AgentToolResult result = callTool(toolName, arguments);
             int latencyMs = elapsedMs(startNanos);
             String status = result.success() ? "SUCCESS" : "FAILED";
             String errorMessage = result.success() ? null : String.join("; ", result.warnings());
+            debugLogService.info("agent.tool.result", Map.of(
+                    "messageId", messageId,
+                    "toolName", toolName,
+                    "arguments", arguments,
+                    "status", status,
+                    "latencyMs", latencyMs,
+                    "result", result
+            ));
             ToolCallResponse audit = agentDataService.recordToolCall(
                     messageId,
                     toolName,
@@ -92,6 +133,13 @@ public class AgentToolExecutor {
             return new AgentToolExecution(audit.id(), toolName, arguments, result, status, latencyMs, errorMessage);
         } catch (RuntimeException ex) {
             int latencyMs = elapsedMs(startNanos);
+            debugLogService.error("agent.tool.error", Map.of(
+                    "messageId", messageId,
+                    "toolName", toolName,
+                    "arguments", arguments,
+                    "latencyMs", latencyMs,
+                    "error", ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()
+            ), ex);
             ToolCallResponse audit = agentDataService.recordToolCall(
                     messageId,
                     toolName,

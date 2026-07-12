@@ -30,7 +30,11 @@ public class AgentResponseAssembler {
             AgentPlan plan,
             List<AgentToolExecution> executions
     ) {
-        AgentLlmClient.LlmResult result = llmClient.chat(answerSystemPrompt(), answerUserPrompt(request, context, plan, executions));
+        AgentLlmClient.LlmResult result = llmClient.chat(
+                "answer",
+                answerSystemPrompt(),
+                answerUserPrompt(request, context, plan, executions)
+        );
         String answer = result.text();
         if (answer == null || answer.isBlank()) {
             answer = fallbackAnswer(plan, executions);

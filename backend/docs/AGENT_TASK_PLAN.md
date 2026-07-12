@@ -257,7 +257,7 @@ Agent 可见语义化工具
 - 已在 `backend/pom.xml` 引入 `dev.langchain4j:langchain4j` 与 `dev.langchain4j:langchain4j-open-ai`。
 - 暂不引入 `langchain4j-spring-boot-starter`，避免引入 Spring Boot 版本升级风险。
 - 已在 `application.yml` 增加 `traffic.agent.langchain4j.*` 配置。
-- `traffic.agent.langchain4j.enabled` 默认是 `false`，未开启时编排层会复用现有 `BailianAgentService` 调用百炼。
+- `traffic.agent.langchain4j.enabled` 默认是 `true`，`/api/v1/agent/chat` 当前只走后端自建 Agent 编排，不再自动 fallback 到 `BailianAgentService`。
 - 开启 `traffic.agent.langchain4j.enabled=true` 后，会通过普通 Java API 创建 LangChain4j `ChatModel`。
 - 第二阶段采用 LLM JSON 规划模式，不依赖 `langchain4j-spring-boot-starter`。
 - 第三阶段已封装 `com.traffic.agent.tool` 工具层，工具方法使用 LangChain4j `@Tool` 注解，但实际执行仍由后端白名单和审计流程控制。
@@ -268,12 +268,13 @@ Agent 可见语义化工具
 traffic:
   agent:
     langchain4j:
-      enabled: false
+      enabled: true
       base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
       api-key:
       model-name: qwen-plus
       temperature: 0.2
       timeout-seconds: 60
+      enable-thinking: false
 ```
 
 后续实现规则：

@@ -683,7 +683,9 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 
 ### 3.6 Agent 会话、消息与工具调用审计
 
-这些接口用于保存和查询 Agent 自身交互数据。`/api/v1/agent/chat` 会自动创建/读取会话、写入用户消息、记录 LLM 工具规划、执行工具并写入工具调用审计；外部手动调用 `/api/v1/agent/tools/**` 时，仍可传入 `messageId` 形成可复盘链路。
+这些接口用于保存和查询 Agent 自身交互数据。`/api/v1/agent/chat` 是前端 Agent 的唯一聊天入口：前端不再直连百炼平台 Agent API，而是调用 Spring Boot 后端自建 Agent 编排层；后端通过 LangChain4j + OpenAI-compatible LLM API Key 调用模型，生成工具规划、执行只读工具并组装回答。`/api/v1/agent/chat` 会自动创建/读取会话、写入用户消息、记录 LLM 工具规划、执行工具并写入工具调用审计；外部手动调用 `/api/v1/agent/tools/**` 时，仍可传入 `messageId` 形成可复盘链路。
+
+调试期后端会通过 `AGENT_DEBUG` logger 记录 Agent 运行过程，包括 `agent.chat.start/end/error`、`agent.llm.request/response/error`、`agent.tool.start/result/error`。日志用于分析工具调用、参数、模型返回和异常；联调结束后应降低日志级别，避免长期保存过多用户问题和模型输出。
 
 #### Agent 聊天编排入口
 
