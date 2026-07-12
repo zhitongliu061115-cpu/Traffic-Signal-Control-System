@@ -108,12 +108,8 @@ onMounted(() => {
     console.log('[Dashboard] mock 定时器已停止，使用仿真数据')
   }
 
-  if (store.simulationSid && store.simulationStatus !== 'finished') {
-    stopMockTimers()
-    wsConnect(store.simulationSid)
-  } else {
-    startMockTimers()
-  }
+  // 初始启动 mock 定时器
+  startMockTimers()
 
   watch(
     () => store.simulationStatus,
@@ -163,7 +159,8 @@ onUnmounted(() => {
   if (trendTimer) clearInterval(trendTimer)
   if (dataRetryTimer) clearInterval(dataRetryTimer)
   wsDisconnect()
-  console.log('[Dashboard] 定时刷新已停止，仿真会话缓存保留供其他页面使用')
+  store.resetSimulationState()
+  console.log('[Dashboard] 定时刷新已停止，WebSocket 已断开')
 })
 </script>
 
