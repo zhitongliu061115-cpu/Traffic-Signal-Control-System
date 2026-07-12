@@ -17,7 +17,9 @@ from app.config import (
     DEFAULT_MIN_REALTIME_TICK_SECONDS,
     DEFAULT_REALTIME_TICK_SECONDS,
     DEFAULT_VISIBLE_VEHICLE_LIMIT,
-    MAX_ACTIVE_SESSIONS,
+    SESSION_ABANDONED_TTL_SECONDS,
+    SESSION_IDLE_TTL_SECONDS,
+    SESSION_MAX_LIFETIME_SECONDS,
     SESSION_DRAIN_TIMEOUT_SECONDS,
 )
 from app.errors import ApiError
@@ -75,6 +77,7 @@ class RealCityFlowEngine(SimulationEngine):
         self.ev_service = EVPriorityService()
 
     def active_session_count(self) -> int:
+        self.cleanup_expired_sessions()
         with self.sessions_lock:
             return len(self.sessions)
 
@@ -93,18 +96,11 @@ class RealCityFlowEngine(SimulationEngine):
             warmup_seconds: float = 0.0,
             owner_id: str = "default",
     ) -> JsonDict:
+        self.cleanup_expired_sessions()
         scene = self.scene_registry.get(scene_id)
         self._load_scene(scene)
         config_path = self._write_cityflow_config(scene)
         with self.sessions_lock:
-            if len(self.sessions) + self.creating_sessions >= MAX_ACTIVE_SESSIONS:
-                shutil.rmtree(config_path.parent, ignore_errors=True)
-                raise ApiError(
-                    status=429,
-                    code="SESSION_LIMIT_EXCEEDED",
-                    message=f"active simulation sessions reached limit: {MAX_ACTIVE_SESSIONS}",
-                    retryable=True,
-                )
             self.creating_sessions += 1
 
         try:
@@ -251,7 +247,38 @@ class RealCityFlowEngine(SimulationEngine):
                 message=f"simulation session not found: {sid}",
                 retryable=False,
             )
+        session.last_access_at = time.time()
         return session
+
+    def cleanup_expired_sessions(self) -> int:
+        now = time.time()
+        with self.sessions_lock:
+            expired_sessions = [
+                session for session in self.sessions.values()
+                if self._session_expired(session, now)
+            ]
+        for session in expired_sessions:
+            self._release_session(session, terminal_frame=None, join_worker=True)
+        return len(expired_sessions)
+
+    def _session_expired(self, session: "CityFlowEngineSession", now: float) -> bool:
+        if session.stopped:
+            return True
+        if SESSION_MAX_LIFETIME_SECONDS > 0 and now - session.created_at >= SESSION_MAX_LIFETIME_SECONDS:
+            return True
+        if (
+                SESSION_ABANDONED_TTL_SECONDS > 0
+                and session.running
+                and now - session.last_access_at >= SESSION_ABANDONED_TTL_SECONDS
+        ):
+            return True
+        if (
+                SESSION_IDLE_TTL_SECONDS > 0
+                and not session.running
+                and now - session.last_access_at >= SESSION_IDLE_TTL_SECONDS
+        ):
+            return True
+        return False
 
     def _run_session_loop(self, session: "CityFlowEngineSession") -> None:
         while True:
@@ -725,6 +752,8 @@ class CityFlowEngineSession:
     running: bool = False
     stopped: bool = False
     last_error: str | None = None
+    created_at: float = field(default_factory=time.time)
+    last_access_at: float = field(default_factory=time.time)
     latest_frame: JsonDict | None = None
     worker: Thread | None = field(default=None, repr=False)
     state_lock: Lock = field(default_factory=Lock, repr=False)

@@ -32,6 +32,113 @@
 }
 ```
 
+## 认证接口
+
+当前登录、注册和邮箱验证码接口使用 `/api/auth/**` 前缀。前端通过 `sys-frontend/src/api/auth.ts` 统一调用，后端由 `com.traffic.auth.AuthController` 承载。
+
+### 发送邮箱验证码
+
+```http
+POST /api/auth/send-captcha
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "email": "operator@example.com"
+}
+```
+
+响应：
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "data": null
+}
+```
+
+验证码发送依赖 `spring.mail.*` 和 `auth.mail.*` 配置。验证码默认 5 分钟有效，默认 60 秒内不能重复发送。
+
+### 用户名密码登录
+
+```http
+POST /api/auth/login
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "username": "admin",
+  "email": "admin@traffic.local",
+  "password": "123456"
+}
+```
+
+当前后端按 `username` 查询账号并校验密码，`email` 字段保留给前端表单和后续兼容。
+
+### 邮箱验证码登录
+
+```http
+POST /api/auth/captcha-login
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "email": "operator@example.com",
+  "captcha": "123456"
+}
+```
+
+### 注册
+
+```http
+POST /api/auth/register
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "username": "operator",
+  "email": "operator@example.com",
+  "password": "secret",
+  "inviteCode": "123456"
+}
+```
+
+登录、验证码登录和注册成功时返回：
+
+```json
+{
+  "success": true,
+  "message": "ok",
+  "data": {
+    "token": "uuid-token",
+    "user": {
+      "id": "user-uuid",
+      "username": "admin",
+      "email": "admin@traffic.local"
+    }
+  }
+}
+```
+
+注意：
+
+- 当前 `token` 是后端生成的临时 UUID 登录态标识，尚未接入 JWT、服务端会话校验或接口鉴权拦截器。
+- 默认初始账号由 `auth.initial-account.*` 配置创建，默认用户名 `admin`，默认密码 `123456`。生产或公网演示前必须修改默认密码和邀请码。
+- 密码以 PBKDF2-SHA256 哈希写入 `auth_user.password_hash`，不得在日志、文档或接口返回中暴露明文密码。
+
 ## 前端调用接口
 
 ### 获取静态路网
@@ -87,7 +194,7 @@ Content-Type: application/json
 | `traffic-r` | 云端 Traffic-R / RL 控制器入口 |
 | `rl` | 兼容别名，后端会归一化为 `traffic-r` |
 
-每次创建都会生成独立 `sid`，不会停止或覆盖已有会话。Python 服务允许多个会话并行运行，但活跃会话总数仍受 `SIM_MAX_ACTIVE_SESSIONS` 限制。
+每次创建都会生成独立 `sid`，不会停止或覆盖已有会话。Python 服务允许多个会话并行运行，新建会话不再因为旧会话数量达到 `SIM_MAX_ACTIVE_SESSIONS` 而返回 429；`SIM_MAX_ACTIVE_SESSIONS=0` 表示不设置创建数量上限。旧会话依赖 stop、自然结束、`SIM_SESSION_IDLE_TTL_SECONDS`、`SIM_SESSION_ABANDONED_TTL_SECONDS` 和 `SIM_SESSION_MAX_LIFETIME_SECONDS` 自动释放。其中 `SIM_SESSION_ABANDONED_TTL_SECONDS` 用于清理已经 running 但一段时间没有任何 `/frame`、`/actions`、`/pause`、`/stop` 等后端请求的遗弃会话。
 
 响应：
 
@@ -254,9 +361,134 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 - `get_alert_events`：查询系统告警。
 - `get_emergency_events`：查询应急车辆/绿波任务主事件。
 
+#### Agent 内部 LangChain4j 工具层
+
+除 HTTP 查询入口外，后端已新增 `com.traffic.agent.tool` 包，把第一批工具封装为 LangChain4j `@Tool` 方法，供 `/api/v1/agent/chat` 编排流程内部调用。
+
+当前工具类：
+
+| 工具类 | 工具 |
+|---|---|
+| `TrafficRuntimeAgentTools` | `get_current_simulation_state`、`get_intersection_detail`、`get_road_detail` |
+| `TrafficDecisionAgentTools` | `get_latest_control_decisions`、`get_decision_trace`、`get_model_inference_log` |
+| `TrafficHealthAgentTools` | `get_system_health` |
+| `TrafficKnowledgeAgentTools` | `search_knowledge_base` |
+| `TrafficDiagnosisAgentTools` | `diagnose_congestion`、`detect_signal_anomaly`、`detect_spillback_risk`、`get_safety_constraint_log`、`get_fallback_log`、`get_region_metrics`、`compare_strategy_metrics`、`get_fallback_events`、`get_safety_events`、`get_alert_events` |
+| `EmergencyAgentTools` | `get_emergency_events` |
+
+工具实现规则：
+
+- `@Tool` 方法只能调用后端 Service，例如 `RuntimeQueryService`，不能调用 Controller，也不能用 `RestTemplate` 自调用本后端 HTTP 接口。
+- 工具统一返回 `AgentToolResult`：`success`、`toolName`、`data`、`evidence`、`warnings`、`timestamp`。
+- 工具异常会被包装为 `success=false` 的结构化结果，并记录为 `agent_tool_call.status=FAILED`，不应导致整个 Agent 对话崩溃。
+- 当前工具全部只读，不推进仿真、不下发相位、不切换策略、不执行应急绿波。
+- `search_knowledge_base` 当前是本地项目文档检索基础版，检索 `.md/.txt` 文件；尚不是百炼知识库 API。
+
+诊断类工具返回的 `data` 不是自然语言散文，而是结构化诊断报告，至少包含：
+
+```json
+{
+  "conclusion": "intersection_3 存在拥堵风险",
+  "evidence": ["movement E_0 queue=18, avg_wait=94.2s"],
+  "impactScope": ["主要积压 movement=E_0"],
+  "possibleCauses": ["等待时间偏高，可能存在放行不足或下游排空能力不足"],
+  "recommendations": ["建议检查下游溢出风险；相位调整必须经过安全层和仲裁层"],
+  "confidence": 0.81,
+  "humanConfirmationRequired": ["任何控制策略变化都需要人工确认"],
+  "data": {}
+}
+```
+
+当前诊断工具边界：
+
+- `diagnose_congestion`：基于路口 movement、道路快照和当前仿真帧做规则诊断。
+- `detect_signal_anomaly`：基于最近控制决策、安全约束事件和 movement 快照检测异常风险。
+- `detect_spillback_risk`：基于道路或 roadLink 下游道路快照检测溢出风险。
+- `get_region_metrics`：基于 `intersection_state_snapshot`、`road_state_snapshot` 聚合区域指标。
+- `compare_strategy_metrics`：基于 `simulation_frame` 聚合不同 session / controller 的策略指标。正式策略结论要求同 roadnet、flow、随机种子和仿真时长。
+- `get_safety_constraint_log`、`get_fallback_log`：分别是安全事件和 fallback 事件的语义化日志工具。
+
 ### 3.6 Agent 会话、消息与工具调用审计
 
-这些接口用于保存和查询 Agent 自身交互数据。百炼 MCP 工具调用前，应先创建会话和消息，再把 `messageId` 传给工具接口，以形成可复盘链路。
+这些接口用于保存和查询 Agent 自身交互数据。`/api/v1/agent/chat` 会自动创建/读取会话、写入用户消息、记录 LLM 工具规划、执行工具并写入工具调用审计；外部手动调用 `/api/v1/agent/tools/**` 时，仍可传入 `messageId` 形成可复盘链路。
+
+#### Agent 聊天编排入口
+
+```http
+POST /api/v1/agent/chat
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "message": "当前仿真状态怎么样？",
+  "sid": "run_001",
+  "conversationId": "可选，继续已有 Agent 会话",
+  "sessionId": "可选，兼容百炼外部 session_id",
+  "context": {
+    "currentPage": "dashboard",
+    "intersectionId": "intersection_1_1"
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 必需 | 含义 |
+|---|---:|---|
+| `message` | 是 | 用户问题，最大 4000 字符 |
+| `sid` | 否 | 本项目仿真会话 ID，用于关联 `simulation_session` 和实时工具查询 |
+| `conversationId` | 否 | 已有 `agent_conversation.id`；不传时后端自动创建新会话 |
+| `sessionId` | 否 | 兼容百炼外部会话 ID，不等同于仿真 `sid` |
+| `context` | 否 | 前端页面上下文，如当前页面、路口 ID、道路 ID 等 |
+
+响应：
+
+```json
+{
+  "reply": "当前仿真运行正常……",
+  "sessionId": null,
+  "source": "langchain4j | bailian | config",
+  "fallback": false,
+  "conversationId": "agent_conversation UUID",
+  "messageId": "assistant agent_message UUID",
+  "toolCalls": [
+    {
+      "id": "agent_tool_call UUID",
+      "toolName": "get_current_simulation_state",
+      "arguments": {"sid": "run_001"},
+      "status": "SUCCESS",
+      "latencyMs": 12,
+      "errorMessage": null
+    }
+  ],
+  "evidence": [
+    {
+      "source": "tool",
+      "name": "get_current_simulation_state",
+      "summary": "工具 get_current_simulation_state 返回真实后端数据",
+      "value": {}
+    }
+  ],
+  "planTrace": {
+    "intent": "current_state",
+    "rationale": "需要查询真实仿真状态",
+    "needsTools": true,
+    "rawPlan": "{...LLM 输出的 JSON 规划...}",
+    "plannerSource": "langchain4j | bailian | config"
+  }
+}
+```
+
+编排规则：
+
+- `AgentController` 只调用 `AgentOrchestratorService`，不直接调用模型。
+- 工具选择由 LLM 输出格式化 JSON 规划，后端只做 JSON 解析、工具白名单过滤和参数校验，并调用 `com.traffic.agent.tool` 下的 `@Tool` 封装类执行。
+- 当前白名单工具均为只读工具，不下发信号控制动作。
+- LLM 规划轨迹会以 `llm_tool_plan` 写入 `agent_tool_call`；每个真实工具调用也会写入 `agent_tool_call`。
+- 涉及实时状态的问题必须基于工具结果回答；如果工具失败或没有真实数据，回答必须说明无法获取，不能编造。
 
 #### 创建/查询 Agent 会话
 

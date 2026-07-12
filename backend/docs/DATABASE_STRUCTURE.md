@@ -30,6 +30,7 @@
 | 仿真会话与状态快照 | `simulation_session`、`simulation_frame`、`road_state_snapshot`、`lane_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot`、`simulation_run`、`simulation_metric_sample`、`simulation_road_sample`、`simulation_intersection_sample` |
 | 策略调度与模型审计 | `control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`max_pressure_score`、`strategy_fallback_event`、`safety_constraint_event` |
 | 区域、应急、Agent 与运维 | `control_region`、`control_region_intersection`、`emergency_event`、`emergency_route_node`、`emergency_signal_event`、`agent_conversation`、`agent_message`、`agent_tool_call`、`operation_audit_log`、`alert_event`、`service_health_snapshot` |
+| 认证与账号 | `auth_user` |
 | 当前保留的兼容/演示表 | `intersections`、`dashboard_*`、`analytics_*` |
 
 ## 逻辑关系
@@ -124,6 +125,20 @@ erDiagram
 | `alert_event` | `id` | `session_id`、`alert_type`、`level`、`target_type`、`target_id`、`title`、`description`、`status` |
 | `service_health_snapshot` | `id` | `service_name`、`status`、`latency_ms`、`detail_payload`、`checked_at` |
 
+## 认证与账号
+
+`V6__auth_users.sql` 新增 `auth_user`，用于登录、注册、邮箱验证码登录后的账号查询。
+
+| 表 | 主键/唯一约束 | 字段 |
+| --- | --- | --- |
+| `auth_user` | `id`; `normalized_username` 唯一；`normalized_email` 唯一 | `username`、`normalized_username`、`email`、`normalized_email`、`password_hash`、`role`、`enabled`、`created_at`、`updated_at` |
+
+当前边界：
+
+- 密码以 PBKDF2-SHA256 哈希保存到 `password_hash`。
+- `AuthService` 在应用启动后根据 `auth.initial-account.*` 创建默认管理员账号；如果同名账号已存在则跳过。
+- 当前返回的登录 `token` 是临时 UUID 标识，尚未作为数据库会话或 JWT 持久化。
+
 ## 保留表
 
 ### `intersections`
@@ -152,6 +167,7 @@ erDiagram
 | `DashboardRepository` | `dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` |
 | `DataAnalysisRepository` | 历史基线读取 `dashboard_*` / `analytics_*`；实时分析读取 `simulation_run`、`simulation_metric_sample`、`simulation_road_sample`、`simulation_intersection_sample` |
 | `SimulationTelemetryRepository` | 写入 `simulation_run`、`simulation_metric_sample`、`simulation_road_sample`、`simulation_intersection_sample` |
+| `AuthUserRepository` | `auth_user` |
 | `DatabaseStatusService` | 标准核心表、`intersections`、`dashboard_intersection`、`analytics_overview` |
 | `RuntimePersistenceService` | `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link`、`simulation_session`、`simulation_frame`、`road_state_snapshot`、`intersection_movement_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event` |
 | `RuntimeQueryService` | 只读查询 `simulation_session`、`simulation_frame`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`road_state_snapshot`、`intersection_movement_state_snapshot`、`intersection_state_snapshot`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`service_health_snapshot` |

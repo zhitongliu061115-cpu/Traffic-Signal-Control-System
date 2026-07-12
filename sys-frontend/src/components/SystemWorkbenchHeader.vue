@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
 import { useTrafficStore } from '@/stores/traffic'
+import { clearAuthSession } from '@/utils/authSession'
 
 type ActivePage = 'analytics' | 'network'
 
@@ -11,6 +13,7 @@ const props = defineProps<{
 
 const SYSTEM_TITLE = '信号灯配时控制与应急通行信控系统'
 const trafficStore = useTrafficStore()
+const router = useRouter()
 const { dataSourceStatus, dataSourceMessage } = storeToRefs(trafficStore)
 
 const navItems = [
@@ -74,6 +77,11 @@ onMounted(() => {
 onUnmounted(() => {
   if (clockTimer) clearInterval(clockTimer)
 })
+
+function handleLogout(): void {
+  clearAuthSession()
+  void router.push('/login')
+}
 </script>
 
 <template>
@@ -190,10 +198,10 @@ onUnmounted(() => {
             />
           </svg>
         </button>
-        <button class="data-status-icon-btn data-status-gear" title="页面设置" type="button">
+        <button class="data-status-icon-btn data-status-gear" title="退出登录" type="button" @click="handleLogout">
           <svg aria-hidden="true" viewBox="0 0 24 24">
             <path
-              d="M19.4 13.5a7.8 7.8 0 0 0 0-3l2-1.5-2-3.4-2.4 1a7.3 7.3 0 0 0-2.6-1.5L14 2.5h-4l-.4 2.6A7.3 7.3 0 0 0 7 6.6l-2.4-1-2 3.4 2 1.5a7.8 7.8 0 0 0 0 3l-2 1.5 2 3.4 2.4-1a7.3 7.3 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a7.3 7.3 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.5ZM12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7Z"
+              d="M10.5 4.5h-5v15h5V21h-6.5V3h6.5v1.5Zm5.7 3.1 4.4 4.4-4.4 4.4-1.1-1.1 2.5-2.5H9v-1.6h8.6l-2.5-2.5 1.1-1.1Z"
               fill="currentColor"
             />
           </svg>

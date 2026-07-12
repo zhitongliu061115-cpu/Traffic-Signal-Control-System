@@ -35,7 +35,7 @@
 - 应急车辆完成、离开 CityFlow 或注入失败后，释放该车辆持有的全部信号覆盖，后续 RL 可以继续控制路口。
 - 应急调度、CityFlow step 和 RL action 通过一致的引擎锁访问 CityFlow，避免并发修改引擎状态。
 - 创建新仿真不再停止已有仿真，不再按 `X-CityFlow-Client` 区分会话归属；所有操作统一通过 `sid` 定位。
-- 同时运行的会话数量仍由 `SIM_MAX_ACTIVE_SESSIONS` 控制，4 核 8G 服务器建议保持为 `4`。
+- 新建会话不再因为旧会话数量达到 `SIM_MAX_ACTIVE_SESSIONS` 而返回 429；`SIM_MAX_ACTIVE_SESSIONS=0` 表示不设置创建数量上限。旧会话通过 stop、自然结束、idle TTL 和最大生存期自动释放。
 - 调用 stop 时释放 worker、CityFlow Engine、应急状态和临时配置目录。
 - 最后一批车辆已经发出且路网车辆清空后自动释放会话；如果车辆始终无法排空，超过 `SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600` 后强制释放。
 - 最后一帧返回 `status=finished`，Spring Boot 收到后停止轮询并清理策略运行状态。
@@ -104,7 +104,11 @@ conda activate cityflow39
 ```bash
 SIM_ENGINE_MODE=cityflow \
 CITYFLOW_API_TOKEN="jLEc-o3L16migUKQ7f_OlH94qsjEstFf" \
-SIM_MAX_ACTIVE_SESSIONS=4 \
+SIM_MAX_ACTIVE_SESSIONS=0 \
+SIM_SESSION_IDLE_TTL_SECONDS=300 \
+SIM_SESSION_ABANDONED_TTL_SECONDS=300 \
+SIM_SESSION_MAX_LIFETIME_SECONDS=1800 \
+SIM_SESSION_CLEANUP_INTERVAL_SECONDS=30 \
 SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600 \
 SIM_MAX_SPEED=10 \
 SIM_VISIBLE_VEHICLE_LIMIT=300 \
@@ -118,7 +122,11 @@ python app/server.py --host 0.0.0.0 --port 9000
 
 - `--host` 必须是 `0.0.0.0`，不能是 `127.0.0.1`，否则公网无法访问。
 - `CITYFLOW_API_TOKEN` 必须和本地 Spring Boot 配置一致。
-- `SIM_MAX_ACTIVE_SESSIONS=4` 是为 4 核 8G 服务器设置的资源上限。
+- `SIM_MAX_ACTIVE_SESSIONS=0` 表示创建会话时不按数量拒绝请求；如保留旧值 `4`，当前版本也不会因为达到该值而返回 429，只作为 `/health.maxActiveSessions` 的软配置展示。
+- `SIM_SESSION_IDLE_TTL_SECONDS=300` 表示创建后未 start 或 pause 后长期无访问的 idle 会话会在约 5 分钟后被后台清理。
+- `SIM_SESSION_ABANDONED_TTL_SECONDS=300` 表示 running 会话如果约 5 分钟没有任何 `/frame`、`/actions`、`/pause`、`/stop` 等后端请求，会被视为遗弃并自动释放。
+- `SIM_SESSION_MAX_LIFETIME_SECONDS=1800` 表示单个会话最长保留约 30 分钟，避免异常运行会话长期占用 Engine。
+- `SIM_SESSION_CLEANUP_INTERVAL_SECONDS=30` 表示后台清理线程每 30 秒检查一次过期会话；创建新会话和访问 `/health` 时也会触发一次清理。
 - `SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600` 表示最后发车后最多再等待 600 秒仿真时间排空路网，避免死锁车辆永久占用 Engine。
 - 创建新仿真不会清理已有仿真；每个 `sid` 持有独立 CityFlow Engine。
 - 调用 stop 或场景自然结束后，服务会释放 worker、Engine、应急状态和临时配置目录，`/health.activeSessions` 随之减少。
@@ -149,7 +157,11 @@ curl http://127.0.0.1:9000/health
 {
   "status": "UP",
   "engineMode": "cityflow",
-  "maxActiveSessions": 4,
+  "maxActiveSessions": 0,
+  "sessionAbandonedTtlSeconds": 300,
+  "sessionIdleTtlSeconds": 300,
+  "sessionMaxLifetimeSeconds": 1800,
+  "sessionCleanupIntervalSeconds": 30,
   "sessionDrainTimeoutSeconds": 600,
   "activeSessions": 0,
   "sceneIds": ["jinan_3x4", "jinan_3x4_stress"]
@@ -264,7 +276,11 @@ vim /etc/traffic-signal/cityflow.env
 ```ini
 SIM_ENGINE_MODE=cityflow
 CITYFLOW_API_TOKEN=当前团队token
-SIM_MAX_ACTIVE_SESSIONS=4
+SIM_MAX_ACTIVE_SESSIONS=0
+SIM_SESSION_IDLE_TTL_SECONDS=300
+SIM_SESSION_ABANDONED_TTL_SECONDS=300
+SIM_SESSION_MAX_LIFETIME_SECONDS=1800
+SIM_SESSION_CLEANUP_INTERVAL_SECONDS=30
 SIM_SESSION_DRAIN_TIMEOUT_SECONDS=600
 SIM_MAX_SPEED=10
 SIM_VISIBLE_VEHICLE_LIMIT=300
