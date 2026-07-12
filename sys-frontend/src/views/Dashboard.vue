@@ -14,12 +14,10 @@ import type { SimFrameData } from '@/types/traffic'
 
 import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import TrafficStats from '@/components/TrafficStats.vue'
-import AlertPanel from '@/components/AlertPanel.vue'
 import MapRoadNetwork from '@/components/MapRoadNetwork.vue'
 import SignalControlPanel from '@/components/SignalControlPanel.vue'
 import EmergencyPanel from '@/components/EmergencyPanel.vue'
 import CompareCharts from '@/components/CompareCharts.vue'
-import RoadNetwork from '@/components/RoadNetwork.vue'
 import AiAssistant from '@/components/AiAssistant.vue'
 
 const store = useTrafficStore()
@@ -174,10 +172,10 @@ onUnmounted(() => {
 
     <!-- ============ 主体：左-中-右三栏 (65%) ============ -->
     <main class="ts-body">
-      <!-- 左侧列 (22%)：交通统计 + 实时告警 -->
+      <!-- 左侧列 (22%)：交通统计 + AI 控制效果 -->
       <div class="ts-col ts-col--left">
         <TrafficStats />
-        <AlertPanel />
+        <CompareCharts />
       </div>
 
       <!-- 中央列 (56%)：MapLibre 地图路网（含离线降级到 Three.js 抽象路网） -->
@@ -191,12 +189,6 @@ onUnmounted(() => {
         <EmergencyPanel />
       </div>
     </main>
-
-    <!-- ============ 底部：AI 对比 + 3D 路网并排 (36%) ============ -->
-    <footer class="ts-footer">
-      <RoadNetwork compact />
-      <CompareCharts />
-    </footer>
 
     <AiAssistant />
   </div>
@@ -219,25 +211,12 @@ onUnmounted(() => {
   max-height: 68px;
 }
 
-/* 主体三栏区：约 59% */
+/* 主体三栏区：占满顶部栏之外的全部空间 */
 .ts-body {
-  flex: 59 1 0;
+  flex: 1 1 0;
   display: grid;
   grid-template-columns: minmax(0, 22fr) minmax(0, 56fr) minmax(0, 22fr);
   gap: 12px;
-  min-height: 0;
-}
-
-/* 底部：AI 对比图 + 3D 路网并排，各占一半 */
-.ts-footer {
-  flex: 36 1 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  min-height: 0;
-}
-
-.ts-footer > :deep(*) {
   min-height: 0;
 }
 
@@ -260,8 +239,7 @@ onUnmounted(() => {
 }
 
 /* 网格/弹性子项防溢出 */
-.ts-body > .ts-col,
-.ts-footer > :deep(*) {
+.ts-body > .ts-col {
   height: 100%;
   min-width: 0;
 }

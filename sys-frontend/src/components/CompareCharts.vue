@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // ================================================================
-// CompareCharts — AI 控制效果对比
+// CompareCharts — 实时拥堵指标
 // 左：AI 控制前后指标对比柱状图 | 右：拥堵指数实时变化折线图
 // ================================================================
 import { computed, onMounted, onBeforeUnmount, watch, ref } from 'vue'
@@ -55,7 +55,7 @@ function buildTrendOption(wt: CongestionTrendPoint[], st: CongestionTrendPoint[]
 
   return {
     backgroundColor: 'transparent',
-    textStyle: { ...chartTextStyle(), fontSize: 13 },
+    textStyle: { ...chartTextStyle(), fontSize: 14 },
     tooltip: {
       ...chartTooltip(),
       trigger: 'axis',
@@ -63,31 +63,33 @@ function buildTrendOption(wt: CongestionTrendPoint[], st: CongestionTrendPoint[]
     legend: {
       ...chartLegend(['均等待(s)', '均速(km/h)']),
       top: 0, left: 'center', right: 'auto',
-      textStyle: { color: CHART_COLORS.text, fontSize: 10 },
-      itemWidth: 14, itemHeight: 3, itemGap: 12,
+      textStyle: { color: CHART_COLORS.text, fontSize: 12 },
+      itemWidth: 18, itemHeight: 4, itemGap: 14,
     },
-    grid: chartGrid({ top: 30, bottom: 36, left: 20, right: 28 }),
+    grid: chartGrid({ top: 34, bottom: 30, left: 28, right: 34 }),
     xAxis: {
       ...chartXAxis(times),
-      axisLabel: { color: CHART_COLORS.muted, fontSize: 10, interval: Math.max(0, Math.floor(times.length / 5) - 1) },
+      axisLabel: { color: CHART_COLORS.muted, fontSize: 11, interval: Math.max(0, Math.floor(times.length / 5) - 1) },
       boundaryGap: false,
     },
     yAxis: [
-      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.cyan, fontSize: 10 }, name: '秒', nameTextStyle: { color: CHART_COLORS.cyan, fontSize: 10 },
+      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.cyan, fontSize: 11 }, name: '秒', nameTextStyle: { color: CHART_COLORS.cyan, fontSize: 11 },
+        // @ts-expect-error ECharts supports markLine here at runtime, but the axis type omits it.
         markLine: baselineWait > 0 ? { silent: true, symbol: 'none', lineStyle: { color: '#ff4d6d', type: 'dashed' as const, width: 1 }, label: { formatter: `基线 ${baselineWait}s`, fontSize: 10, color: '#ff4d6d' }, data: [{ yAxis: baselineWait }] } : undefined,
       },
-      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.amber, fontSize: 10 }, name: 'km/h', nameTextStyle: { color: CHART_COLORS.amber, fontSize: 10 },
+      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.amber, fontSize: 11 }, name: 'km/h', nameTextStyle: { color: CHART_COLORS.amber, fontSize: 11 },
+        // @ts-expect-error ECharts supports markLine here at runtime, but the axis type omits it.
         markLine: baselineSpeed > 0 ? { silent: true, symbol: 'none', lineStyle: { color: '#ff4d6d', type: 'dashed' as const, width: 1 }, label: { formatter: `基线 ${baselineSpeed}km/h`, fontSize: 10, color: '#ff4d6d' }, data: [{ yAxis: baselineSpeed }] } : undefined,
       },
     ],
     series: [
       {
         name: '均等待(s)', type: 'line', data: waitVals, smooth: true, symbol: 'none',
-        lineStyle: { color: CHART_COLORS.cyan, width: 2 }, itemStyle: { color: CHART_COLORS.cyan },
+        lineStyle: { color: CHART_COLORS.cyan, width: 3 }, itemStyle: { color: CHART_COLORS.cyan },
       },
       {
         name: '均速(km/h)', type: 'line', data: speedVals, smooth: true, symbol: 'none', yAxisIndex: 1,
-        lineStyle: { color: CHART_COLORS.amber, width: 2 }, itemStyle: { color: CHART_COLORS.amber },
+        lineStyle: { color: CHART_COLORS.amber, width: 3 }, itemStyle: { color: CHART_COLORS.amber },
       },
     ],
   }
@@ -102,7 +104,7 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
 
   return {
     backgroundColor: 'transparent',
-    textStyle: { ...chartTextStyle(), fontSize: 13 },
+    textStyle: { ...chartTextStyle(), fontSize: 14 },
     tooltip: {
       ...chartTooltip(),
       trigger: 'axis',
@@ -112,12 +114,12 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
         return `<div style="font-weight:700;margin-bottom:4px">${arr[0].name}</div><div style="color:${CHART_COLORS.cyan}">拥堵指数: ${arr[0].value}</div>`
       },
     },
-    grid: chartGrid({ top: 30, bottom: 36, left: 20, right: 28 }),
+    grid: chartGrid({ top: 24, bottom: 30, left: 28, right: 30 }),
     xAxis: {
       ...chartXAxis(times),
       axisLabel: {
         color: CHART_COLORS.muted,
-        fontSize: 10,
+        fontSize: 11,
         fontWeight: 600,
         interval: Math.max(0, Math.floor(times.length / 5) - 1),
       },
@@ -125,7 +127,7 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
     },
     yAxis: {
       ...chartYAxis(),
-      axisLabel: { color: CHART_COLORS.muted, fontSize: 10 },
+      axisLabel: { color: CHART_COLORS.muted, fontSize: 11 },
       min: 0,
       max: 100,
     },
@@ -136,7 +138,7 @@ function buildLineOption(trend: CongestionTrendPoint[]): EChartsOption {
         data: values,
         smooth: true,
         symbol: 'none',
-        lineStyle: { color: CHART_COLORS.cyan, width: 2.4 },
+        lineStyle: { color: CHART_COLORS.cyan, width: 3.4 },
         itemStyle: { color: CHART_COLORS.cyan },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -213,7 +215,7 @@ onBeforeUnmount(() => {
     <div class="hud-panel-titlebar">
       <div class="titlebar-inner">
         <span class="titlebar-mark" />
-        <span class="titlebar-text">AI 控制效果对比</span>
+        <span class="titlebar-text">实时拥堵指标</span>
         <span class="titlebar-deco"><i /><i /><i /></span>
       </div>
     </div>
@@ -247,6 +249,7 @@ onBeforeUnmount(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
 
 .comp-card__body {
@@ -254,7 +257,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   overflow: hidden;
 }
 
@@ -267,7 +270,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
 }
 
 .cc-summary-item {
@@ -276,11 +279,11 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   border: 1px solid rgba(0, 212, 255, 0.14);
   background: rgba(2, 18, 33, 0.22);
   color: #8da8c5;
-  font-size: 11px;
+  font-size: 10px;
   clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
 }
 
@@ -289,7 +292,7 @@ onBeforeUnmount(() => {
 .cc-summary-item b {
   color: #7af7ff;
   font-family: 'Rajdhani', 'DINPro', monospace;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 800;
   flex-shrink: 0;
 }
@@ -299,7 +302,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 12px;
 }
 
 .cc-chart-panel {
@@ -311,10 +314,10 @@ onBeforeUnmount(() => {
 
 .cc-chart-panel__label {
   flex: 0 0 auto;
-  font-size: 15px;
+  font-size: 16px;
   color: #b8e6ff;
   letter-spacing: 0;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   padding-left: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -330,6 +333,41 @@ onBeforeUnmount(() => {
   .cc-summary,
   .cc-charts {
     grid-template-columns: 1fr;
+  }
+}
+
+@container (max-width: 520px) {
+  .comp-card :deep(.titlebar-text) {
+    font-size: 18px;
+  }
+
+  .comp-card__body {
+    gap: 8px;
+  }
+
+  .cc-summary {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .cc-summary-item {
+    padding: 2px 7px;
+    font-size: 10px;
+  }
+
+  .cc-summary-item b {
+    font-size: 15px;
+  }
+
+  .cc-charts {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 11px;
+  }
+
+  .cc-chart-panel__label {
+    margin-bottom: 4px;
+    font-size: 14px;
   }
 }
 </style>
