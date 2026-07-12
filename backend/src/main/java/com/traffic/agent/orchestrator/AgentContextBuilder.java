@@ -22,16 +22,14 @@ public class AgentContextBuilder {
     public AgentContext build(AgentChatRequest request) {
         String sid = firstText(request.sid(), stringFromContext(request.context(), "sid"));
         Map<String, Object> context = new LinkedHashMap<>();
-        if (request.context() != null) {
-            context.putAll(request.context());
-        }
         if (StringUtils.hasText(sid)) {
             context.put("sid", sid);
         }
         if (StringUtils.hasText(request.conversationId())) {
             context.put("conversationId", request.conversationId());
         }
-        context.put("realtimeDataPolicy", "实时交通状态必须来自工具结果；没有工具结果时不得编造。");
+        context.put("contextPolicy", "前端 context 只允许作为路由/会话辅助信息，不能作为实时交通证据。");
+        context.put("realtimeDataPolicy", "实时交通状态必须来自后端工具结果；没有成功工具结果时不得编造或引用前端看板指标。");
         return new AgentContext(sid, truncate(toJson(context)));
     }
 

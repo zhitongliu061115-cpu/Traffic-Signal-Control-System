@@ -698,6 +698,8 @@ public class RuntimePersistenceService {
                     toJson(decision.metadata())
             );
             persistDecisionTrace(decisionPk, decision);
+            persistSafetyTrace(decisionPk, decision);
+            persistSafetyEvents(decisionPk, intersectionPk, currentSignal, decision);
             persistTrafficRInference(sessionPk, intersectionPk, finalPhasePk, frame, decision);
             persistFallbackEvent(sessionPk, intersectionPk, frame, decision);
         }
@@ -716,6 +718,109 @@ public class RuntimePersistenceService {
                 toJson(decision.metadata()),
                 toJson(decision),
                 decision.reason()
+        );
+    }
+
+    private void persistSafetyTrace(UUID decisionPk, ControlDecision decision) {
+        Map<String, Object> metadata = decision.metadata();
+        if (metadata == null || !Boolean.TRUE.equals(metadata.get("safetyChecked"))) {
+            return;
+        }
+        Map<String, Object> safetyInput = new HashMap<>();
+        safetyInput.put("originalPhaseIndex", metadata.get("safetyOriginalPhaseIndex"));
+        safetyInput.put("originalPhaseCode", metadata.get("safetyOriginalPhaseCode"));
+        jdbcTemplate.update("""
+                insert into control_decision_trace (
+                    id, decision_id, stage, input_payload, output_payload, message
+                )
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                UUID.randomUUID(),
+                decisionPk,
+                "safety",
+                toJson(safetyInput),
+                toJson(metadata.get("safetyEvents")),
+                Boolean.TRUE.equals(metadata.get("safetyAllowed")) ? "安全层校验通过" : decision.reason()
+        );
+    }
+
+    private void persistSafetyEvents(
+            UUID decisionPk,
+            UUID intersectionPk,
+            SignalStateDto currentSignal,
+            ControlDecision decision
+    ) {
+        Map<String, Object> metadata = decision.metadata();
+        if (metadata == null || !Boolean.TRUE.equals(metadata.get("safetyRejected"))) {
+            return;
+        }
+        Object events = metadata.get("safetyEvents");
+        if (!(events instanceof List<?> list) || list.isEmpty()) {
+            insertSafetyEvent(decisionPk, intersectionPk, currentSignal, decision,
+                    "safety_gate", "fallback_or_reject", decision.reason());
+            return;
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> event)) {
+                continue;
+            }
+            String action = stringValue(event.get("action"), "fallback_or_reject");
+            if ("allow".equalsIgnoreCase(action)) {
+                continue;
+            }
+            Integer beforePhaseIndex = integerValue(event.get("beforePhaseIndex"));
+            String beforePhaseCode = stringValue(event.get("beforePhaseCode"), currentSignal == null ? null : currentSignal.phaseCode());
+            Integer afterPhaseIndex = integerValue(event.get("afterPhaseIndex"));
+            String afterPhaseCode = stringValue(event.get("afterPhaseCode"), decision.phaseCode());
+            UUID beforePhasePk = beforePhaseIndex == null
+                    ? null
+                    : ensurePhase(intersectionPk, beforePhaseIndex, beforePhaseCode);
+            UUID afterPhasePk = afterPhaseIndex == null
+                    ? null
+                    : ensurePhase(intersectionPk, afterPhaseIndex, afterPhaseCode);
+            jdbcTemplate.update("""
+                    insert into safety_constraint_event (
+                        id, decision_id, constraint_type, action, before_phase_id, after_phase_id, reason
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    UUID.randomUUID(),
+                    decisionPk,
+                    stringValue(event.get("constraintType"), "safety_gate"),
+                    action,
+                    beforePhasePk,
+                    afterPhasePk,
+                    stringValue(event.get("reason"), decision.reason())
+            );
+        }
+    }
+
+    private void insertSafetyEvent(
+            UUID decisionPk,
+            UUID intersectionPk,
+            SignalStateDto currentSignal,
+            ControlDecision decision,
+            String constraintType,
+            String action,
+            String reason
+    ) {
+        UUID beforePhasePk = currentSignal == null
+                ? null
+                : ensurePhase(intersectionPk, currentSignal.phaseIndex(), currentSignal.phaseCode());
+        UUID afterPhasePk = ensurePhase(intersectionPk, decision.phaseIndex(), decision.phaseCode());
+        jdbcTemplate.update("""
+                insert into safety_constraint_event (
+                    id, decision_id, constraint_type, action, before_phase_id, after_phase_id, reason
+                )
+                values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                UUID.randomUUID(),
+                decisionPk,
+                constraintType,
+                action,
+                beforePhasePk,
+                afterPhasePk,
+                reason
         );
     }
 
@@ -860,6 +965,9 @@ public class RuntimePersistenceService {
         if (metadata == null) {
             return "generated";
         }
+        if (Boolean.TRUE.equals(metadata.get("safetyRejected"))) {
+            return "rejected";
+        }
         if (Boolean.TRUE.equals(metadata.get("cityflowApplyPending"))) {
             return "pending";
         }
@@ -867,6 +975,27 @@ public class RuntimePersistenceService {
             return "applied";
         }
         return "generated";
+    }
+
+    private String stringValue(Object value, String defaultValue) {
+        if (value == null || String.valueOf(value).isBlank()) {
+            return defaultValue;
+        }
+        return String.valueOf(value);
+    }
+
+    private Integer integerValue(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private boolean isTrafficRDecision(Map<String, Object> metadata) {

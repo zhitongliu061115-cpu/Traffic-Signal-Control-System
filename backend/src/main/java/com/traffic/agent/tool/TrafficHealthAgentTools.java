@@ -1,24 +1,43 @@
 package com.traffic.agent.tool;
 
-import com.traffic.runtime.query.RuntimeQueryService;
+import com.traffic.agent.service.AgentSystemHealthService;
+import com.traffic.agent.service.ConfigurationConsistencyAuditService;
 import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
 
 @Component
 public class TrafficHealthAgentTools {
 
-    private final RuntimeQueryService runtimeQueryService;
+    private final AgentSystemHealthService systemHealthService;
+    private final ConfigurationConsistencyAuditService configurationAuditService;
 
-    public TrafficHealthAgentTools(RuntimeQueryService runtimeQueryService) {
-        this.runtimeQueryService = runtimeQueryService;
+    public TrafficHealthAgentTools(
+            AgentSystemHealthService systemHealthService,
+            ConfigurationConsistencyAuditService configurationAuditService
+    ) {
+        this.systemHealthService = systemHealthService;
+        this.configurationAuditService = configurationAuditService;
     }
 
-    @Tool(name = "get_system_health", value = "查询系统健康摘要，包括数据库视角的关键表计数、会话状态分布和服务健康快照。只读。")
+    @Tool(name = "get_system_health", value = "Probe Spring Boot, CityFlow, Traffic-R, tunnel, WebSocket, database and live cache. Read-only.")
     public AgentToolResult getSystemHealth(Integer limit) {
         return AgentToolSupport.run(
                 "get_system_health",
-                () -> runtimeQueryService.getSystemHealth(limit == null || limit <= 0 ? 20 : Math.min(limit, 100)),
-                "来自 RuntimeQueryService 的系统健康摘要"
+                () -> systemHealthService.getSystemHealth(limit == null || limit <= 0 ? 20 : Math.min(limit, 100)),
+                "Active health probes for Spring Boot, CityFlow, Traffic-R, WebSocket, database and runtime cache"
         );
+    }
+
+    @Tool(name = "audit_configuration_consistency", value = "Audit CityFlow roadnet, Traffic-R phase codes, DB signal phases and live frame consistency. Read-only.")
+    public AgentToolResult auditConfigurationConsistency(String sid, String sceneCode) {
+        return AgentToolSupport.run(
+                "audit_configuration_consistency",
+                () -> configurationAuditService.audit(blankToNull(sid), blankToNull(sceneCode)),
+                "Configuration consistency audit for CityFlow roadnet, phase mapping, Traffic-R and database tables"
+        );
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 }

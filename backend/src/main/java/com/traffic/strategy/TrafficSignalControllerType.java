@@ -20,6 +20,10 @@ public enum TrafficSignalControllerType {
         return code;
     }
 
+    public String canonicalCode() {
+        return this == RL ? TRAFFIC_R.code : code;
+    }
+
     public static TrafficSignalControllerType fromCode(String code) {
         if (code == null || code.isBlank()) {
             return FIXED_TIME;

@@ -14,6 +14,8 @@ import com.traffic.strategy.dto.PhaseCandidate;
 import com.traffic.strategy.phase.JinanPhaseMapper;
 import com.traffic.strategy.rl.TrafficRAsyncDecisionService;
 import com.traffic.strategy.rl.TrafficRDecisionAuditLogger;
+import com.traffic.strategy.safety.SafetyLayerService;
+import com.traffic.strategy.safety.SafetyReviewResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -46,6 +48,7 @@ public class StrategyDispatchService {
     private final TrafficSignalControllerRegistry controllerRegistry;
     private final TrafficRAsyncDecisionService trafficRAsyncDecisionService;
     private final TrafficRDecisionAuditLogger auditLogger;
+    private final SafetyLayerService safetyLayerService;
     private final Map<String, Double> lastSynchronousDecisionSimTime = new ConcurrentHashMap<>();
     private final Set<String> pendingActionKeys = ConcurrentHashMap.newKeySet();
     private final ExecutorService actionExecutor = Executors.newFixedThreadPool(2);
@@ -54,34 +57,51 @@ public class StrategyDispatchService {
             CityFlowClient cityFlowClient,
             TrafficSignalControllerRegistry controllerRegistry,
             TrafficRAsyncDecisionService trafficRAsyncDecisionService,
-            TrafficRDecisionAuditLogger auditLogger
+            TrafficRDecisionAuditLogger auditLogger,
+            SafetyLayerService safetyLayerService
     ) {
         this.cityFlowClient = cityFlowClient;
         this.controllerRegistry = controllerRegistry;
         this.trafficRAsyncDecisionService = trafficRAsyncDecisionService;
         this.auditLogger = auditLogger;
+        this.safetyLayerService = safetyLayerService;
     }
 
     public AppliedControlResult decideAndApply(SimulationRuntimeSession session, SimFrameData frame) {
-        List<ControlDecision> decisions = decide(session, frame);
-        decisions = changedDecisions(decisions, frame);
-        if (!decisions.isEmpty()) {
-            List<ControlDecision> submittedDecisions = decisions.stream()
+        List<ControlDecision> proposedDecisions = decide(session, frame);
+        SafetyReviewResult safetyReview = safetyLayerService.review(session, frame, proposedDecisions, JINAN_PHASE_CANDIDATES);
+        List<ControlDecision> decisionsToApply = changedDecisions(safetyReview.safeDecisions(), frame);
+        if (!decisionsToApply.isEmpty()) {
+            List<ControlDecision> submittedDecisions = decisionsToApply.stream()
                     .filter(decision -> pendingActionKeys.add(actionKey(session.getSid(), decision)))
                     .toList();
             if (submittedDecisions.isEmpty()) {
-                return new AppliedControlResult(List.of(), null);
+                return new AppliedControlResult(safetyReview.auditDecisions(), null);
             }
             submitApplyActions(session, frame, submittedDecisions);
-            return new AppliedControlResult(markPending(submittedDecisions), null);
+            return new AppliedControlResult(mergeDecisions(safetyReview.auditDecisions(), markPending(submittedDecisions)), null);
         }
-        return new AppliedControlResult(List.of(), null);
+        return new AppliedControlResult(safetyReview.auditDecisions(), null);
     }
 
     public void releaseSession(String sid) {
         lastSynchronousDecisionSimTime.remove(sid);
         pendingActionKeys.removeIf(key -> key.startsWith(sid + ":"));
         trafficRAsyncDecisionService.releaseSession(sid);
+        safetyLayerService.releaseSession(sid);
+    }
+
+    private List<ControlDecision> mergeDecisions(List<ControlDecision> first, List<ControlDecision> second) {
+        if ((first == null || first.isEmpty()) && (second == null || second.isEmpty())) {
+            return List.of();
+        }
+        if (first == null || first.isEmpty()) {
+            return second;
+        }
+        if (second == null || second.isEmpty()) {
+            return first;
+        }
+        return java.util.stream.Stream.concat(first.stream(), second.stream()).toList();
     }
 
     private void submitApplyActions(SimulationRuntimeSession session, SimFrameData frame, List<ControlDecision> decisions) {

@@ -26,6 +26,9 @@ import com.traffic.simulation.dto.RoadStateDto;
 import com.traffic.simulation.dto.SignalStateDto;
 import com.traffic.simulation.dto.SimFrameData;
 import com.traffic.simulation.dto.SimulationMetricsDto;
+import com.traffic.simulation.dto.EvEventDto;
+import com.traffic.simulation.dto.EvStatusDto;
+import com.traffic.simulation.dto.VehicleStateDto;
 import com.traffic.simulation.session.SimulationRuntimeSession;
 import com.traffic.strategy.dto.ControlDecision;
 import java.time.Instant;
@@ -196,6 +199,46 @@ public class LiveSimulationStateService {
                 ),
                 mapLanes(cityflowId, laneCount)
         );
+    }
+
+    public synchronized LiveStateSnapshot getLiveStateSnapshot(String sid) {
+        LiveSessionState state = resolveSession(sid);
+        LiveFrame latest = latestFrame(state).orElse(null);
+        return new LiveStateSnapshot(
+                state.sid,
+                state.sceneId,
+                state.controllerType,
+                state.status,
+                state.createdAt,
+                state.updatedAt,
+                state.frames.size(),
+                latest == null ? null : latest.seq(),
+                latest == null ? null : latest.frame().simTime(),
+                latest == null ? List.of() : safeList(latest.frame().vehicles()),
+                latest == null ? List.of() : safeList(latest.frame().evStatus()),
+                latest == null ? List.of() : safeList(latest.frame().evEvents()),
+                roadnet(state)
+        );
+    }
+
+    public synchronized List<LiveSessionSummary> listLiveSessions() {
+        return sessions.values().stream()
+                .sorted(Comparator.comparing(LiveSessionState::sortTime).reversed())
+                .map(state -> new LiveSessionSummary(
+                        state.sid,
+                        state.sceneId,
+                        state.controllerType,
+                        state.status,
+                        state.frames.size(),
+                        state.createdAt,
+                        state.updatedAt
+                ))
+                .toList();
+    }
+
+    public synchronized RoadnetResponse getRoadnetSnapshot(String sid, String sceneCode) {
+        LiveSessionState state = resolveSessionBySidOrScene(sid, sceneCode);
+        return roadnet(state);
     }
 
     private LiveSessionState resolveSession(String sid) {
@@ -465,6 +508,10 @@ public class LiveSimulationStateService {
         return values == null ? 0 : values.size();
     }
 
+    private <T> List<T> safeList(List<T> values) {
+        return values == null ? List.of() : List.copyOf(values);
+    }
+
     private String blankToDefault(String value, String defaultValue) {
         return StringUtils.hasText(value) ? value : defaultValue;
     }
@@ -507,6 +554,34 @@ public class LiveSimulationStateService {
             SimFrameData frame,
             List<ControlDecision> decisions,
             Instant capturedAt
+    ) {
+    }
+
+    public record LiveSessionSummary(
+            String sid,
+            String sceneId,
+            String controllerType,
+            String status,
+            int cachedFrameCount,
+            Instant createdAt,
+            Instant updatedAt
+    ) {
+    }
+
+    public record LiveStateSnapshot(
+            String sid,
+            String sceneId,
+            String controllerType,
+            String status,
+            Instant createdAt,
+            Instant updatedAt,
+            int cachedFrameCount,
+            Long latestSeq,
+            Double latestSimTime,
+            List<VehicleStateDto> vehicles,
+            List<EvStatusDto> evStatus,
+            List<EvEventDto> evEvents,
+            RoadnetResponse roadnet
     ) {
     }
 }

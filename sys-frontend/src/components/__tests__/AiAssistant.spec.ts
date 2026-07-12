@@ -40,9 +40,9 @@ describe('AiAssistant', () => {
         success: true,
         message: 'ok',
         data: {
-          reply: '百炼建议：当前为待人工确认方案。',
+          reply: 'Agent建议：当前为待人工确认方案。',
           sessionId: 'session-1',
-          source: 'bailian',
+          source: 'llm-api',
           fallback: false,
         },
       }),
@@ -71,7 +71,7 @@ describe('AiAssistant', () => {
     expect(firstCall).toBeDefined()
     const requestInit = firstCall![1] as RequestInit
     expect(JSON.parse(String(requestInit.body)).message).toBe('当前路网状态如何？')
-    expect(wrapper.text()).toContain('百炼建议')
+    expect(wrapper.text()).toContain('Agent建议')
 
     wrapper.unmount()
   })
@@ -83,9 +83,9 @@ describe('AiAssistant', () => {
         success: true,
         message: 'ok',
         data: {
-          reply: '百炼建议：待人工确认。',
+          reply: 'Agent建议：待人工确认。',
           sessionId: 'session-1',
-          source: 'bailian',
+          source: 'llm-api',
           fallback: false,
         },
       }),
@@ -103,12 +103,12 @@ describe('AiAssistant', () => {
     await wrapper.find('.ai-send').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('百炼建议')
+    expect(wrapper.text()).toContain('Agent建议')
 
     await wrapper.find('.ai-new-chat').trigger('click')
 
     expect(wrapper.findAll('.ai-chat-msg--user')).toHaveLength(0)
-    expect(wrapper.text()).not.toContain('百炼建议')
+    expect(wrapper.text()).not.toContain('Agent建议')
     expect(wrapper.text()).toContain('城市交通信号调度辅助决策智能体')
 
     await wrapper.find('.ai-input').setValue('解释 Traffic-R1')
@@ -150,6 +150,44 @@ describe('AiAssistant', () => {
     expect(wrapper.text()).toContain('Agent LLM call failed: HTTP 401')
     expect(wrapper.text()).toContain('后端 Agent 调用失败')
     expect(wrapper.text()).toContain('LLM_BASE_URL / LLM_MODEL')
+
+    wrapper.unmount()
+  })
+
+  it('renders inline numbered knowledge answers with line breaks and highlighted key terms', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        success: true,
+        message: 'ok',
+        data: {
+          reply:
+            '交通信号灯的通信协议主要包括以下几种： 1. GB/T 39900-2021：规定通信流程。 2. GA/T 1049：规定平台数据通信。 3. CityFlow：用于仿真联调。',
+          sessionId: 'session-1',
+          source: 'llm-api',
+          fallback: false,
+        },
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const wrapper = mount(AiAssistant, {
+      global: {
+        plugins: [createPinia()],
+      },
+    })
+
+    await wrapper.find('.ai-float-trigger').trigger('click')
+    await wrapper.find('.ai-input').setValue('交通信号灯的通信协议有哪些')
+    await wrapper.find('.ai-send').trigger('click')
+    await flushPromises()
+
+    const aiMessages = wrapper.findAll('.ai-chat-msg--ai .ai-chat-bubble__text')
+    const latestHtml = aiMessages[aiMessages.length - 1].html()
+    expect(latestHtml).toContain('<br>1.')
+    expect(latestHtml).toContain('<br>2.')
+    expect(latestHtml).toContain('<br>3.')
+    expect(latestHtml).toContain('class="ai-highlight"')
 
     wrapper.unmount()
   })

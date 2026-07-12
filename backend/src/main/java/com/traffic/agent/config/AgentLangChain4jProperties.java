@@ -10,6 +10,7 @@ public class AgentLangChain4jProperties {
     private String apiKey = "";
     private String modelName = "qwen-plus";
     private double temperature = 0.2;
+    private int maxTokens = 1200;
     private long timeoutSeconds = 60;
     private boolean enableThinking = false;
 
@@ -51,6 +52,14 @@ public class AgentLangChain4jProperties {
 
     public void setTemperature(double temperature) {
         this.temperature = temperature;
+    }
+
+    public int getMaxTokens() {
+        return maxTokens;
+    }
+
+    public void setMaxTokens(int maxTokens) {
+        this.maxTokens = maxTokens;
     }
 
     public long getTimeoutSeconds() {

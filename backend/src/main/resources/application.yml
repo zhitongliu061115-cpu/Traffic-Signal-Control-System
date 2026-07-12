@@ -64,6 +64,7 @@ auth:
 
 cityflow:
   base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9000}
+  health-path: ${CITYFLOW_HEALTH_PATH:/health}
   api-token: ${CITYFLOW_API_TOKEN:jLEc-o3L16migUKQ7f_OlH94qsjEstFf}
   client-id: ${CITYFLOW_CLIENT_ID:hcj}
   default-scene-id: jinan_3x4
@@ -76,19 +77,21 @@ traffic-r:
   predict-path: ${TRAFFIC_R_PREDICT_PATH:/predict}
   batch-predict-path: ${TRAFFIC_R_BATCH_PREDICT_PATH:/predict-batch}
   decision-interval-sec: ${TRAFFIC_R_DECISION_INTERVAL_SEC:20}
-  timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:5}
+  timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:60}
   fallback-controller: ${TRAFFIC_R_FALLBACK_CONTROLLER:max-pressure}
 
 bailian:
-  base-url: ${DASHSCOPE_HTTP_BASE_URL:${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/api/v1}}
-  app-id: ${DASHSCOPE_APP_ID:${BAILIAN_APP_ID:d77d3dffe51447ecb6d3d34e7a779560}}
-  api-key: ${DASHSCOPE_API_KEY:${BAILIAN_API_KEY:}}
-  call-mode: ${BAILIAN_CALL_MODE:app}
-  compatible-base-url: ${DASHSCOPE_COMPATIBLE_BASE_URL:${BAILIAN_COMPATIBLE_BASE_URL:}}
-  model: ${DASHSCOPE_MODEL:${BAILIAN_MODEL:qwen-plus}}
-  connect-timeout-ms: ${BAILIAN_CONNECT_TIMEOUT_MS:10000}
-  read-timeout-ms: ${BAILIAN_READ_TIMEOUT_MS:30000}
-
+  knowledge:
+    enabled: true
+    endpoint: bailian.cn-beijing.aliyuncs.com
+    access-key-id: LTAI5t7cVU95tR95K6DmGS3q
+    access-key-secret: ixO8MXBUm453MwiRJdkLrdMT7NomBd
+    workspace-id: ws-jpr8zalhgfz2nrmp
+    index-id: 6a65da857i
+    dense-top-k: 100
+    sparse-top-k: 100
+    enable-reranking: true
+    rerank-top-n: 5
 traffic:
   agent:
     langchain4j:
@@ -97,6 +100,7 @@ traffic:
       api-key: ${LLM_API_KEY:${DASHSCOPE_API_KEY:sk-ws-H.EMEIXEP.1XNE.MEUCIHWhOCZ_oD7oSqIrYymkRZZpq8DQrhiIi4P6gasppFI9AiEA2dYvsYJmR4nIkWjpZNJxfzc0R9WTiFzf4qITCUUWknA}}
       model-name: ${LLM_MODEL:${DASHSCOPE_MODEL:qwen3-8b-5e18191e0066}}
       temperature: ${AGENT_MODEL_TEMPERATURE:0.2}
+      max-tokens: ${AGENT_MODEL_MAX_TOKENS:1200}
       timeout-seconds: ${AGENT_MODEL_TIMEOUT_SECONDS:60}
       enable-thinking: ${AGENT_MODEL_ENABLE_THINKING:false}
 

@@ -1161,7 +1161,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
   }
 
-  /** 切换控制策略：停旧仿真 → 换 controllerType → 建新仿真 → 返回新 sid */
+  /** 切换控制策略：停旧仿真 → 换 controllerType → 建新仿真并保持暂停 → 返回新 sid */
   async function recreateSimulation(controllerType: string): Promise<string | null> {
     simulationErrorMessage.value = null
 
@@ -1185,15 +1185,7 @@ export const useTrafficStore = defineStore('traffic', () => {
       return null
     }
 
-    // 4. 自动启动新仿真
-    try {
-      await startSimulation(result.sid)
-      simulationStatus.value = 'running'
-      console.log('[TrafficStore] recreated + started with controller:', controllerType, 'sid:', result.sid)
-    } catch (err) {
-      console.warn('[TrafficStore] auto-start failed, simulation left paused', err)
-    }
-
+    console.log('[TrafficStore] recreated with controller:', controllerType, 'sid:', result.sid)
     return result.sid
   }
 

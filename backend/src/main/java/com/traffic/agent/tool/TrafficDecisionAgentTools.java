@@ -1,5 +1,6 @@
 package com.traffic.agent.tool;
 
+import com.traffic.agent.service.DecisionTraceAggregatorService;
 import com.traffic.runtime.query.RuntimeQueryService;
 import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
@@ -10,12 +11,17 @@ public class TrafficDecisionAgentTools {
     private static final int DEFAULT_LIMIT = 20;
 
     private final RuntimeQueryService runtimeQueryService;
+    private final DecisionTraceAggregatorService decisionTraceAggregatorService;
 
-    public TrafficDecisionAgentTools(RuntimeQueryService runtimeQueryService) {
+    public TrafficDecisionAgentTools(
+            RuntimeQueryService runtimeQueryService,
+            DecisionTraceAggregatorService decisionTraceAggregatorService
+    ) {
         this.runtimeQueryService = runtimeQueryService;
+        this.decisionTraceAggregatorService = decisionTraceAggregatorService;
     }
 
-    @Tool(name = "get_latest_control_decisions", value = "查询最近一批控制决策，包括策略来源、请求相位、最终相位、持续时间、状态和原因。只读。")
+    @Tool(name = "get_latest_control_decisions", value = "Query latest control decisions. Read-only.")
     public AgentToolResult getLatestControlDecisions(String sid, String intersectionId, Integer limit) {
         return AgentToolSupport.run(
                 "get_latest_control_decisions",
@@ -24,20 +30,20 @@ public class TrafficDecisionAgentTools {
                         blankToNull(intersectionId),
                         normalizeLimit(limit)
                 ),
-                "来自 RuntimeQueryService 的最近控制决策"
+                "Latest persisted control decisions from database"
         );
     }
 
-    @Tool(name = "get_decision_trace", value = "查询指定控制决策链路，包括策略建议、安全/仲裁/fallback 轨迹和最终结果。只读。")
+    @Tool(name = "get_decision_trace", value = "Query an aggregated control decision trace. Read-only.")
     public AgentToolResult getDecisionTrace(String decisionId) {
         return AgentToolSupport.run(
                 "get_decision_trace",
-                () -> runtimeQueryService.getDecisionTrace(decisionId),
-                "来自 RuntimeQueryService 的控制决策追踪"
+                () -> decisionTraceAggregatorService.getDecisionTrace(decisionId),
+                "Aggregated decision trace with Traffic-R inference, safety events, fallback events and CityFlow apply metadata"
         );
     }
 
-    @Tool(name = "get_model_inference_log", value = "查询 Traffic-R 推理日志，包括请求、输出、耗时、合法性和逐路口结果。只读。")
+    @Tool(name = "get_model_inference_log", value = "Query Traffic-R inference logs. Read-only.")
     public AgentToolResult getModelInferenceLog(String sid, String intersectionId, Integer limit) {
         return AgentToolSupport.run(
                 "get_model_inference_log",
@@ -46,7 +52,7 @@ public class TrafficDecisionAgentTools {
                         blankToNull(intersectionId),
                         normalizeLimit(limit)
                 ),
-                "来自 RuntimeQueryService 的 Traffic-R 推理日志"
+                "Traffic-R inference logs from database"
         );
     }
 

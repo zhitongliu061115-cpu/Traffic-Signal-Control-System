@@ -22,6 +22,7 @@ public class AgentLangChain4jConfig {
                 .apiKey(normalizeApiKey(properties.getApiKey()))
                 .modelName(normalizeModelName(properties.getModelName()))
                 .temperature(properties.getTemperature())
+                .maxTokens(normalizeMaxTokens(properties.getMaxTokens()))
                 .customParameters(Map.of("enable_thinking", properties.isEnableThinking()))
                 .timeout(Duration.ofSeconds(Math.max(properties.getTimeoutSeconds(), 1)))
                 .maxRetries(1)
@@ -45,5 +46,9 @@ public class AgentLangChain4jConfig {
 
     private String normalizeModelName(String modelName) {
         return StringUtils.hasText(modelName) ? modelName.trim() : "qwen-plus";
+    }
+
+    private int normalizeMaxTokens(int maxTokens) {
+        return Math.max(maxTokens, 256);
     }
 }

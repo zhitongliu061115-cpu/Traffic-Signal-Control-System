@@ -40,7 +40,10 @@ public class AgentToolExecutor {
             "get_fallback_events",
             "get_safety_events",
             "get_alert_events",
-            "get_emergency_events"
+            "get_emergency_events",
+            "get_emergency_vehicle_status",
+            "draft_emergency_dispatch",
+            "audit_configuration_consistency"
     );
 
     private final AgentDataService agentDataService;
@@ -176,6 +179,10 @@ public class AgentToolExecutor {
                     decisionTools.getDecisionTrace(stringArg(arguments, "decisionId", true));
             case "get_system_health" ->
                     healthTools.getSystemHealth(intArg(arguments, "limit", DEFAULT_LIMIT));
+            case "audit_configuration_consistency" -> healthTools.auditConfigurationConsistency(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "sceneCode", false)
+            );
             case "get_model_inference_log" -> decisionTools.getModelInferenceLog(
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "intersectionId", false),
@@ -246,6 +253,19 @@ public class AgentToolExecutor {
                     stringArg(arguments, "sid", false),
                     stringArg(arguments, "status", false),
                     intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "get_emergency_vehicle_status" -> emergencyTools.getEmergencyVehicleStatus(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "vehicleId", false),
+                    intArg(arguments, "limit", DEFAULT_LIMIT)
+            );
+            case "draft_emergency_dispatch" -> emergencyTools.draftEmergencyDispatch(
+                    stringArg(arguments, "sid", false),
+                    stringArg(arguments, "startIntersection", true),
+                    stringArg(arguments, "endIntersection", true),
+                    stringArg(arguments, "evId", false),
+                    stringArg(arguments, "evType", false),
+                    intArg(arguments, "priority", 1)
             );
             default -> throw new BusinessException("不允许的 Agent 工具：" + toolName);
         };

@@ -93,7 +93,7 @@ public class AgentIntentClassifier {
 
     private String plannerSystemPrompt() {
         return """
-                你是交通信号控制系统的 Agent 工具规划器。你的唯一任务是根据用户问题和上下文，生成严格 JSON 工具调用计划。
+                你是交通信号控制系统的 Agent 工具规划器。你的唯一任务是根据用户问题和上下文生成严格 JSON 工具调用计划。
                 不要回答用户问题，不要输出 Markdown，不要输出解释性自然语言。
 
                 可用工具：
@@ -101,40 +101,39 @@ public class AgentIntentClassifier {
                 - get_intersection_detail: 查询路口详情。参数：intersectionId 必填，sid?，sceneCode?
                 - get_road_detail: 查询道路详情。参数：roadId 必填，sid?，sceneCode?
                 - get_latest_control_decisions: 查询最近控制决策。参数：sid?，intersectionId?，limit?
-                - get_decision_trace: 查询指定决策链路。参数：decisionId 必填
-                - get_system_health: 查询系统健康。参数：limit?
+                - get_decision_trace: 查询增强决策链路，聚合 Traffic-R、安全层、fallback、CityFlow 下发状态。参数：decisionId 必填
+                - get_system_health: 主动探测 Spring Boot、CityFlow、Traffic-R、WebSocket、数据库和隧道状态。参数：limit?
                 - get_model_inference_log: 查询 Traffic-R 推理日志。参数：sid?，intersectionId?，limit?
-                - search_knowledge_base: 查询项目文档、接口规范、部署资料、Agent 设计和算法说明。参数：query 必填，topK?，scope?
-                - diagnose_congestion: 基于真实快照和决策证据诊断拥堵原因。参数：targetType?，targetId?，sid?，sceneCode?
-                - detect_signal_anomaly: 检测信号异常、相位长时间不变、安全约束触发或相位映射疑似异常。参数：sid?，intersectionId?，limit?
-                - detect_spillback_risk: 检测道路或路口下游溢出风险。参数：sid?，roadId?，intersectionId?，sceneCode?
+                - search_knowledge_base: 查询本地文档和可选百炼知识库。参数：query 必填，topK?，scope?
+                - diagnose_congestion: 诊断拥堵原因。参数：targetType?，targetId?，sid?，sceneCode?
+                - detect_signal_anomaly: 检测信号异常。参数：sid?，intersectionId?，limit?
+                - detect_spillback_risk: 检测下游溢出风险。参数：sid?，roadId?，intersectionId?，sceneCode?
                 - get_safety_constraint_log: 查询安全约束触发记录。参数：sid?，intersectionId?，decisionId?，limit?
-                - get_fallback_log: 查询策略降级/fallback 记录。参数：sid?，intersectionId?，limit?
+                - get_fallback_log: 查询策略 fallback 记录。参数：sid?，intersectionId?，limit?
                 - get_region_metrics: 查询区域或路口集合指标。参数：sid?，regionId?，intersectionIds?，limit?
-                - compare_strategy_metrics: 对比不同 session/策略的效果指标。参数：sids?，sceneCode?，limit?
-                - get_fallback_events: 查询策略降级事件。参数：sid?，intersectionId?，limit?
+                - compare_strategy_metrics: 对比不同 session/策略指标。参数：sids?，sceneCode?，limit?
+                - get_fallback_events: 查询 fallback 事件。参数：sid?，intersectionId?，limit?
                 - get_safety_events: 查询安全约束事件。参数：sid?，intersectionId?，decisionId?，limit?
                 - get_alert_events: 查询告警事件。参数：sid?，level?，status?，limit?
                 - get_emergency_events: 查询应急事件。参数：sid?，status?，limit?
+                - get_emergency_vehicle_status: 查询应急车辆当前位置、路线进度、ETA 和绿波状态。参数：sid?，vehicleId?，limit?
+                - draft_emergency_dispatch: 根据起终点生成应急调度与绿波草案，只生成草案不执行。参数：sid?，startIntersection 必填，endIntersection 必填，evId?，evType?，priority?
+                - audit_configuration_consistency: 检查 CityFlow roadnet、相位映射、lane-level/信号输入、Traffic-R phaseCode 和数据库 phase 表一致性。参数：sid?，sceneCode?
 
                 规划规则：
-                - 涉及“当前、实时、仿真状态、路口状态、道路状态、拥堵、决策、健康、推理日志、应急事件”的问题，必须选择工具。
-                - 纯概念、纯规范、纯部署说明问题优先调用 search_knowledge_base。
-                - 用户要求“诊断、分析原因、为什么堵、是否异常、是否溢出、策略效果对比”时，优先选择 diagnose_congestion、detect_signal_anomaly、detect_spillback_risk、get_region_metrics 或 compare_strategy_metrics。
-                - 如果问题核心是“拥堵诊断、堵车原因、为什么某处拥堵、分析某处拥堵”，必须把 diagnose_congestion 作为第一个 toolCall；不要只调用 get_current_simulation_state、get_region_metrics、get_safety_constraint_log 等证据查询工具替代它。
-                - 如果问题核心是“信号灯异常、相位异常、绿灯不走、相位长时间不变”，必须把 detect_signal_anomaly 作为第一个 toolCall。
-                - 如果问题核心是“下游溢出、spillback、排队倒灌、路口被下游堵住”，必须把 detect_spillback_risk 作为第一个 toolCall。
-                - 诊断类工具会返回结论、证据、影响范围、可能原因、建议动作、置信度和需要人工确认事项；不要用普通查询工具替代诊断工具。
-                - 不要创造工具名。不要填入未知 ID；如果用户没有提供必填 ID，就不要调用该工具。
+                - 涉及“当前、实时、仿真状态、路口状态、道路状态、拥堵、决策、健康、推理日志、应急事件、应急车辆”的问题，必须选择工具。
+                - 纯概念、规范、部署说明问题优先调用 search_knowledge_base。
+                - 排查 Traffic-R 调用失败、云端隧道、CityFlow、WebSocket 或数据库状态时，优先调用 get_system_health。
+                - 解释“为什么模型选了 A，最终执行 B”时，必须调用 get_decision_trace；如果没有 decisionId，不要编造 ID，可先调用 get_latest_control_decisions。
+                - 生成应急调度方案时，只能调用 draft_emergency_dispatch，不能调用任何执行控制动作的接口。
+                - 检查 phase 映射、Traffic-R 被 safety 阻断、roadnet/数据库/相位不一致时，优先调用 audit_configuration_consistency。
+                - 诊断类问题优先选择 diagnose_congestion、detect_signal_anomaly、detect_spillback_risk、get_region_metrics 或 compare_strategy_metrics。
+                - 不要创造工具名。不要填入未知 ID；如果用户没有提供必填 ID，就不要调用该工具，除非先用其他工具查询候选。
                 - 最多输出 4 个 toolCalls。
-
-                工具选择示例：
-                - 用户问“请诊断 intersection_1_1 为什么拥堵”：{"toolName":"diagnose_congestion","arguments":{"targetType":"intersection","targetId":"intersection_1_1","sid":"当前 sid"}}
-                - 用户问“检查 intersection_1_1 是否信号异常”：{"toolName":"detect_signal_anomaly","arguments":{"intersectionId":"intersection_1_1","sid":"当前 sid"}}
 
                 输出 JSON 格式：
                 {
-                  "intent": "current_state | detail_query | decision_trace | system_health | knowledge | diagnosis | direct_answer",
+                  "intent": "current_state | detail_query | decision_trace | system_health | knowledge | diagnosis | emergency | configuration_audit | direct_answer",
                   "needsTools": true,
                   "rationale": "为什么需要或不需要工具",
                   "toolCalls": [

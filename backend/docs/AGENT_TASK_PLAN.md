@@ -37,12 +37,12 @@ Agent 可见语义化工具
 | `get_intersection_detail` | 已实现 | 查询指定路口相位、movement 状态、相位列表、roadLink | 保留为核心工具，后续补 nearby vehicles |
 | `get_road_detail` | 已实现 | 查询道路基础信息、lane 列表、内存实时道路状态 | 保留为核心工具 |
 | `get_latest_control_decisions` | 已实现 | 查询最近控制决策 | 保留为核心工具 |
-| `get_decision_trace` | 已实现基础版 | 查询指定决策和 trace | 后续增强为聚合 Traffic-R、安全层、fallback、执行结果 |
+| `get_decision_trace` | 已实现基础版 | 查询指定决策和 trace；安全层接入后可看到 `stage=safety` 轨迹 | 后续增强为聚合 Traffic-R、fallback、CityFlow 执行结果和仲裁结果 |
 | `get_system_health` | 已实现基础版 | 查询数据库视角健康摘要 | 后续增强为 Spring Boot、CityFlow、Traffic-R、WebSocket、数据库统一健康 |
 | `get_model_inference_log` | 已实现 | 查询 Traffic-R 推理日志和逐路口结果 | 保留，主要用于调试和决策追踪 |
-| `search_knowledge_base` | 已实现基础版 | 检索本地项目文档 `.md/.txt`，返回命中文档、片段和来源 | 后续替换或增强为百炼知识库 API |
+| `search_knowledge_base` | 已实现 | 检索本地项目文档 `.md/.txt`，并通过百炼官方 `Retrieve` SDK 检索当前单个知识库语义切片 | 保留为核心工具；后续只需维护知识库内容和联调质量 |
 | `get_fallback_events` | 已实现 | 查询策略 fallback 事件 | 后续作为内部证据，减少模型直接使用 |
-| `get_safety_events` | 已实现 | 查询安全约束事件 | 后续作为内部证据，减少模型直接使用 |
+| `get_safety_events` | 已实现 | 查询安全约束事件；非法相位、安全 fallback 等拦截事件由 `SafetyLayerService` 写入 | 后续作为内部证据，减少模型直接使用 |
 | `get_alert_events` | 已实现 | 查询告警事件 | 后续并入系统健康或诊断结果 |
 | `get_emergency_events` | 已实现主事件查询 | 查询应急事件主记录 | 后续升级为 `get_emergency_vehicle_status` |
 
@@ -68,12 +68,12 @@ Agent 可见语义化工具
 ### 2.3 当前缺口
 
 - 已新增统一 `AgentOrchestratorService`：`/api/v1/agent/chat` 会经过编排层完成会话落库、LLM 工具规划、工具执行审计和回答生成。
-- `search_knowledge_base` 已有本地项目文档检索基础版，但尚未接入百炼知识库 API；当前适合回答项目文档、接口规范、部署和算法说明类问题，不适合承载实时交通状态。
-- 还没有语义化分析工具：拥堵诊断、异常检测、溢出风险、策略对比等尚未实现。
-- `get_decision_trace` 仍偏数据库 trace，没有完整聚合 Traffic-R 原始输出、安全层、fallback 和 CityFlow 执行结果。
-- `get_system_health` 仍偏数据库视角，没有主动探测 CityFlow、Traffic-R、WebSocket 和云端连接。
-- 应急工具仅有主事件查询，缺少路线节点、绿波状态、ETA 和草案生成。
-- 控制建议类工具尚未实现，必须等安全层和仲裁层稳定后再接。
+- `search_knowledge_base` 已升级为本地项目文档 + 百炼 `Retrieve` 语义切片的混合检索；百炼侧使用官方 `bailian20231229` OpenAPI SDK 和单个 `index-id`，未配置或调用失败时会明确返回 warning 并回退本地检索，适合回答项目文档、接口规范、部署和算法说明类问题，不适合承载实时交通状态。
+- 已实现语义化分析工具基础版：拥堵诊断、信号异常检测、溢出风险、区域指标和策略对比。当前仍以规则阈值和已有证据为主，缺少长时段趋势和更完整因果链。
+- `get_decision_trace` 已完成增强版聚合，可同时返回控制决策、Traffic-R 推理结果、安全层校验、fallback、trace 时间线和 CityFlow 下发 metadata；后续可继续补 `sid + intersectionId` 的便捷查询入口。
+- `get_system_health` 已完成增强版主动探测，覆盖 Spring Boot、CityFlow、Traffic-R、数据库、WebSocket、本地隧道和实时状态缓存；后续需做云端真实环境联调和告警落库。
+- 应急工具已补 `get_emergency_vehicle_status` 与 `draft_emergency_dispatch` 基础版；草案工具只生成路线和绿波建议，不执行控制动作。
+- 控制建议类工具尚未实现；后续只能生成草案或建议，真正下发仍必须经过安全层和仲裁层。
 
 ## 3. Agent 工具设计分层
 
@@ -112,7 +112,7 @@ Agent 可见语义化工具
 - `DatabaseStatusService`
 - CityFlow health / frame / dispatch 调用
 - Traffic-R 推理日志查询
-- 百炼应用 API 或模型 API 调用
+- LLM 模型 API 调用与百炼知识库 Retrieve
 
 这一层不直接暴露给模型。
 
@@ -128,10 +128,10 @@ Agent 可见语义化工具
 | `get_intersection_detail` | 查询路口详情 | `intersectionId`, `sid?`, `sceneCode?` | 当前相位、lane/movement 状态、进口排队、等待时间、关联道路、信号灯状态、附近车辆 | 已实现基础版，需补附近车辆 |
 | `get_road_detail` | 查询道路详情 | `roadId`, `sid?`, `sceneCode?` | 车辆数、排队数、平均速度、拥堵等级、上下游路口、车道数量 | 已实现 |
 | `get_latest_control_decisions` | 查询最近控制决策 | `sid?`, `intersectionId?`, `limit?` | 策略来源、请求相位、最终相位、持续时间、原因、是否成功下发 | 已实现基础版 |
-| `get_decision_trace` | 查询决策链路 | `decisionId` 或后续支持 `sid + intersectionId` | Traffic-R 原始输出、安全校验、fallback、最终执行结果 | 已实现基础版，需增强 |
+| `get_decision_trace` | 查询决策链路 | `decisionId` 或后续支持 `sid + intersectionId` | Traffic-R 原始输出、安全校验、fallback、最终执行结果 | 增强版已实现；后续补便捷查询入口和云端真实链路验收 |
 | `diagnose_congestion` | 分析拥堵原因 | `targetType?`, `targetId?`, `sid?`, `sceneCode?` | 结论、证据、影响范围、可能原因、建议动作、置信度、人工确认事项 | 已实现规则诊断基础版 |
-| `get_system_health` | 查询系统健康 | `limit?` | Spring Boot、CityFlow、Traffic-R、数据库、WebSocket、云端服务连接状态 | 已实现数据库基础版，需增强 |
-| `search_knowledge_base` | 查询项目知识库 | `query`, `topK?`, `scope?` | 命中文档、片段、来源、相似度或引用 | 已实现本地文档检索基础版；后续接百炼知识库 API |
+| `get_system_health` | 查询系统健康 | `limit?` | Spring Boot、CityFlow、Traffic-R、数据库、WebSocket、云端服务连接状态 | 增强版已实现；后续做云端真实部署联调 |
+| `search_knowledge_base` | 查询项目知识库 | `query`, `topK?`, `scope?` | 命中文档、百炼语义切片、来源、相似度或引用 | 已实现本地 + 百炼 Retrieve 混合检索；当前只使用一个百炼知识库 |
 
 ### 4.2 第二批：应急与区域分析
 
@@ -139,8 +139,8 @@ Agent 可见语义化工具
 
 | 工具名 | 目标 | 输入 | 输出重点 | 状态 |
 | --- | --- | --- | --- | --- |
-| `get_emergency_vehicle_status` | 查询应急车辆状态 | `sid`, `vehicleId?`, `eventCode?` | 位置、路线、已通过路口、预计到达时间、绿波状态 | 未实现；可基于 `emergency_event`、`emergency_route_node`、`emergency_signal_event` |
-| `draft_emergency_dispatch` | 生成应急调度草案 | `sid`, `start`, `end`, `vehicleType`, `priority?` | 路线、经过路口、预计时间、建议绿波相位；需人工确认 | 未实现；只生成草案，不执行 |
+| `get_emergency_vehicle_status` | 查询应急车辆状态 | `sid?`, `vehicleId?`, `limit?` | 位置、路线、已通过路口、预计到达时间、绿波状态 | 基础版已实现；读内存实时帧并补充数据库应急事件 |
+| `draft_emergency_dispatch` | 生成应急调度草案 | `sid?`, `startIntersection`, `endIntersection`, `evId?`, `evType?`, `priority?` | 路线、经过路口、预计时间、建议绿波相位；需人工确认 | 基础版已实现；只生成草案，不执行 |
 | `get_region_metrics` | 查询区域整体指标 | `sid?`, `regionId?`, `intersectionIds?`, `limit?` | 平均等待、平均排队、平均速度、拥堵路口数量、证据和告警 | 已实现基础版 |
 | `detect_spillback_risk` | 检测下游溢出风险 | `sid?`, `roadId?`, `intersectionId?`, `sceneCode?` | 风险等级、下游瓶颈、证据和建议 | 已实现基础版 |
 | `detect_signal_anomaly` | 检测信号异常 | `sid?`, `intersectionId?`, `limit?` | 相位长时间不变、安全约束触发、相位映射疑似异常、绿灯车辆不通行风险 | 已实现基础版 |
@@ -155,7 +155,7 @@ Agent 可见语义化工具
 | `draft_signal_adjustment` | 生成信号调整建议 | `sid`, `intersectionId?`, `regionId?`, `objective?` | 建议相位、时长、依据、风险；不执行 | 未实现；依赖安全层和仲裁层 |
 | `draft_strategy_switch` | 生成策略切换草案 | `sid`, `regionId?`, `fromStrategy`, `toStrategy` | 切换理由、影响范围、风险和回滚条件 | 未实现；不执行 |
 | `generate_daily_operation_report` | 生成运行日报 | `date`, `sceneId?`, `sid?` | 拥堵情况、策略效果、异常事件、模型调用、应急任务 | 未实现 |
-| `audit_configuration_consistency` | 检查配置一致性 | `sceneId`, `sid?` | roadnet、相位映射、lane-level、Traffic-R、CityFlow 配置一致性 | 未实现 |
+| `audit_configuration_consistency` | 检查配置一致性 | `sid?`, `sceneCode?` | roadnet、相位映射、lane-level、Traffic-R、CityFlow 配置一致性 | 基础版已实现；用于排查 phase 映射和 safety 阻断 |
 | `recommend_region_partition` | 推荐控制区域划分 | `sceneId`, `criteria?` | Traffic-R core、MaxPressure 边界、复杂控制区建议 | 未实现 |
 
 ### 4.4 第四批：实验型工具
@@ -197,7 +197,7 @@ Agent 可见语义化工具
        控制建议类 -> draft_*，只生成草案
   -> 写入 agent_tool_call
   -> 组装模型上下文
-  -> 调用百炼模型 API 或绑定知识库的百炼应用 API
+  -> 调用 LLM 模型 API；如需知识资料，先调用百炼 Retrieve 获取语义切片
   -> 写入 assistant agent_message
   -> 返回答案、引用证据和工具调用摘要
 ```
@@ -222,7 +222,7 @@ Agent 可见语义化工具
 
 当前仍未完成：
 
-- `search_knowledge_base` 目前是本地项目文档检索，不是百炼知识库 API。
+- `search_knowledge_base` 当前已接入百炼官方 `Retrieve` API；返回的是语义切片，后端会把切片作为工具证据交给 LLM 生成最终回答。
 - 诊断类工具目前是基于阈值和规则的基础版，尚未覆盖复杂因果推理、跨时段趋势分析和完整安全/仲裁链路解释。
 - 暂未开放执行类工具；策略切换、相位下发、应急绿波执行仍必须等待安全层和仲裁层。
 
@@ -245,7 +245,7 @@ Agent 可见语义化工具
 本项目不依赖百炼平台 Agent 做工具调用。推荐两种百炼接入方式：
 
 1. 百炼模型 API：用于最终自然语言生成。
-2. 绑定知识库的百炼应用 API：用于项目文档、交通规范、算法说明和部署资料的知识库问答。
+2. 百炼 `Retrieve` API：用于检索项目文档、交通规范、算法说明和部署资料的语义切片，再由本项目自建 Agent 编排层交给 LLM 总结。
 
 实时交通数据不得放入百炼知识库，也不应默认全量写入 PostgreSQL 快照表；当前实时状态必须从 `LiveSimulationStateService` 内存缓存查询，历史复盘数据从 PostgreSQL 查询。
 
@@ -257,7 +257,7 @@ Agent 可见语义化工具
 - 已在 `backend/pom.xml` 引入 `dev.langchain4j:langchain4j` 与 `dev.langchain4j:langchain4j-open-ai`。
 - 暂不引入 `langchain4j-spring-boot-starter`，避免引入 Spring Boot 版本升级风险。
 - 已在 `application.yml` 增加 `traffic.agent.langchain4j.*` 配置。
-- `traffic.agent.langchain4j.enabled` 默认是 `true`，`/api/v1/agent/chat` 当前只走后端自建 Agent 编排，不再自动 fallback 到 `BailianAgentService`。
+- `traffic.agent.langchain4j.enabled` 默认是 `true`，`/api/v1/agent/chat` 当前只走后端自建 Agent 编排；旧 `BailianAgentService` 已删除，不再存在平台 Agent fallback。
 - 开启 `traffic.agent.langchain4j.enabled=true` 后，会通过普通 Java API 创建 LangChain4j `ChatModel`。
 - 第二阶段采用 LLM JSON 规划模式，不依赖 `langchain4j-spring-boot-starter`。
 - 第三阶段已封装 `com.traffic.agent.tool` 工具层，工具方法使用 LangChain4j `@Tool` 注解，但实际执行仍由后端白名单和审计流程控制。
@@ -375,7 +375,7 @@ traffic:
 目标：
 
 - 实现 `search_knowledge_base`；
-- 支持调用绑定知识库的百炼应用 API，或先以本地文档检索替代；
+- 支持调用百炼 `Retrieve` API 获取语义切片，并保留本地文档检索作为 fallback；
 - 工具返回引用文档、片段和来源；
 - 不把实时状态写入知识库。
 
@@ -385,7 +385,7 @@ traffic:
 - 返回引用来源；
 - 不依赖百炼平台 Agent 工具调用。
 
-当前状态：已完成本地文档检索基础版，检索范围为项目根目录、`docs/` 和 `backend/docs/` 下的 `.md/.txt` 文件；尚未接入百炼知识库 API。
+当前状态：已完成本地文档检索基础版，检索范围为项目根目录、`docs/` 和 `backend/docs/` 下的 `.md/.txt` 文件；已接入百炼官方 `bailian20231229` OpenAPI SDK，使用 `workspace-id + index-id + query` 调用 `Retrieve`，把返回的 `Data.Nodes[].Text` 作为 `hits[].snippet` 语义切片交给 LLM。
 
 ### 阶段 C：实现核心分析工具
 
@@ -402,7 +402,7 @@ traffic:
 - 系统健康能覆盖 Spring Boot、CityFlow、Traffic-R、数据库；
 - 决策追踪能解释“模型建议 -> 安全/仲裁 -> 下发结果”。
 
-当前状态：已实现 `diagnose_congestion` 规则诊断基础版，并实现 `detect_signal_anomaly`、`detect_spillback_risk`、`get_safety_constraint_log`、`get_fallback_log`。`get_decision_trace` 和 `get_system_health` 仍为基础版，后续需要继续增强聚合解释。
+当前状态：已实现 `diagnose_congestion` 规则诊断基础版，并实现 `detect_signal_anomaly`、`detect_spillback_risk`、`get_safety_constraint_log`、`get_fallback_log`。本轮已增强 `get_decision_trace` 和 `get_system_health`：前者聚合 Traffic-R、安全层、fallback、CityFlow 下发 metadata，后者主动探测 Spring Boot、CityFlow、Traffic-R、数据库、WebSocket、隧道和实时状态缓存。后续重点是云端真实部署验收和告警闭环。
 
 ### 阶段 D：实现应急与区域工具
 
@@ -419,7 +419,7 @@ traffic:
 - 区域指标来自真实 session 数据；
 - 异常检测有明确阈值和证据。
 
-当前状态：已实现 `get_region_metrics`、`detect_spillback_risk`、`detect_signal_anomaly` 基础版；`draft_emergency_dispatch` 仍未实现。
+当前状态：已实现 `get_region_metrics`、`detect_spillback_risk`、`detect_signal_anomaly` 基础版；本轮已实现 `get_emergency_vehicle_status` 和 `draft_emergency_dispatch` 基础版。应急草案工具只输出路线、经过路口、ETA/绿波建议和人工确认项，不调用执行接口，不下发 CityFlow。
 
 ### 阶段 E：实现报告和策略草案
 
@@ -438,7 +438,7 @@ traffic:
 - 所有建议工具均标记 `draftOnly=true`；
 - 报告可以引用数据库记录和知识库资料。
 
-当前状态：已实现 `compare_strategy_metrics` 基础版，可按 session 或场景聚合帧指标；正式策略优劣结论仍要求同 roadnet、flow、随机种子和仿真时长。
+当前状态：已实现 `compare_strategy_metrics` 基础版，可按 session 或场景聚合帧指标；本轮已实现 `audit_configuration_consistency` 基础版，用于检查 roadnet、相位映射、Traffic-R phaseCode、数据库 phase 表和实时信号一致性。正式策略优劣结论仍要求同 roadnet、flow、随机种子和仿真时长。
 
 ### 阶段 F：实验型工具
 
@@ -457,13 +457,12 @@ traffic:
 
 ## 10. 当前优先级
 
-下一步优先实现：
+下一步优先处理：
 
-1. 增强 `get_decision_trace`
-2. 增强 `get_system_health`
-3. `get_emergency_vehicle_status`
-4. `draft_emergency_dispatch`
-5. 将 `search_knowledge_base` 从本地文档检索增强为百炼知识库 API 或混合检索
+1. 重启后端并运行 `backend/scripts/test-agent-core-tools.ps1`，验证新增工具 HTTP 入口和 `/api/v1/agent/chat` 工具选择。
+2. 在真实仿真和真实 Traffic-R 隧道下联调 `get_system_health`、`get_decision_trace`、`audit_configuration_consistency`，确认能解释 Traffic-R 调用失败和 safety 阻断原因。
+3. 重启后端后验证 `/api/v1/agent/tools/search_knowledge_base` 的 `bailianProvider.status=available`，并确认 `hits[].snippet` 包含百炼语义切片。
+4. 用真实应急场景验证 `get_emergency_vehicle_status` 和 `draft_emergency_dispatch`，确认输出为草案且不会执行控制。
 
 暂缓：
 
