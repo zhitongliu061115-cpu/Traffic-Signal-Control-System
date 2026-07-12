@@ -142,8 +142,12 @@ function syncEmergency(): void {
       if (!it) {
         const m = id.match(/^intersection_(\d+)_(\d+)$/)
         if (m) {
-          const col = +m[1]!, row = +m[2]!
-          it = intersections.value.find((i) => i.col === col && i.row === row)
+          const [, colText, rowText] = m
+          if (colText !== undefined && rowText !== undefined) {
+            const col = Number(colText)
+            const row = Number(rowText)
+            it = intersections.value.find((i) => i.col === col && i.row === row)
+          }
         }
       }
       if (it) pts.push([it.lng, it.lat])

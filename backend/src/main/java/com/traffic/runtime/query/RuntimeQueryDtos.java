@@ -180,9 +180,45 @@ public final class RuntimeQueryDtos {
     ) {
     }
 
+    public record MaxPressureScoreSummary(
+            String id,
+            String phaseId,
+            int phaseIndex,
+            String phaseCode,
+            double pressureScore,
+            String detailPayload,
+            Instant createdAt
+    ) {
+    }
+
+    public record DecisionEffectSummary(
+            String id,
+            String beforeFrameId,
+            String afterFrameId,
+            int horizonSec,
+            int queueBefore,
+            int queueAfter,
+            int queueDelta,
+            double avgWaitBefore,
+            double avgWaitAfter,
+            double avgWaitDelta,
+            double avgSpeedBefore,
+            double avgSpeedAfter,
+            double avgSpeedDelta,
+            int throughputBefore,
+            int throughputAfter,
+            int throughputDelta,
+            String evaluationLabel,
+            String detailPayload,
+            Instant createdAt
+    ) {
+    }
+
     public record DecisionTraceResponse(
             ControlDecisionSummary decision,
-            List<DecisionTraceEntry> traces
+            List<DecisionTraceEntry> traces,
+            List<MaxPressureScoreSummary> maxPressureScores,
+            DecisionEffectSummary effect
     ) {
     }
 

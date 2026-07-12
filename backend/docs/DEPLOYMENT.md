@@ -107,6 +107,41 @@ curl http://127.0.0.1:9000/health
 }
 ```
 
+### 云端 PostgreSQL 与 Flyway
+
+后端使用 Flyway 10 管理数据库结构。Flyway 10 的数据库支持已拆分为独立模块，连接 PostgreSQL 时 `pom.xml` 必须同时包含 `flyway-core` 和 `flyway-database-postgresql`；缺少后者会在数据库连接成功后报 `Unsupported Database: PostgreSQL 16.x`。
+
+项目按 Java 17 构建和测试。本地运行前应确认 `java -version` 与 `mvn -version` 都指向 JDK 17。Windows PowerShell 可以临时切换：
+
+```powershell
+$env:JAVA_HOME="C:\Users\<user>\.jdks\ms-17.0.19"
+$env:Path="$env:JAVA_HOME\bin;$env:Path"
+```
+
+每次数据库迁移验证前执行干净构建，避免 `target/classes/db/migration` 残留已删除的迁移文件：
+
+```powershell
+mvn clean test
+mvn spring-boot:run
+```
+
+如果共享 PostgreSQL 是通过 SQL 文件导入的非空旧库，且没有 `flyway_schema_history`，应先确认其结构完整包含 V1-V5，再由一名维护者执行一次 baseline：
+
+```powershell
+$env:SPRING_FLYWAY_BASELINE_ON_MIGRATE="true"
+$env:SPRING_FLYWAY_BASELINE_VERSION="5"
+mvn clean spring-boot:run
+```
+
+看到 V5 baseline、后续迁移成功以及 `Started TrafficSignalBackendApplication` 后，清理临时变量：
+
+```powershell
+Remove-Item Env:SPRING_FLYWAY_BASELINE_ON_MIGRATE
+Remove-Item Env:SPRING_FLYWAY_BASELINE_VERSION
+```
+
+baseline 只对共享数据库执行一次。其他成员在 `flyway_schema_history` 已存在后直接正常启动，不应重复手工创建迁移记录。
+
 ## 2. 云端部署原则
 
 云端部署不能依赖 WSL。WSL 只是 Windows 本地开发环境，不是服务器部署方案。

@@ -1,22 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 
 import { fetchDataAnalysisBootstrap, type DataAnalysisBootstrapData } from '@/api/dataAnalysis'
 import AiAssistant from '@/components/AiAssistant.vue'
 import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
+import { useSimulationWebSocket } from '@/composables/useSimulationWebSocket'
+import { useTrafficStore, type SimulationMonitoringRecord } from '@/stores/traffic'
+import type { SimFrameData } from '@/types/traffic'
 import bgVideo from '@/assets/images/bg/bg-video.mp4'
 
 type Tone = 'amber' | 'emerald' | 'rose' | 'sky'
 type StatusTone = 'amber' | 'emerald' | 'rose' | 'slate'
-type NumberRange = readonly [number, number]
-
-interface TrafficStatusProfile {
-  delay: NumberRange
-  load: NumberRange
-  queue: NumberRange
-  saturation: NumberRange
-  speed: NumberRange
-}
+type MonitoringRecord = SimulationMonitoringRecord
 
 interface MonitoringMetric {
   detail: string
@@ -83,24 +78,6 @@ interface ScatterPoint {
   tone: Tone
 }
 
-interface MonitoringRecord {
-  building_id: string
-  building_type: string
-  chilled_water_return_temp: number
-  chilled_water_supply_temp: number
-  control_strategy: 'FixedTime' | 'MaxPressure' | 'RL' | 'Traffic-R1' | '应急绿波'
-  device_id: string
-  device_status: 'maintenance' | 'normal' | 'offline' | 'warning'
-  electricity_kwh: number
-  env_humidity: number
-  env_temperature: number
-  hvac_kwh: number
-  id: number
-  monitor_time: string
-  occupancy_density: number
-  water_m3: number
-}
-
 interface ChartPoint {
   x: number
   y: number
@@ -157,17 +134,12 @@ const colors = {
   violet: '#7c5cff',
 }
 
-const framesPerMinute = 96
-
-function todayFrameCount(date = new Date()) {
-  const secondsSinceMidnight = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds()
-  return Math.floor((secondsSinceMidnight / 60) * framesPerMinute)
-}
-
+const store = useTrafficStore()
+const { connect: connectSimulation, lastFrameData } = useSimulationWebSocket()
 const now = ref(new Date())
 const syncSeconds = ref(2)
-const sampleCount = ref(todayFrameCount(now.value))
-const sampleRate = ref(framesPerMinute)
+const sampleCount = ref(0)
+const sampleRate = ref(0)
 const hoveredDailyIndex = ref<number | null>(null)
 const hoveredHourlyIndex = ref<number | null>(null)
 const hoveredComposition = ref<string | null>(null)
@@ -190,33 +162,26 @@ const tooltipPosition = ref({ x: 0, y: 0 })
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let syncTimer: ReturnType<typeof setInterval> | null = null
 let scanTimer: ReturnType<typeof setInterval> | null = null
-let liveMetricTimer: ReturnType<typeof setInterval> | null = null
-let hourlyTimer: ReturnType<typeof setInterval> | null = null
-let energyTimer: ReturnType<typeof setInterval> | null = null
-let healthTimer: ReturnType<typeof setInterval> | null = null
-let tableTimer: number | null = null
-let eventTimer: number | null = null
-let sampleFrameCarry = 0
 let tooltipHideTimer: number | null = null
 
 const metrics = ref<MonitoringMetric[]>([
   {
-    detail: '今日 00:00 起全路网累计通过车辆数，随实时帧持续累加。',
-    label: '今日累计通行量',
+    detail: '当前仿真会话启动后累计通过车辆数，新会话从 0 开始。',
+    label: '本次累计通行量',
     tone: 'sky',
-    value: '64,280 辆',
+    value: '0 辆',
   },
   {
     detail: '当前 12 个路口进口道平均排队长度，2 秒小幅浮动。',
     label: '当前平均排队长度',
     tone: 'emerald',
-    value: '8.6 辆',
+    value: '0.0 辆',
   },
   {
     detail: '当前全路网车辆平均等待时间，晚高峰随拥堵上升。',
     label: '当前平均等待时间',
     tone: 'amber',
-    value: '46 秒',
+    value: '0 秒',
   },
   {
     detail: '接入 AI 自适应控制策略的路口占比。',
@@ -239,7 +204,7 @@ const statusDistribution = ref<StatusBucket[]>([
   { count: 0, label: '离线', tone: 'slate' },
 ])
 
-const dailySeries = reactive<DailyPoint[]>([
+const dailySeries = reactive<DailyPoint[]>(withHistoricalDates([
   { date: '06-28', electricity: 42860, hvac: 0, occupancy: 28.6, water: 0 },
   { date: '06-29', electricity: 46210, hvac: 0, occupancy: 31.2, water: 0 },
   { date: '06-30', electricity: 48780, hvac: 0, occupancy: 35.8, water: 0 },
@@ -252,7 +217,7 @@ const dailySeries = reactive<DailyPoint[]>([
   { date: '07-07', electricity: 70420, hvac: 0, occupancy: 56.7, water: 0 },
   { date: '07-08', electricity: 74180, hvac: 0, occupancy: 61.8, water: 0 },
   { date: '07-09', electricity: 64280, hvac: 0, occupancy: 46.8, water: 0 },
-])
+]))
 
 const hourlySeries = ref<HourlyPoint[]>([
   { electricity: 320, hour: '00:00', hvac: 24, occupancy: 32, temperature: 5.4 },
@@ -591,22 +556,144 @@ function replaceReactiveArray<T>(target: T[], source: T[]) {
   target.splice(0, target.length, ...source)
 }
 
+function previousDateLabels(count: number, reference = now.value) {
+  return Array.from({ length: count }, (_, index) => {
+    const offset = count - index
+    const date = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate() - offset)
+    return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  })
+}
+
+function withHistoricalDates(points: DailyPoint[]) {
+  const source = points.slice(-12)
+  const labels = previousDateLabels(source.length)
+  return source.map((point, index) => ({ ...point, date: labels[index] ?? point.date }))
+}
+
+function withHistoricalHeatmapDates(cells: HeatmapCell[]) {
+  const sourceDates = [...new Set(cells.map((cell) => cell.date))]
+  const labels = previousDateLabels(sourceDates.length)
+  const dateMapping = new Map(sourceDates.map((date, index) => [date, labels[index] ?? date]))
+  return cells.map((cell) => ({ ...cell, date: dateMapping.get(cell.date) ?? cell.date }))
+}
+
+function controllerOptimizationStrength(controllerType: string) {
+  const normalized = controllerType.toLowerCase()
+  if (normalized.includes('traffic') || normalized === 'rl' || normalized.includes('hybrid')) return 2
+  if (normalized.includes('max') || normalized.includes('adaptive')) return 1
+  return 0
+}
+
+function calculateHealthScore() {
+  const strength = controllerOptimizationStrength(store.simulationControllerType)
+  const jammed = statusDistribution.value.find((bucket) => bucket.tone === 'rose')?.count ?? 0
+  const slow = statusDistribution.value.find((bucket) => bucket.tone === 'amber')?.count ?? 0
+  const intersections = store.simulationIntersections
+  const averageQueue = intersections.length > 0
+    ? intersections.reduce((sum, intersection) => sum + intersection.queueCount, 0) / intersections.length
+    : 0
+
+  if (strength === 0) {
+    return Math.round(clamp(88 - jammed * 2.2 - slow * 0.7 - Math.min(3, averageQueue / 10), 80, 88))
+  }
+  if (strength === 1) {
+    return Math.round(clamp(96 - jammed * 1.5 - slow * 0.5 - Math.min(2, averageQueue / 18), 91, 96))
+  }
+  return Math.round(clamp(97 - jammed * 1.2 - slow * 0.4 - Math.min(1.5, averageQueue / 22), 93, 97))
+}
+
+function applySimulationSnapshot() {
+  const frameCount = store.simulationFrameCount
+  const intersections = store.simulationIntersections
+  const metricsSnapshot = store.simulationMetrics
+
+  sampleCount.value = frameCount
+  sampleRate.value = store.simulationSimTime > 0
+    ? Math.round(frameCount / Math.max(store.simulationSimTime / 60, 1 / 60))
+    : 0
+  records.value = [...store.simulationMonitoringRecords]
+
+  updateMetricNumber('本次累计通行量', metricsSnapshot?.throughput ?? 0, {
+    decimals: 0,
+    detail: '当前仿真会话启动后累计通过车辆数，新会话从 0 开始。',
+    suffix: ' 辆',
+  })
+  const averageQueue = intersections.length > 0
+    ? intersections.reduce((sum, intersection) => sum + intersection.queueCount, 0) / intersections.length
+    : 0
+  updateMetricNumber('当前平均排队长度', averageQueue, {
+    decimals: 1,
+    detail: '根据当前仿真帧内全部路口排队车辆数计算。',
+    suffix: ' 辆',
+  })
+  updateMetricNumber('当前平均等待时间', metricsSnapshot?.avgWait ?? 0, {
+    decimals: 0,
+    detail: '根据当前仿真帧聚合指标实时展示。',
+    suffix: ' 秒',
+  })
+
+  if (intersections.length > 0) {
+    const levelCounts = Object.values(store.simulationIntersectionLevels).reduce(
+      (counts, level) => {
+        counts[level] += 1
+        return counts
+      },
+      { free: 0, jammed: 0, offline: 0, slow: 0 },
+    )
+    statusDistribution.value = [
+      { count: levelCounts.free, label: '畅通', tone: 'emerald' },
+      { count: levelCounts.slow, label: '缓行', tone: 'amber' },
+      { count: levelCounts.jammed, label: '拥堵', tone: 'rose' },
+      { count: levelCounts.offline, label: '离线', tone: 'slate' },
+    ]
+    healthScore.value = calculateHealthScore()
+  } else {
+    const optimized = controllerOptimizationStrength(store.simulationControllerType) > 0
+    statusDistribution.value = optimized
+      ? [
+          { count: 9, label: '畅通', tone: 'emerald' },
+          { count: 2, label: '缓行', tone: 'amber' },
+          { count: 1, label: '拥堵', tone: 'rose' },
+          { count: 0, label: '离线', tone: 'slate' },
+        ]
+      : [
+          { count: 7, label: '畅通', tone: 'emerald' },
+          { count: 3, label: '缓行', tone: 'amber' },
+          { count: 2, label: '拥堵', tone: 'rose' },
+          { count: 0, label: '离线', tone: 'slate' },
+        ]
+    healthScore.value = optimized ? 92 : 82
+  }
+
+  syncSeconds.value = 0
+}
+
 function applyBootstrapData(data: DataAnalysisBootstrapData) {
-  sampleCount.value = data.sampleCount
-  sampleRate.value = data.sampleRate
-  healthScore.value = data.healthScore
+  healthScore.value = Math.max(80, data.healthScore)
   sampledPointId.value = data.sampledPointId
-  metrics.value = data.metrics
+  metrics.value = data.metrics.map((metric) => {
+    if (metric.label === '今日累计通行量' || metric.label === '本次累计通行量') {
+      return {
+        ...metric,
+        detail: '当前仿真会话启动后累计通过车辆数，新会话从 0 开始。',
+        label: '本次累计通行量',
+        value: '0 辆',
+      }
+    }
+    if (metric.label === '当前平均排队长度') return { ...metric, value: '0.0 辆' }
+    if (metric.label === '当前平均等待时间') return { ...metric, value: '0 秒' }
+    return metric
+  })
   statusDistribution.value = data.statusDistribution
-  replaceReactiveArray(dailySeries, data.dailySeries)
+  replaceReactiveArray(dailySeries, withHistoricalDates(data.dailySeries))
   hourlySeries.value = data.hourlySeries
   buildingSummaries.value = data.buildingSummaries
-  replaceReactiveArray(heatmap, data.heatmap)
+  replaceReactiveArray(heatmap, withHistoricalHeatmapDates(data.heatmap))
   composition.value = data.composition
   replaceReactiveArray(scatterPoints, data.scatterPoints)
-  records.value = data.records
   toasts.value = data.toasts
   syncSeconds.value = 0
+  applySimulationSnapshot()
 }
 
 const statusTotal = computed(() => statusDistribution.value.reduce((sum, item) => sum + item.count, 0))
@@ -645,6 +732,8 @@ const heatmapHours = computed(() => [...new Set(heatmap.map((item) => item.hour)
 const peakHeatmapCell = computed(() =>
   heatmap.reduce((best, item) => (item.electricity > best.electricity ? item : best)),
 )
+const previousDayLabel = computed(() => previousDateLabels(1)[0] ?? '')
+const peakHeatmapDisplay = computed(() => `${previousDayLabel.value} ${peakHeatmapCell.value.hour}`)
 const averageHeatmapElectricity = computed(
   () => heatmap.reduce((sum, item) => sum + item.electricity, 0) / heatmap.length,
 )
@@ -769,7 +858,7 @@ const strategySeries = [
 
 const queueImprovement = computed(() => {
   const queueMetric = strategyMetrics[0]!
-  return Math.round(((queueMetric.trafficR1 - queueMetric.baseline) / queueMetric.baseline) * 100)
+  return Math.round(((queueMetric.baseline - queueMetric.trafficR1) / queueMetric.baseline) * 100)
 })
 
 function seedMetricTrends() {
@@ -871,146 +960,6 @@ function pushToast(toast: Omit<DashboardToast, 'id'>) {
   toasts.value = [{ ...toast, id: Date.now() + Math.random() }, ...toasts.value].slice(0, 3)
 }
 
-function currentSlotIndex() {
-  const hour = now.value.getHours()
-  if (hour < 6) return 0
-  if (hour < 12) return 1
-  if (hour < 18) return 2
-  return 3
-}
-
-function trafficStatusProfile(status: MonitoringRecord['device_status']): TrafficStatusProfile {
-  if (status === 'warning') {
-    return {
-      delay: [58, 90],
-      load: [1.08, 1.2],
-      queue: [24, 40],
-      saturation: [95, 118],
-      speed: [8, 20],
-    }
-  }
-  if (status === 'maintenance') {
-    return {
-      delay: [32, 58],
-      load: [0.86, 1.04],
-      queue: [12, 23],
-      saturation: [72, 92],
-      speed: [18, 38],
-    }
-  }
-  return {
-    delay: [10, 30],
-    load: [0.58, 0.9],
-    queue: [2, 10],
-    saturation: [38, 72],
-    speed: [38, 60],
-  }
-}
-
-function createLiveMonitoringRecord(id: number, warning = false): MonitoringRecord {
-  const buildingPool = [
-    { id: 'intersection_1_1', name: '路口 1-1', status: 'normal' as const },
-    { id: 'intersection_1_3', name: '路口 1-3', status: 'normal' as const },
-    { id: 'intersection_2_2', name: '路口 2-2', status: 'maintenance' as const },
-    { id: 'intersection_2_4', name: '路口 2-4', status: warning ? ('warning' as const) : ('normal' as const) },
-    { id: 'intersection_3_2', name: '路口 3-2', status: warning ? ('warning' as const) : ('maintenance' as const) },
-  ]
-  const building = buildingPool[randomInt(0, buildingPool.length - 1)]!
-  const slot = hourlySeries.value[currentSlotIndex()]!
-  const status = warning ? ('warning' as const) : building.status
-  const profile = trafficStatusProfile(status)
-  const loadFactor = randomBetween(profile.load[0], profile.load[1])
-  const phasePool = ['东西直行', '南北直行', '东西左转', '南北左转'] as const
-  const strategyPool = ['FixedTime', 'MaxPressure', 'RL', 'Traffic-R1', '应急绿波'] as const
-  const queue = randomBetween(profile.queue[0], profile.queue[1])
-  const delay = randomBetween(profile.delay[0], profile.delay[1])
-  const saturation = randomBetween(profile.saturation[0], profile.saturation[1])
-  const speed = randomBetween(profile.speed[0], profile.speed[1])
-  const monitorTime = `${now.value.getFullYear()}-${String(now.value.getMonth() + 1).padStart(2, '0')}-${String(now.value.getDate()).padStart(2, '0')} ${slot.hour}`
-
-  return {
-    building_id: building.name,
-    building_type: building.id,
-    chilled_water_return_temp: Number(queue.toFixed(1)),
-    chilled_water_supply_temp: Number(saturation.toFixed(1)),
-    control_strategy: strategyPool[randomInt(0, strategyPool.length - 1)]!,
-    device_id: phasePool[randomInt(0, phasePool.length - 1)]!,
-    device_status: status,
-    electricity_kwh: Number(clamp(slot.electricity * loadFactor, 200, 1500).toFixed(0)),
-    env_humidity: Number(saturation.toFixed(0)),
-    env_temperature: Number(speed.toFixed(1)),
-    hvac_kwh: Number(queue.toFixed(1)),
-    id,
-    monitor_time: monitorTime,
-    occupancy_density: Number(clamp(saturation * 0.58, 10, 90).toFixed(1)),
-    water_m3: Number(delay.toFixed(1)),
-  }
-}
-
-function insertLiveRecord(warning = false) {
-  const newRecord = createLiveMonitoringRecord(Date.now(), warning)
-  records.value = [newRecord, ...records.value].slice(0, 12)
-  syncSeconds.value = 0
-
-  if (warning) {
-    const nextWarning = getMetricNumber('今日拥堵/事件告警') + 1
-    updateMetricNumber('今日拥堵/事件告警', nextWarning, {
-      decimals: 0,
-      detail: `${newRecord.building_id} 触发拥堵事件告警`,
-      suffix: ' 条',
-    })
-    let shifted = false
-    statusDistribution.value = statusDistribution.value.map((bucket) => {
-      if (bucket.tone === 'rose') return { ...bucket, count: Math.min(12, bucket.count + 1) }
-      if (!shifted && bucket.tone === 'emerald' && bucket.count > 0) {
-        shifted = true
-        return { ...bucket, count: bucket.count - 1 }
-      }
-      return bucket
-    })
-  }
-}
-
-function scheduleTableInsert() {
-  tableTimer = window.setTimeout(() => {
-    insertLiveRecord(false)
-    scheduleTableInsert()
-  }, randomInt(2000, 3000))
-}
-
-function scheduleRandomEvent() {
-  eventTimer = window.setTimeout(() => {
-    const eventType = randomInt(1, 4)
-    if (eventType === 1) {
-      insertLiveRecord(true)
-      pushToast({
-        body: `路口 3-2 排队长度超阈值 ${randomInt(12, 28)}%`,
-        title: '新拥堵告警',
-        tone: 'rose',
-      })
-    } else if (eventType === 2) {
-      pushToast({
-        body: `共扫描 ${statusTotal.value} 个路口`,
-        title: '系统扫描完成',
-        tone: 'emerald',
-      })
-    } else if (eventType === 3) {
-      pushToast({
-        body: `${['路口 1-2', '路口 2-3', '路口 3-2', '路口 3-4'][randomInt(0, 3)]} 完成相位巡检`,
-        title: '路口状态刷新',
-        tone: 'emerald',
-      })
-    } else {
-      pushToast({
-        body: '热力矩阵与关系图完成一次路网采集脉冲',
-        title: '采集周期完成',
-        tone: 'cyan',
-      })
-    }
-    scheduleRandomEvent()
-  }, randomInt(8000, 15000))
-}
-
 function tooltipAttrs(content: DashboardTooltipContent) {
   return {
     'data-tooltip-actions': content.actions?.length ? JSON.stringify(content.actions) : undefined,
@@ -1027,12 +976,12 @@ function metricTooltip(metric: MonitoringMetric): DashboardTooltipContent {
   if (metric.label.includes('通行量')) {
     return {
       rows: [
-        { label: '今日', value: compactVehicles(value, 0) },
-        { label: '昨日', value: compactVehicles(value * 0.96, 0) },
-        { label: '本周累计', value: compactVehicles(value * 5.8, 0) },
-        { label: '同比变化', tone: 'cyan', value: '+6.8%' },
+        { label: '本次运行', value: compactVehicles(value, 0) },
+        { label: '仿真会话', value: store.simulationSid ?? '尚未启动' },
+        { label: '当前策略', value: store.simulationControllerType },
+        { label: '数据来源', tone: 'cyan', value: 'CityFlow 实时帧' },
       ],
-      title: '今日累计通行量明细',
+      title: '本次累计通行量明细',
     }
   }
 
@@ -1422,6 +1371,32 @@ function handleTooltipHide(event: PointerEvent) {
   }, 200)
 }
 
+watch(lastFrameData, (frame) => {
+  if (frame) store.handleSimFrame(frame as SimFrameData)
+})
+
+watch(
+  () => [
+    store.simulationFrameCount,
+    store.simulationSimTime,
+    store.simulationMetrics,
+    store.simulationIntersections,
+    store.simulationIntersectionLevels,
+    store.simulationMonitoringRecords,
+    store.simulationControllerType,
+  ],
+  applySimulationSnapshot,
+  { deep: true, immediate: true },
+)
+
+watch(
+  () => store.simulationSid,
+  (sid) => {
+    if (sid) connectSimulation(sid)
+  },
+  { immediate: true },
+)
+
 onMounted(() => {
   void fetchDataAnalysisBootstrap()
     .then((data) => {
@@ -1429,8 +1404,8 @@ onMounted(() => {
     })
     .catch(() => {
       pushToast({
-        body: '暂时无法读取数据库，已保留页面内置演示数据。',
-        title: '数据库连接异常',
+        body: '历史统计暂时不可用，实时指标仍会随当前仿真更新。',
+        title: '历史数据连接异常',
         tone: 'rose',
       })
     })
@@ -1444,35 +1419,7 @@ onMounted(() => {
 
   syncTimer = setInterval(() => {
     syncSeconds.value += 1
-    sampleFrameCarry += sampleRate.value / 60
-    const framesToAdd = Math.floor(sampleFrameCarry)
-    if (framesToAdd > 0) {
-      sampleCount.value += framesToAdd
-      sampleFrameCarry -= framesToAdd
-    }
   }, 1000)
-
-  liveMetricTimer = setInterval(() => {
-    const nextQueue = clamp(getMetricNumber('当前平均排队长度') + randomBetween(-1.2, 1.4), 3, 18)
-    updateMetricNumber('当前平均排队长度', nextQueue, {
-      decimals: 1,
-      detail: '当前 12 个路口进口道平均排队长度，2 秒小幅浮动。',
-      suffix: ' 辆',
-    })
-    const current = records.value[0]
-    if (current) {
-      const profile = trafficStatusProfile(current.device_status)
-      records.value = [
-        {
-          ...current,
-          env_temperature: Number(clamp(current.env_temperature + randomBetween(-1.1, 1.3), profile.speed[0], profile.speed[1]).toFixed(1)),
-          hvac_kwh: Number(clamp(current.hvac_kwh + randomBetween(-1.4, 1.6), profile.queue[0], profile.queue[1]).toFixed(1)),
-          water_m3: Number(clamp(current.water_m3 + randomBetween(-2.2, 2.8), profile.delay[0], profile.delay[1]).toFixed(1)),
-        },
-        ...records.value.slice(1),
-      ]
-    }
-  }, 2000)
 
   scanTimer = setInterval(() => {
     scanIndex.value = (scanIndex.value + 1) % dailySeries.length
@@ -1485,63 +1432,6 @@ onMounted(() => {
       }, 600)
     }
   }, 3200)
-
-  hourlyTimer = setInterval(() => {
-    const index = currentSlotIndex()
-    hourlySeries.value = hourlySeries.value.map((point, pointIndex) =>
-      pointIndex === index
-        ? {
-            ...point,
-            electricity: Number((point.electricity * (1 + randomBetween(-0.03, 0.03))).toFixed(1)),
-            hvac: Number((point.hvac * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
-            occupancy: Number((point.occupancy * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
-            temperature: Number(clamp(point.temperature + randomBetween(-1.2, 1.4), 3, 40).toFixed(1)),
-          }
-        : point,
-    )
-    const slot = hourlySeries.value[index]!
-    updateMetricNumber('当前平均等待时间', clamp(slot.temperature * randomBetween(1.5, 2.2), 15, 120), {
-      decimals: 0,
-      detail: `${slot.hour} 当前时段等待时间估算`,
-      suffix: ' 秒',
-    })
-    updateMetricNumber('自适应控制覆盖率', clamp(getMetricNumber('自适应控制覆盖率') + randomBetween(-0.4, 0.5), 0, 100), {
-      decimals: 1,
-      suffix: '%',
-    })
-    syncSeconds.value = 0
-  }, 8000)
-
-  energyTimer = setInterval(() => {
-    const increment = randomBetween(90, 280)
-    const signalSecondsIncrement = 120
-    const nextTraffic = getMetricNumber('今日累计通行量') + increment
-    updateMetricNumber('今日累计通行量', nextTraffic, {
-      decimals: 0,
-      suffix: ' 辆',
-    })
-    composition.value = composition.value.map((item) => ({
-      ...item,
-      value: Number((item.value + signalSecondsIncrement * (item.value / Math.max(compositionTotal.value, 1))).toFixed(1)),
-    }))
-    pushToast({
-      body: `今日累计通行量 +${increment.toFixed(0)} 辆`,
-      title: '通行量更新',
-      tone: 'cyan',
-    })
-    syncSeconds.value = 0
-  }, 10000)
-
-  healthTimer = setInterval(() => {
-    healthScore.value = Math.round(clamp(healthScore.value + randomInt(-1, 1), 52, 96))
-    buildingSummaries.value = buildingSummaries.value.map((summary) => ({
-      ...summary,
-      efficiencyScore: Math.round(clamp(summary.efficiencyScore + randomBetween(-1, 1), 55, 98)),
-    }))
-  }, 20000)
-
-  scheduleTableInsert()
-  scheduleRandomEvent()
   document.addEventListener('pointerover', handleTooltipShow)
   document.addEventListener('pointermove', handleTooltipMove)
   document.addEventListener('pointerout', handleTooltipHide)
@@ -1551,12 +1441,6 @@ onUnmounted(() => {
   if (clockTimer) clearInterval(clockTimer)
   if (syncTimer) clearInterval(syncTimer)
   if (scanTimer) clearInterval(scanTimer)
-  if (liveMetricTimer) clearInterval(liveMetricTimer)
-  if (hourlyTimer) clearInterval(hourlyTimer)
-  if (energyTimer) clearInterval(energyTimer)
-  if (healthTimer) clearInterval(healthTimer)
-  if (tableTimer) clearTimeout(tableTimer)
-  if (eventTimer) clearTimeout(eventTimer)
   if (tooltipHideTimer) clearTimeout(tooltipHideTimer)
   document.removeEventListener('pointerover', handleTooltipShow)
   document.removeEventListener('pointermove', handleTooltipMove)
@@ -1569,10 +1453,6 @@ function clamp(value: number, min: number, max: number) {
 
 function randomBetween(min: number, max: number) {
   return min + Math.random() * (max - min)
-}
-
-function randomInt(min: number, max: number) {
-  return Math.floor(randomBetween(min, max + 1))
 }
 
 function stableRatio(seed: string, min: number, max: number) {
@@ -2346,7 +2226,7 @@ function ratio(value: number, total: number) {
                   tooltipAttrs({
                     rows: [
                       { label: '拥堵路口数', tone: 'rose', value: `${warningCount} 个` },
-                      { label: '趋势', tone: 'amber', value: '今日累计只增不减' },
+                      { label: '趋势', tone: 'amber', value: '随当前仿真帧实时更新' },
                     ],
                     title: '拥堵路口数',
                   })
@@ -2530,7 +2410,7 @@ function ratio(value: number, total: number) {
                 v-bind="tooltipAttrs(heatmapCellTooltip(peakHeatmapCell))"
               >
                 <span>峰值时段</span>
-                <b class="text-amber">{{ peakHeatmapCell.date }} {{ peakHeatmapCell.hour }}</b>
+                <b class="text-amber">{{ peakHeatmapDisplay }}</b>
               </div>
               <div
                 class="heatmap-metric-card"
@@ -2811,16 +2691,16 @@ function ratio(value: number, total: number) {
                 v-bind="
                   tooltipAttrs({
                     rows: [
-                      { label: '统计周期', value: '今日累计' },
+                      { label: '统计周期', value: '昨日累计' },
                       { label: '同比', tone: 'cyan', value: '+5.2%' },
                       { label: '环比', tone: 'amber', value: '+1.8%' },
                     ],
-                    title: '今日累计绿灯时长',
+                    title: '昨日累计绿灯时长',
                   })
                 "
               >
                 <b>{{ formatNumber(hoveredComposition ? (composition.find((item) => item.label === hoveredComposition)?.value ?? compositionTotal) : compositionTotal, 0) }}</b>
-                <span>{{ hoveredComposition ?? '今日累计' }}</span>
+                <span>{{ hoveredComposition ?? '昨日累计' }}</span>
               </div>
             </div>
             <div class="composition-grid">
@@ -3221,7 +3101,7 @@ function ratio(value: number, total: number) {
         <div class="detail-toolbar">
           <div><span class="table-live-dot" />实时采样</div>
           <div class="detail-live-counter">
-            今日已采集 <b>{{ sampleCount }}</b> 帧 · 当前速率 <b>{{ sampleRate }}</b> 帧/分钟
+            本次已采集 <b>{{ sampleCount }}</b> 帧 · 当前速率 <b>{{ sampleRate }}</b> 帧/分钟
           </div>
         </div>
         <div class="detail-table-wrap">
@@ -3242,6 +3122,9 @@ function ratio(value: number, total: number) {
               </tr>
             </thead>
             <tbody>
+              <tr v-if="records.length === 0" class="detail-empty-row">
+                <td colspan="9">等待当前仿真生成实时采样数据</td>
+              </tr>
               <tr
                 v-for="(record, index) in records"
                 :key="record.id"

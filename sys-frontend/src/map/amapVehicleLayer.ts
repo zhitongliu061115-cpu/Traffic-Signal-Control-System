@@ -195,7 +195,6 @@ export function createVehicleLayer(
         // 如果 CityFlow 道路与上海道路方向相反，翻转 progress
         if (mapping.flipped) prog = 1 - prog
         // 映射到上海弯曲路径
-        // 璁＄畻 CityFlow 鐩磋矾涓婄殑 progress
         const [lng, lat] = interpolateLngLat(mapping.shanghaiRoad.path!, prog)
         if (vi < pool.length) {
           pool[vi]!.setCenter([lng, lat] as unknown as AMap.LngLat)
@@ -217,4 +216,3 @@ export function createVehicleLayer(
     },
   }
 }
-
