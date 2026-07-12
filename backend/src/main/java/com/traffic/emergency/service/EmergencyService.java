@@ -22,8 +22,14 @@ public class EmergencyService {
     }
     public EVDispatchResponse dispatch(String sid, EVDispatchRequest request) {
         Map<String, Object> pythonRequest = new HashMap<>();
-        pythonRequest.put("startCoord", coordToMap(request.startCoord()));
-        pythonRequest.put("endCoord", coordToMap(request.endCoord()));
+        if (request.startCoord() != null && request.endCoord() != null) {
+            pythonRequest.put("startCoord", coordToMap(request.startCoord()));
+            pythonRequest.put("endCoord", coordToMap(request.endCoord()));
+        }
+        if (request.startIntersection() != null && !request.startIntersection().isBlank()) {
+            pythonRequest.put("startIntersection", request.startIntersection());
+            pythonRequest.put("endIntersection", request.endIntersection());
+        }
         pythonRequest.put("evId", request.evId());
         pythonRequest.put("evType", request.evType());
         pythonRequest.put("priority", request.priority());

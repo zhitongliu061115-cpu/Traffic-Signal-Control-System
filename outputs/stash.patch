@@ -1,0 +1,16 @@
+diff --git a/temp-three-frontend/src/main.js b/temp-three-frontend/src/main.js
+index daa7493..f9cb799 100644
+--- a/temp-three-frontend/src/main.js
++++ b/temp-three-frontend/src/main.js
+@@ -953,7 +953,10 @@ function updateVehicles(vehicles = []) {
+     entry.lerpMs = lerpMs;
+     const body = entry.mesh.children.find((child) => child.userData.vehicleBody);
+     if (body) {
+-      body.material.color.setHex(vehicle.speed < 1 ? 0xffd166 : 0x4cc9ff);
++      const isEv = evVehicleIds.has(vehicle.id);
++      if (!isEv) {
++        body.material.color.setHex(vehicle.speed < 1 ? 0xffd166 : 0x4cc9ff);
++      }
+     }
+   }
+ 

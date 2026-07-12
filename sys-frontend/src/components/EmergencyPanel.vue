@@ -12,6 +12,7 @@ const store = useTrafficStore()
 const {
   systemMode,
   emergencyVehicle,
+  emergencyCfVehicleId,
   emergencyRoute,
   activeGreenWaveIndex,
   intersections,
@@ -53,15 +54,17 @@ const canDispatch = computed(
     !dispatching.value,
 )
 
-// ---- 应急车辆类型查找 ----
-const emergencyVehOnRoad = computed(() =>
-  vehicles.value.find((v) => v.id === 'E001' && v.type !== 'normal'),
-)
+// ---- 应急车辆类型查找（通过 CityFlow 分配的 cfVehicleId 匹配）----
+const emergencyVehOnRoad = computed(() => {
+  const cfId = emergencyCfVehicleId.value
+  if (!cfId) return undefined
+  return vehicles.value.find((v) => v.id === cfId)
+})
 
 const vehicleTypeLabel = computed(() => {
   if (!emergencyVehOnRoad.value && !emergencyVehicle.value.greenWaveActive) return null
   const t = emergencyVehicle.value.type
-  return t === 'ambulance' ? '救护车 🚑' : t === 'firetruck' ? '消防车 🚒' : '应急车辆'
+  return t === 'ambulance' ? '救护车 🚑' : t === 'fire_truck' ? '消防车 🚒' : '应急车辆'
 })
 
 const vehicleTypeIcon = computed(() => {
@@ -84,7 +87,9 @@ const endNodeName = computed(() => {
 
 // ---- 应急车辆实时速度 ----
 const currentSpeed = computed(() => {
-  return emergencyVehOnRoad.value?.speed ?? emergencyVehicle.value.greenWaveActive ? 62 : 0
+  const ev = emergencyVehOnRoad.value
+  if (ev && ev.speed != null) return ev.speed
+  return 0
 })
 
 // ---- 预计到达时间（分钟） ----
@@ -431,7 +436,7 @@ const waveProgress = computed(() => {
                   <label class="ep-label">车辆类型</label>
                   <el-select v-model="dispatchForm.vehicleType" class="ep-select">
                     <el-option label="🚑 救护车" value="ambulance" />
-                    <el-option label="🚒 消防车" value="firetruck" />
+                    <el-option label="🚒 消防车" value="fire_truck" />
                   </el-select>
                 </div>
                 <div class="ep-field ep-field--half">
