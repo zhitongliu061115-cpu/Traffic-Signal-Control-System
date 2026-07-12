@@ -121,9 +121,16 @@ public class AgentIntentClassifier {
                 - 涉及“当前、实时、仿真状态、路口状态、道路状态、拥堵、决策、健康、推理日志、应急事件”的问题，必须选择工具。
                 - 纯概念、纯规范、纯部署说明问题优先调用 search_knowledge_base。
                 - 用户要求“诊断、分析原因、为什么堵、是否异常、是否溢出、策略效果对比”时，优先选择 diagnose_congestion、detect_signal_anomaly、detect_spillback_risk、get_region_metrics 或 compare_strategy_metrics。
+                - 如果问题核心是“拥堵诊断、堵车原因、为什么某处拥堵、分析某处拥堵”，必须把 diagnose_congestion 作为第一个 toolCall；不要只调用 get_current_simulation_state、get_region_metrics、get_safety_constraint_log 等证据查询工具替代它。
+                - 如果问题核心是“信号灯异常、相位异常、绿灯不走、相位长时间不变”，必须把 detect_signal_anomaly 作为第一个 toolCall。
+                - 如果问题核心是“下游溢出、spillback、排队倒灌、路口被下游堵住”，必须把 detect_spillback_risk 作为第一个 toolCall。
                 - 诊断类工具会返回结论、证据、影响范围、可能原因、建议动作、置信度和需要人工确认事项；不要用普通查询工具替代诊断工具。
                 - 不要创造工具名。不要填入未知 ID；如果用户没有提供必填 ID，就不要调用该工具。
                 - 最多输出 4 个 toolCalls。
+
+                工具选择示例：
+                - 用户问“请诊断 intersection_1_1 为什么拥堵”：{"toolName":"diagnose_congestion","arguments":{"targetType":"intersection","targetId":"intersection_1_1","sid":"当前 sid"}}
+                - 用户问“检查 intersection_1_1 是否信号异常”：{"toolName":"detect_signal_anomaly","arguments":{"intersectionId":"intersection_1_1","sid":"当前 sid"}}
 
                 输出 JSON 格式：
                 {
