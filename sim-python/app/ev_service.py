@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app import ev_config as cfg
 from app.errors import ApiError
+from app.safety_guard import SafetyGuard
+
 from app.ev_priority import (
     ConflictResolver,
     DijkstraPathPlanner,
@@ -32,7 +34,6 @@ VEHICLE_TYPE_PRIORITY = {
     "convoy": 3,
 }
 
-
 @dataclass
 class EVSession:
     """EV tracking data for one EV in one simulation session."""
@@ -52,7 +53,6 @@ class EVSession:
     completed: bool = False
     completion_time: float = 0.0
 
-
 class EVPriorityService:
 
     def __init__(self):
@@ -62,6 +62,7 @@ class EVPriorityService:
         self.lwr_model = LWRQueueModel(LWRParams())
         self.strategy = SignalStrategy(self.lwr_model)
         self.conflict_resolver = ConflictResolver()
+        self.safety_guard = SafetyGuard()
         self._active_overrides: Dict[str, Dict[str, int]] = {}  # sid -> {inter_id: phase}
         self._override_owners: Dict[str, Dict[str, str]] = {}  # sid -> {inter_id: ev_id}
         self.logger = EVLogger()
@@ -384,7 +385,6 @@ class EVPriorityService:
                         resolved = pri_green[0] if pri_green else current_phase
                     elif decision == SignalStrategy.DECISION_FORCE_GREEN:
                         resolved = pri_green[0] if pri_green else current_phase
-
                     signal_overrides[inter_id] = resolved
                     signal_override_owners[inter_id] = ev_id
 
