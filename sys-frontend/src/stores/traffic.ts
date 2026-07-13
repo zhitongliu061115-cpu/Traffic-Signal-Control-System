@@ -3,7 +3,6 @@
 // =========================================================
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { signalRemainingSec, toSignalPhase } from '@/simulation/signalState'
 import type {
   SystemMode,
   SignalPhase,
@@ -948,22 +947,16 @@ export const useTrafficStore = defineStore('traffic', () => {
     // 用仿真数据同步刷新前端路口/道路/车辆状态
     applySimFrameToTrafficData(frame)
 
-    // A received frame restores realtime health; a separate watchdog detects silence.
-    simulationErrorMessage.value = null
-  }
-
-  /** Detect frame silence independently from the receive callback. */
-  function checkSimulationFrameTimeout(now = Date.now()): boolean {
-    const timedOut = simulationStatus.value === 'running'
-      && simulationLastFrameAt.value > 0
-      && now - simulationLastFrameAt.value > 3500
-
-    if (timedOut) {
+    // 检查是否有帧超时（仿真运行中但 3.5s 没收到新帧）
+    if (
+      simulationStatus.value === 'running' &&
+      simulationLastFrameAt.value > 0 &&
+      Date.now() - simulationLastFrameAt.value > 3500
+    ) {
       simulationErrorMessage.value = `等待新帧中… last frame ${simulationFrameCount.value}`
-    } else if (simulationErrorMessage.value?.startsWith('等待新帧中…')) {
+    } else {
       simulationErrorMessage.value = null
     }
-    return timedOut
   }
 
   /** 将仿真帧数据同步到现有的 traffic 数据结构（渐进式替换 mock） */
@@ -981,16 +974,23 @@ export const useTrafficStore = defineStore('traffic', () => {
       return m ? `${m[1]}_${m[2]}` : null
     }
 
+    const phaseMap: Record<string, SignalPhase> = {
+      ETWT: 'eastwest_straight', ew_straight: 'eastwest_straight',
+      NTST: 'northsouth_straight', ns_straight: 'northsouth_straight',
+      ELWL: 'eastwest_left', ew_left: 'eastwest_left',
+      NLSL: 'northsouth_left', ns_left: 'northsouth_left',
+      all_red: 'all_red',
+    }
+
     // ---- 信号灯 → 路口相位（按转置键精确匹配）----
     for (const sig of frame.signals) {
       const key = simKeyOf(sig.intersectionId)
       const it = key ? itBySimKey.get(key) : undefined
       if (!it) continue
-      it.currentPhase = toSignalPhase(sig.phaseCode)
+      it.currentPhase = phaseMap[sig.phaseCode] ?? it.currentPhase
       it.deviceStatus = 'online'
-      const remaining = signalRemainingSec(sig)
-      it.greenRemainKnown = remaining !== null
-      it.greenRemain = remaining ?? 0
+      // 仿真每 10s 切一次相位，从 simTime 推算倒计时
+      it.greenRemain = 10 - (frame.simTime % 10)
     }
 
     // ---- 路口排队/延误（按转置键精确匹配）----
@@ -1127,7 +1127,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     try {
       await startSimulation(simulationSid.value)
       simulationStatus.value = 'running'
-      simulationLastFrameAt.value = Date.now()
       simulationErrorMessage.value = null
       console.log('[TrafficStore] simulation started')
     } catch (err) {
@@ -1186,15 +1185,7 @@ export const useTrafficStore = defineStore('traffic', () => {
       return null
     }
 
-    // 4. 自动启动新仿真
-    try {
-      await startSimulation(result.sid)
-      simulationStatus.value = 'running'
-      simulationLastFrameAt.value = Date.now()
-      console.log('[TrafficStore] recreated + started with controller:', controllerType, 'sid:', result.sid)
-    } catch (err) {
-      console.warn('[TrafficStore] auto-start failed, simulation left paused', err)
-    }
+    console.log('[TrafficStore] recreated with controller:', controllerType, 'sid:', result.sid)
     return result.sid
   }
 
@@ -1322,7 +1313,6 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     // simulation actions
     handleSimFrame,
-    checkSimulationFrameTimeout,
     applySimFrameToTrafficData,
     initSimulationSession,
     resumeSimulation,

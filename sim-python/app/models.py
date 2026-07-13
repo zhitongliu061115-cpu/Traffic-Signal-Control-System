@@ -20,10 +20,6 @@ class SimulationSession:
     last_access_at: float = field(default_factory=time.time)
     latest_frame: dict[str, Any] | None = None
     active_vehicle_ids: set[str] = field(default_factory=set)
-    current_phases: dict[str, int] = field(default_factory=dict)
-    phase_started_at: dict[str, float] = field(default_factory=dict)
-    phase_duration_sec: dict[str, float] = field(default_factory=dict)
-    mock_vehicle_delays: dict[str, float] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock, repr=False)
 
 
