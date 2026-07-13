@@ -1,14 +1,50 @@
-// ================================================================
+﻿// ================================================================
 // IntersectionVehicleAnimator — GLB 小车 4 动画 + 红绿灯联动
 // 4 个独立 GLB（straight/turn_left/turn_right/stop）按车道选择
 // ================================================================
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import type { Vehicle, Road, Intersection, SignalPhase } from '@/types/traffic'
+import type { Vehicle, Road, Intersection, SignalPhase, SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 import { laneType, LaneType, canPassIntersection, isNearStopLine, STOP_PROGRESS } from './TrafficRules'
+import { createLocalVehiclePoses, type VehicleMovement } from './intersection/VehiclePose'
 
 const LANE_W = 6
 const CAR_SCALE = 1.5
+
+const ROOT_MOTION_SUFFIXES = ['.position', '.quaternion']
+const DEFAULT_LIVE_FRAME_INTERVAL_MS = 500
+const MAX_TRACKED_LIVE_FRAME_GAP_MS = 2000
+const LIVE_INTERPOLATION_HEADROOM = 0.9
+const MAX_INSTANCED_LIVE_CARS = 512
+
+/**
+ * Vehicle GLBs contain baked path translation/rotation on the car node.
+ * Runtime positioning owns those transforms, so retaining the baked first frame
+ * offsets the mesh away from its Three.js group and rotates it sideways.
+ */
+export function removeBakedVehicleRootMotion(
+  scene: THREE.Group,
+  clip: THREE.AnimationClip,
+): THREE.AnimationClip {
+  const rootMotionTracks = clip.tracks.filter((track) =>
+    ROOT_MOTION_SUFFIXES.some((suffix) => track.name.endsWith(suffix)),
+  )
+
+  for (const track of rootMotionTracks) {
+    const separator = track.name.lastIndexOf('.')
+    if (separator <= 0) continue
+    const target = scene.getObjectByName(track.name.slice(0, separator))
+    if (!target) continue
+    if (track.name.endsWith('.position')) target.position.set(0, 0, 0)
+    if (track.name.endsWith('.quaternion')) target.quaternion.identity()
+  }
+
+  return new THREE.AnimationClip(
+    clip.name,
+    clip.duration,
+    clip.tracks.filter((track) => !rootMotionTracks.includes(track)),
+  )
+}
 
 // ---- 仿真驱动模式常量 ----
 const STOP_LINE = 24        // 停止线距路口中心
@@ -27,7 +63,7 @@ export interface IntersectionSimState {
   eastCount: number
   westCount: number
   currentPhase: SignalPhase
-  greenRemain: number
+  greenRemain: number | null
 }
 
 /** 单个方向进场道上的一辆本地车 */
@@ -54,6 +90,26 @@ interface CarInstance {
   stopped: boolean
 }
 
+type LiveVehicleClip = VehicleMovement | 'stop'
+
+interface LiveCarInstance {
+  group: THREE.Group
+  clip: LiveVehicleClip
+  from: THREE.Vector3
+  to: THREE.Vector3
+  fromRotation: number
+  toRotation: number
+  startAt: number
+  lerpMs: number
+}
+
+interface LiveCarInstanceLayer {
+  mesh: THREE.InstancedMesh
+  modelMatrix: THREE.Matrix4
+}
+
+type VisualMode = 'mock' | 'aggregate' | 'cityflow'
+
 const GLB_MAP: Record<string, string> = {
   straight: '/models/straight.glb',
   left_turn: '/models/turn_left.glb',
@@ -69,6 +125,15 @@ export class IntersectionVehicleAnimator {
   private intersection: Intersection | null = null
   // ---- 仿真驱动模式：四方向进场车队 ----
   private simCars = new Map<Dir, SimCar[]>(DIRS.map((d) => [d, []]))
+  private liveCars = new Map<string, LiveCarInstance>()
+  private liveCarInstanceLayers: LiveCarInstanceLayer[] = []
+  private liveCarMatrix = new THREE.Matrix4()
+  private visualMode: VisualMode | null = null
+  private lastLiveVehicles: SimVehicleState[] | null = null
+  private lastLiveRoadnet: SimRoadnetResponse | null = null
+  private lastLiveIntersectionId = ''
+  private lastLiveFrameAt = 0
+  private liveFrameIntervalEstimateMs: number | null = null
 
   constructor(private intersectionId: string, private roadLength = 90) {}
 
@@ -81,8 +146,9 @@ export class IntersectionVehicleAnimator {
           loader.load(url, (gltf) => {
             const clip = gltf.animations[0]
             if (!clip) { console.warn('[Vehicle]', name, 'no animation'); resolve([name, null]); return }
+            const runtimeClip = removeBakedVehicleRootMotion(gltf.scene, clip)
             gltf.scene.scale.setScalar(CAR_SCALE)
-            resolve([name, { scene: gltf.scene, clip }])
+            resolve([name, { scene: gltf.scene, clip: runtimeClip }])
           }, undefined, () => resolve([name, null]))
         })
       }),
@@ -90,13 +156,185 @@ export class IntersectionVehicleAnimator {
     for (const [name, data] of entries) {
       if (data) { this.templates.set(name, data); console.log('[Vehicle]', name, clipToName(data.clip), (data.clip.duration*30).toFixed(0)+'f') }
     }
+    this.initializeLiveCarInstances()
     this.loaded = true
+  }
+
+  private initializeLiveCarInstances(): void {
+    const template = this.templates.get('straight')
+    if (!template || this.liveCarInstanceLayers.length > 0) return
+
+    template.scene.updateMatrixWorld(true)
+    template.scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return
+      const mesh = new THREE.InstancedMesh(object.geometry, object.material, MAX_INSTANCED_LIVE_CARS)
+      mesh.count = 0
+      mesh.frustumCulled = false
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      this.liveCarInstanceLayers.push({ mesh, modelMatrix: object.matrixWorld.clone() })
+      this.group.add(mesh)
+    })
   }
 
   setIntersection(it: Intersection): void { this.intersection = it }
 
+  private activateMode(mode: VisualMode): void {
+    if (this.visualMode === mode) return
+    if (this.visualMode === 'mock') this.clearMockCars()
+    if (this.visualMode === 'aggregate') this.clearSimCars()
+    if (this.visualMode === 'cityflow') this.clearLiveCars()
+    this.visualMode = mode
+  }
+
+  private clearMockCars(): void {
+    for (const inst of this.instances.values()) this.group.remove(inst.group)
+    this.instances.clear()
+  }
+
+  private clearLiveCars(): void {
+    for (const inst of this.liveCars.values()) this.group.remove(inst.group)
+    this.liveCars.clear()
+    for (const layer of this.liveCarInstanceLayers) layer.mesh.count = 0
+    this.lastLiveVehicles = null
+    this.lastLiveRoadnet = null
+    this.lastLiveIntersectionId = ''
+    this.lastLiveFrameAt = 0
+    this.liveFrameIntervalEstimateMs = null
+  }
+
+  private makeLiveCar(
+    position: THREE.Vector3,
+    rotationY: number,
+    clip: LiveVehicleClip,
+    now: number,
+  ): LiveCarInstance {
+    const group = new THREE.Group()
+    const requestedTemplate = this.templates.get(clip)
+    group.userData.vehicleClip = requestedTemplate ? clip : 'straight'
+    group.position.copy(position)
+    group.rotation.y = rotationY
+    this.group.add(group)
+    return {
+      group,
+      clip: requestedTemplate ? clip : 'straight',
+      from: position.clone(),
+      to: position.clone(),
+      fromRotation: rotationY,
+      toRotation: rotationY,
+      startAt: now,
+      lerpMs: 200,
+    }
+  }
+
+
+  private setLiveClip(instance: LiveCarInstance, clip: LiveVehicleClip): void {
+    if (instance.clip === clip) return
+    const template = this.templates.get(clip)
+    if (!template) return
+    instance.clip = clip
+    instance.group.userData.vehicleClip = clip
+  }
+
+  private updateLiveCarInstances(): void {
+    let instanceIndex = 0
+    for (const instance of this.liveCars.values()) {
+      if (instanceIndex >= MAX_INSTANCED_LIVE_CARS) break
+      instance.group.updateMatrix()
+      for (const layer of this.liveCarInstanceLayers) {
+        this.liveCarMatrix.multiplyMatrices(instance.group.matrix, layer.modelMatrix)
+        layer.mesh.setMatrixAt(instanceIndex, this.liveCarMatrix)
+      }
+      instanceIndex += 1
+    }
+
+    for (const layer of this.liveCarInstanceLayers) {
+      layer.mesh.count = instanceIndex
+      if (instanceIndex > 0) layer.mesh.instanceMatrix.needsUpdate = true
+    }
+  }
+
+  updateFromCityFlow(
+    vehicles: SimVehicleState[],
+    roadnet: SimRoadnetResponse,
+    intersectionId: string,
+    now = performance.now(),
+  ): void {
+    if (!this.loaded) return
+    this.activateMode('cityflow')
+
+    const hasNewFrame = vehicles !== this.lastLiveVehicles
+      || roadnet !== this.lastLiveRoadnet
+      || intersectionId !== this.lastLiveIntersectionId
+
+    if (hasNewFrame) {
+      if (this.lastLiveFrameAt > 0) {
+        const observedInterval = now - this.lastLiveFrameAt
+        if (observedInterval <= MAX_TRACKED_LIVE_FRAME_GAP_MS) {
+          const normalizedInterval = THREE.MathUtils.clamp(observedInterval, 120, 1200)
+          this.liveFrameIntervalEstimateMs = this.liveFrameIntervalEstimateMs === null
+            ? normalizedInterval
+            : THREE.MathUtils.lerp(this.liveFrameIntervalEstimateMs, normalizedInterval, 0.35)
+        }
+      }
+      const lerpMs = THREE.MathUtils.clamp(
+        (this.liveFrameIntervalEstimateMs ?? DEFAULT_LIVE_FRAME_INTERVAL_MS) * LIVE_INTERPOLATION_HEADROOM,
+        160,
+        1600,
+      )
+      const poses = createLocalVehiclePoses(vehicles, roadnet, intersectionId)
+      const activeIds = new Set<string>()
+
+      for (const pose of poses) {
+        activeIds.add(pose.id)
+        let instance = this.liveCars.get(pose.id)
+        if (!instance) {
+          const clip: LiveVehicleClip = pose.speed < 0.1 && !pose.onLaneLink ? 'stop' : pose.movement
+          instance = this.makeLiveCar(pose.position, pose.rotationY, clip, now)
+          this.liveCars.set(pose.id, instance)
+        } else {
+          const clip: LiveVehicleClip = pose.speed < 0.1 && !pose.onLaneLink ? 'stop' : pose.movement
+          this.setLiveClip(instance, clip)
+          const jumpDistance = instance.group.position.distanceTo(pose.position)
+          instance.from.copy(jumpDistance > 80 ? pose.position : instance.group.position)
+          instance.to.copy(pose.position)
+          instance.fromRotation = instance.group.rotation.y
+          instance.toRotation = pose.rotationY
+          instance.startAt = now
+          instance.lerpMs = lerpMs
+          if (jumpDistance > 80) instance.group.position.copy(pose.position)
+        }
+      }
+
+      for (const [id, instance] of this.liveCars) {
+        // CityFlow frames are complete snapshots. Keeping a missing vehicle at
+        // its last pose leaves a frozen car in the road or intersection.
+        if (!activeIds.has(id)) {
+          this.group.remove(instance.group)
+          this.liveCars.delete(id)
+        }
+      }
+
+      this.lastLiveVehicles = vehicles
+      this.lastLiveRoadnet = roadnet
+      this.lastLiveIntersectionId = intersectionId
+      this.lastLiveFrameAt = now
+    }
+
+    for (const instance of this.liveCars.values()) {
+      const progress = THREE.MathUtils.clamp((now - instance.startAt) / instance.lerpMs, 0, 1)
+      instance.group.position.lerpVectors(instance.from, instance.to, progress)
+      const rotationDelta = Math.atan2(
+        Math.sin(instance.toRotation - instance.fromRotation),
+        Math.cos(instance.toRotation - instance.fromRotation),
+      )
+      instance.group.rotation.y = instance.fromRotation + rotationDelta * progress
+    }
+    this.updateLiveCarInstances()
+  }
+
   update(vehicles: Vehicle[], roads: Road[]): void {
     if (!this.loaded) return
+    this.activateMode('mock')
     const relevant = new Map<string, Road>()
     for (const r of roads) {
       if (r.from === this.intersectionId || r.to === this.intersectionId) relevant.set(r.id, r)
@@ -207,6 +445,7 @@ export class IntersectionVehicleAnimator {
   /** 用仿真派生状态更新场景（每帧调用，deltaMs 为帧间隔） */
   updateFromSim(state: IntersectionSimState, deltaMs: number): void {
     if (!this.loaded) return
+    this.activateMode('aggregate')
     const dt = Math.min(0.05, deltaMs / 1000) // 限幅，避免卡顿后跳变
     const counts: Record<Dir, number> = {
       north: Math.min(MAX_QUEUE, state.northCount),
@@ -341,9 +580,10 @@ export class IntersectionVehicleAnimator {
   }
 
   dispose(): void {
-    for (const inst of this.instances.values()) this.group.remove(inst.group)
-    this.instances.clear()
+    this.clearMockCars()
     this.clearSimCars()
+    this.clearLiveCars()
+    this.visualMode = null
   }
 }
 

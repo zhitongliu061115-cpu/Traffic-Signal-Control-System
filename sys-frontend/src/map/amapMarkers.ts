@@ -123,6 +123,7 @@ export function createTLMarkers(
   injectStyles()
   ensurePopup()
   const markers: TLMarker[] = []
+  const markerLookup = new Map<string, TLMarker>()
   let hoveredId: string | null = null
   let mouseX = 0, mouseY = 0
 
@@ -169,24 +170,31 @@ export function createTLMarkers(
     marker.on('mouseout', () => { hoveredId = null; hidePopup() })
     marker.on('click', () => onSelect(it.id))
 
-    markers.push({
+    let lastIconState = `${it.currentPhase}|${it.deviceStatus}`
+    const tlMarker: TLMarker = {
       id: it.id, marker,
       update: (updatedIt: Intersection) => {
         latestData.set(updatedIt.id, updatedIt)
-        marker.setContent(buildIcon(updatedIt))
+        const iconState = `${updatedIt.currentPhase}|${updatedIt.deviceStatus}`
+        if (iconState !== lastIconState) {
+          lastIconState = iconState
+          marker.setContent(buildIcon(updatedIt))
+        }
         if (hoveredId === updatedIt.id && popupVisible) {
           showPopup(updatedIt)
         }
       },
       remove: () => { marker.setMap(null); latestData.delete(it.id) },
-    })
+    }
+    markers.push(tlMarker)
+    markerLookup.set(it.id, tlMarker)
   }
 
   return {
     markers,
     updateAll(its: Intersection[]) {
       for (const it of its) {
-        const m = markers.find((mk) => mk.id === it.id)
+        const m = markerLookup.get(it.id)
         if (m) m.update(it)
       }
     },

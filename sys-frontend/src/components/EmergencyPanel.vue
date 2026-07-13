@@ -17,6 +17,7 @@ const {
   activeGreenWaveIndex,
   intersections,
   vehicles,
+  simulationVehicles,
   compareMetrics,
   latestEvEvents,
   latestEvStatus,
@@ -60,7 +61,8 @@ const canDispatch = computed(
 const emergencyVehOnRoad = computed(() => {
   const cfId = emergencyCfVehicleId.value
   if (!cfId) return undefined
-  return vehicles.value.find((v) => v.id === cfId)
+  return simulationVehicles.value.find((v) => v.id === cfId)
+    ?? vehicles.value.find((v) => v.id === cfId)
 })
 
 const vehicleTypeLabel = computed(() => {

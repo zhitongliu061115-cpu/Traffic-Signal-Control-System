@@ -6,7 +6,7 @@
 // 预留：GLTFLoader 加载真实路口模型 modelUrl = `/models/{id}.glb`
 //       接口已就绪，放入 .glb 即可自动加载（见 loadModel 注释）
 // ================================================================
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import {
   Scene,
@@ -30,24 +30,33 @@ import {
   SphereGeometry,
   MeshStandardMaterial,
   GridHelper,
+  BufferGeometry,
+  Line,
+  LineBasicMaterial,
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { useTrafficStore } from '@/stores/traffic'
 import { IntersectionVehicleAnimator, type IntersectionSimState } from '@/three/IntersectionVehicleAnimator'
+import { createLocalRoadCenterlines } from '@/three/intersection/IntersectionGeometry'
+import { createLocalLaneLinkPaths, createLocalRoadSurfaceSegments } from '@/three/intersection/RoadSurfaceGeometry'
 import { PHASE_LABELS, DEVICE_STATUS_LABELS } from '@/types/traffic'
+import { signalRemainingSec, toSignalPhase } from '@/simulation/signalState'
 import type { SignalPhase, SimVehicleState, SimSignalState, SimRoadnetResponse, Intersection } from '@/types/traffic'
 
 const props = defineProps<{ intersectionId: string | null }>()
 const emit = defineEmits<{ close: [] }>()
+const TARGET_RENDER_INTERVAL_MS = 1000 / 45
 
 const store = useTrafficStore()
-const { intersections, roads, vehicles, simulationVehicles, simulationSignals, simulationSimTime, simRoadnet, simulationStatus } = storeToRefs(store)
+const { intersections, roads, vehicles, simulationVehicles, simulationSignals, simRoadnet, simulationStatus, simulationErrorMessage } = storeToRefs(store)
 
 const viewerBox = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const modelFound = ref(false)
+const showRoadnetDebug = ref(true)
+const showRoadnetSurface = ref(true)
 
 const intersection = computed(() =>
   intersections.value.find((it) => it.id === props.intersectionId) ?? null,
@@ -56,13 +65,6 @@ const intersection = computed(() =>
 // ================================================================
 // 从仿真帧派生选中路口的四方向车辆数 + 相位（Plan B 数据源）
 // ================================================================
-const SIGNAL_PHASE_MAP: Record<string, SignalPhase> = {
-  ETWT: 'eastwest_straight', ew_straight: 'eastwest_straight',
-  NTST: 'northsouth_straight', ns_straight: 'northsouth_straight',
-  ELWL: 'eastwest_left', ew_left: 'eastwest_left',
-  NLSL: 'northsouth_left', ns_left: 'northsouth_left',
-  all_red: 'all_red',
-}
 
 /** 上海路口 → CityFlow 转置键 "R_C"（R=col, C=row） */
 function simKeyOf(it: Intersection): string {
@@ -74,7 +76,6 @@ function deriveIntersectionState(
   simVehicles: SimVehicleState[],
   simSignals: SimSignalState[],
   roadnet: SimRoadnetResponse | null,
-  simTime: number,
 ): IntersectionSimState | null {
   if (!shIt || !roadnet) return null
   const key = simKeyOf(shIt)
@@ -109,8 +110,8 @@ function deriveIntersectionState(
 
   // 当前相位
   const sig = simSignals.find((s) => s.intersectionId === cfId)
-  const currentPhase = sig ? (SIGNAL_PHASE_MAP[sig.phaseCode] ?? 'eastwest_straight') : 'eastwest_straight'
-  const greenRemain = 10 - (simTime % 10)
+  const currentPhase = toSignalPhase(sig?.phaseCode)
+  const greenRemain = signalRemainingSec(sig)
 
   return { northCount: north, southCount: south, eastCount: east, westCount: west, currentPhase, greenRemain }
 }
@@ -123,9 +124,21 @@ const simState = computed<IntersectionSimState | null>(() => {
     simulationVehicles.value as SimVehicleState[],
     simulationSignals.value as SimSignalState[],
     simRoadnet.value as SimRoadnetResponse | null,
-    simulationSimTime.value,
   )
 })
+
+const displayedRemainingSec = computed<number | null>(() => {
+  if (simulationStatus.value === 'running') return simState.value?.greenRemain ?? null
+  return intersection.value?.greenRemain ?? null
+})
+
+const dataModeLabel = computed(() => {
+  if (simulationStatus.value === 'running') {
+    return simulationErrorMessage.value ? '仿真数据延迟' : 'CityFlow 逐车映射'
+  }
+  return '演示数据'
+})
+
 
 // ---- Three.js 局部实例 ----
 let scene: Scene | null = null
@@ -135,6 +148,7 @@ let controls: OrbitControls | null = null
 let rafId: number | null = null
 let resizeObserver: ResizeObserver | null = null
 let lastFrameTime = 0
+let lastRenderTime = 0
 const tlSpriteUpdaters: Array<() => void> = []
 let vehicleAnimator: IntersectionVehicleAnimator | null = null
 
@@ -318,16 +332,134 @@ function loadModel(id: string): void {
   // )
   void id
   buildFallback()
-  loading.value = false
 }
 
 let rootGroup: Group | null = null
+let roadnetDebugGroup: Group | null = null
+let roadnetSurfaceGroup: Group | null = null
+
+function clearRoadnetDebugGeometry(): void {
+  if (!roadnetDebugGroup) return
+  roadnetDebugGroup.removeFromParent()
+  roadnetDebugGroup.traverse((object) => {
+    const line = object as Line
+    line.geometry?.dispose()
+    if (Array.isArray(line.material)) line.material.forEach((material) => material.dispose())
+    else line.material?.dispose()
+  })
+  roadnetDebugGroup = null
+}
+
+function updateRoadnetDebugGeometry(): void {
+  clearRoadnetDebugGeometry()
+  if (!scene || !showRoadnetDebug.value || !intersection.value || !simRoadnet.value) return
+
+  const intersectionId = `intersection_${simKeyOf(intersection.value)}`
+  const centerlines = createLocalRoadCenterlines(simRoadnet.value, intersectionId)
+  if (centerlines.length === 0) return
+
+  const group = new Group()
+  group.name = 'roadnet-debug-centerlines'
+  for (const centerline of centerlines) {
+    if (centerline.points.length < 2) continue
+    const geometry = new BufferGeometry().setFromPoints(centerline.points)
+    const material = new LineBasicMaterial({
+      color: 0x00e5ff,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+    })
+    const line = new Line(geometry, material)
+    line.name = `roadnet-${centerline.id}`
+    line.renderOrder = 20
+    group.add(line)
+  }
+
+  if (group.children.length === 0) return
+  roadnetDebugGroup = group
+  scene.add(group)
+}
+
+function toggleRoadnetDebug(): void {
+  showRoadnetDebug.value = !showRoadnetDebug.value
+}
+
+
+function clearRoadnetSurfaceGeometry(): void {
+  if (!roadnetSurfaceGroup) return
+  roadnetSurfaceGroup.removeFromParent()
+  roadnetSurfaceGroup.traverse((object) => {
+    const drawable = object as Mesh | Line
+    drawable.geometry?.dispose()
+    if (Array.isArray(drawable.material)) drawable.material.forEach((material) => material.dispose())
+    else drawable.material?.dispose()
+  })
+  roadnetSurfaceGroup = null
+}
+
+function updateRoadnetSurfaceGeometry(): void {
+  clearRoadnetSurfaceGeometry()
+  if (!scene || !showRoadnetSurface.value || !intersection.value || !simRoadnet.value) return
+
+  const intersectionId = `intersection_${simKeyOf(intersection.value)}`
+  const segments = createLocalRoadSurfaceSegments(simRoadnet.value, intersectionId, 120, 0.7)
+  const laneLinks = createLocalLaneLinkPaths(simRoadnet.value, intersectionId, 0.9)
+  if (segments.length === 0 && laneLinks.length === 0) return
+
+  const group = new Group()
+  group.name = 'roadnet-surface-overlay'
+  for (const segment of segments) {
+    const material = new MeshStandardMaterial({
+      color: segment.usesRoadnetLaneWidths ? 0x0284c7 : 0xd97706,
+      transparent: true,
+      opacity: 0.32,
+      roughness: 0.85,
+      metalness: 0,
+      depthWrite: false,
+    })
+    const mesh = new Mesh(new BoxGeometry(segment.width, 0.18, segment.length), material)
+    mesh.name = `roadnet-surface-${segment.roadId}`
+    mesh.position.copy(segment.center)
+    mesh.rotation.y = segment.rotationY
+    mesh.renderOrder = 10
+    group.add(mesh)
+  }
+
+  const laneLinkColors: Record<string, number> = {
+    go_straight: 0x22d3ee,
+    turn_left: 0xf59e0b,
+    turn_right: 0xa78bfa,
+  }
+  for (const laneLink of laneLinks) {
+    const geometry = new BufferGeometry().setFromPoints(laneLink.points)
+    const material = new LineBasicMaterial({
+      color: laneLinkColors[laneLink.type] ?? 0xffffff,
+      transparent: true,
+      opacity: 0.85,
+      depthTest: false,
+    })
+    const line = new Line(geometry, material)
+    line.name = `lane-link-${laneLink.roadLinkIndex}-${laneLink.startLaneIndex}-${laneLink.endLaneIndex}`
+    line.renderOrder = 21
+    group.add(line)
+  }
+
+  roadnetSurfaceGroup = group
+  scene.add(group)
+}
+
+function toggleRoadnetSurface(): void {
+  showRoadnetSurface.value = !showRoadnetSurface.value
+}
+
+watch([intersection, simRoadnet, showRoadnetDebug], updateRoadnetDebugGeometry)
+watch([intersection, simRoadnet, showRoadnetSurface], updateRoadnetSurfaceGeometry)
 
 function buildFallback(): void {
   if (!scene) return
   rootGroup = new Group()
   scene.add(rootGroup)
-  modelFound.value = true
+  modelFound.value = false
 
   // 加载用户编辑的场景 GLB
   const sceneLoader = new GLTFLoader()
@@ -336,6 +468,7 @@ function buildFallback(): void {
     (gltf) => {
       gltf.scene.position.set(0, 0, 0)
       rootGroup!.add(gltf.scene)
+      modelFound.value = true
       console.log("[3D] scene.glb loaded")
       // ---- remove ALL baked-in lane dashes from scene.glb ----
       const toRemove: any[] = []
@@ -373,12 +506,19 @@ function buildFallback(): void {
         }
       })
 
+      let lastTLSpriteState = ''
       function updateTLSprite() {
         const it = intersection.value
         if (!it) return
         const isEW = it.currentPhase.startsWith('eastwest')
-        const rem = Math.round(it.greenRemain)
+        const remaining = simulationStatus.value === 'running'
+          ? simState.value?.greenRemain ?? null
+          : it.greenRemain
         const allRed = it.currentPhase === 'all_red' || it.deviceStatus !== 'online'
+        const roundedRemaining = remaining === null ? null : Math.round(remaining)
+        const spriteState = `${it.currentPhase}|${it.deviceStatus}|${roundedRemaining ?? 'unknown'}`
+        if (spriteState === lastTLSpriteState) return
+        lastTLSpriteState = spriteState
         // SW/SE=东西向, NW/NE=南北向
         const ewSet = new Set([0, 1])
         for (const s of tlSprites) {
@@ -393,7 +533,7 @@ function buildFallback(): void {
           ctx.fillStyle = '#fff'
           ctx.font = 'bold 16px Rajdhani, sans-serif'
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-          ctx.fillText(String(rem), 32, 22)
+          if (roundedRemaining !== null) ctx.fillText(String(roundedRemaining), 32, 22)
           ;(s.material as SpriteMaterial).map!.needsUpdate = true
         }
       }
@@ -543,7 +683,12 @@ function buildFallback(): void {
       // ---- end arrows ----
     },
     undefined,
-    (err) => { console.error('[3D] scene.glb load error:', err); modelFound!.value = false },
+    (err) => {
+      console.error('[3D] scene.glb load error:', err)
+      modelFound.value = false
+      rootGroup?.add(buildProceduralIntersection())
+      loading.value = false
+    },
   )
 }
 
@@ -584,11 +729,11 @@ onMounted(async () => {
   scene.fog = new Fog('#020817', 300, 700)
 
   camera = new PerspectiveCamera(55, w / h, 0.5, 3000)
-  camera.position.set(120, 130, 150)
+  camera.position.set(0, 190, 210)
   camera.lookAt(0, 0, 0)
 
-  renderer = new WebGLRenderer({ antialias: true })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  renderer = new WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
+  renderer.setPixelRatio(1)
   renderer.setSize(w, h)
   viewerBox.value.appendChild(renderer.domElement)
 
@@ -616,25 +761,37 @@ onMounted(async () => {
   // 加载模型（当前走占位）
   if (props.intersectionId) loadModel(props.intersectionId)
   else { buildFallback(); loading.value = false }
+  updateRoadnetDebugGeometry()
+  updateRoadnetSurfaceGeometry()
 
   // 渲染循环
   const loop = (now: number) => {
+    rafId = requestAnimationFrame(loop)
+    if (now - lastRenderTime < TARGET_RENDER_INTERVAL_MS) return
+    lastRenderTime = now
     const deltaMs = lastFrameTime ? now - lastFrameTime : 16
     lastFrameTime = now
     controls?.update()
     tlSpriteUpdaters.forEach((fn) => fn())
     if (vehicleAnimator && intersection.value) {
       vehicleAnimator.setIntersection(intersection.value)
-      if (simState.value) {
-        // 仿真运行中：按四方向车辆数 + 相位驱动车流
+      if (simulationStatus.value === 'running' && simRoadnet.value) {
+        const cityFlowIntersectionId = `intersection_${simKeyOf(intersection.value)}`
+        vehicleAnimator.updateFromCityFlow(
+          simulationVehicles.value,
+          simRoadnet.value,
+          cityFlowIntersectionId,
+          now,
+        )
+      } else if (simState.value) {
+        // roadnet 尚未就绪时保留按方向数量驱动的降级模式
         vehicleAnimator.updateFromSim(simState.value, deltaMs)
       } else {
-        // 降级：mock 车辆数据
+        // 非实时仿真：使用演示车辆数据
         vehicleAnimator.update(vehicles.value, roads.value)
       }
     }
     if (renderer && scene && camera) renderer.render(scene, camera)
-    rafId = requestAnimationFrame(loop)
   }
   rafId = requestAnimationFrame(loop)
 
@@ -653,6 +810,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown)
   if (rafId !== null) cancelAnimationFrame(rafId)
+  clearRoadnetDebugGeometry()
+  clearRoadnetSurfaceGeometry()
   vehicleAnimator?.dispose()
   resizeObserver?.disconnect()
   controls?.dispose()
@@ -685,7 +844,8 @@ function onOverlayClick(ev: MouseEvent): void {
 </script>
 
 <template>
-  <div class="i3d-overlay" @click="onOverlayClick">
+  <Teleport to="body">
+    <div class="i3d-overlay" @click="onOverlayClick">
     <div class="i3d-modal">
       <!-- 标题栏 -->
       <div class="i3d-header">
@@ -693,17 +853,33 @@ function onOverlayClick(ev: MouseEvent): void {
           <span class="i3d-header__mark" />
           <div>
             <div class="i3d-header__title">
-              {{ intersection?.name ?? '路口' }} · 三维实景
+              {{ intersection?.name ?? '路口' }} · 三维全景
             </div>
             <div class="i3d-header__sub">
-              {{ modelFound ? 'GLTF 真实路口模型' : '程序化实景占位（放入 .glb 自动加载）' }}
+              {{ modelFound ? '通用 GLTF 路口场景' : '程序化通用路口场景' }}
             </div>
           </div>
+          <span class="i3d-mode" :class="{ 'i3d-mode--warning': simulationErrorMessage }">{{ dataModeLabel }}</span>
         </div>
+        <div class="i3d-header__actions">
+<button
+  class="i3d-export"
+  :class="{ 'i3d-export--inactive': !showRoadnetDebug }"
+  title="叠加显示 CityFlow 路网中心线"
+  @click="toggleRoadnetDebug"
+>🧭 路网线</button>
+<button
+  class="i3d-export"
+  :class="{ 'i3d-export--inactive': !showRoadnetSurface }"
+  title="叠加显示 CityFlow 真实车道宽度与 laneLink 轨迹"
+  @click="toggleRoadnetSurface"
+>&#128739; 路网路面</button>
+<button class="i3d-export" @click="exportToGLB">📦 导出 GLB</button>
 <button class="i3d-close" @click="handleClose">✕</button>
       </div>
 
       <!-- 三维视口 -->
+      </div>
       <div class="i3d-body">
         <div ref="viewerBox" class="i3d-canvas" />
         <div v-if="loading" class="i3d-loading">加载三维实景中…</div>
@@ -712,7 +888,7 @@ function onOverlayClick(ev: MouseEvent): void {
         <div v-if="intersection" class="i3d-info">
           <span class="i3d-info__item">相位 <b class="text-cyan">{{ PHASE_LABELS[intersection.currentPhase] }}</b></span>
           <span class="i3d-info__sep">|</span>
-          <span class="i3d-info__item">绿灯 <b class="text-emerald">{{ Math.round(intersection.greenRemain) }}s</b></span>
+          <span class="i3d-info__item">相位剩余 <b class="text-emerald">{{ displayedRemainingSec === null ? '—' : `${Math.round(displayedRemainingSec)}s` }}</b></span>
           <span class="i3d-info__sep">|</span>
           <span class="i3d-info__item">排队 <b class="text-amber">{{ intersection.queueLength }}辆</b></span>
           <span class="i3d-info__sep">|</span>
@@ -722,7 +898,8 @@ function onOverlayClick(ev: MouseEvent): void {
         <div class="i3d-hint">🖱 拖拽旋转 · 滚轮缩放 · 点击空白关闭</div>
       </div>
     </div>
-  </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -733,8 +910,7 @@ function onOverlayClick(ev: MouseEvent): void {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(2, 8, 23, 0.82);
-  backdrop-filter: blur(6px);
+  background: rgba(2, 8, 23, 0.96);
   animation: i3d-fade 0.2s ease;
 }
 
@@ -769,6 +945,13 @@ function onOverlayClick(ev: MouseEvent): void {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+}
+
+.i3d-header__actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
 }
 
 .i3d-header__mark {
@@ -807,6 +990,26 @@ function onOverlayClick(ev: MouseEvent): void {
 .i3d-export:hover {
   background: rgba(34, 211, 160, 0.12);
   border-color: rgba(34, 211, 160, 0.7);
+}
+
+.i3d-export--inactive {
+  color: #64748b;
+  border-color: rgba(100, 116, 139, 0.35);
+  opacity: 0.72;
+}
+
+.i3d-mode {
+  margin-left: 12px;
+  padding: 3px 8px;
+  border: 1px solid rgba(34, 211, 160, 0.45);
+  border-radius: 999px;
+  color: #22d3a0;
+  font-size: 11px;
+}
+
+.i3d-mode--warning {
+  border-color: rgba(255, 184, 0, 0.5);
+  color: #ffb800;
 }
 
 .i3d-close {
@@ -883,5 +1086,84 @@ function onOverlayClick(ev: MouseEvent): void {
   background: rgba(4, 21, 39, 0.7);
   border: 1px solid rgba(0, 212, 255, 0.18);
   pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .i3d-modal {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+  }
+
+  .i3d-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .i3d-header__mark,
+  .i3d-header__sub {
+    display: none;
+  }
+
+  .i3d-header__left {
+    gap: 6px;
+  }
+
+  .i3d-header__title {
+    overflow: hidden;
+    font-size: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .i3d-mode {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+
+  .i3d-header__actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) 32px;
+    gap: 6px;
+  }
+
+  .i3d-export {
+    width: 100%;
+    height: 32px;
+    margin-right: 0;
+    overflow: hidden;
+    padding: 0 4px;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .i3d-close {
+    width: 32px;
+    height: 32px;
+  }
+
+  .i3d-info {
+    top: 8px;
+    right: 8px;
+    left: 8px;
+    flex-wrap: wrap;
+    padding: 4px 6px;
+    font-size: 10px;
+    white-space: normal;
+  }
+
+  .i3d-hint {
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 </style>
