@@ -2,7 +2,7 @@ param(
     [string]$SumoHome = 'D:\Download\SUMO',
     [string]$PythonExecutable = 'python.exe',
     [string]$ListenHost = '127.0.0.1',
-    [int]$Port = 9000
+    [int]$Port = 9001
 )
 
 $ErrorActionPreference = 'Stop'
