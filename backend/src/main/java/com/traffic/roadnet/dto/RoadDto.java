@@ -7,6 +7,7 @@ public record RoadDto(
         String from,
         String to,
         List<PointDto> points,
-        int laneCount
+        int laneCount,
+        List<LaneDto> lanes
 ) {
 }

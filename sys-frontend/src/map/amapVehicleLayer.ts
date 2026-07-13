@@ -201,25 +201,29 @@ export function createVehicleLayer(
       let vi = 0
 
       for (const v of vehicles) {
-        const mapping = roadMapping.get(v.roadId)
-        if (!mapping) continue
-        // 计算 CityFlow 直路上的 progress
-        let prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
-        // 如果 CityFlow 道路与上海道路方向相反，翻转 progress
-        if (mapping.flipped) prog = 1 - prog
-        // 映射到上海弯曲路径
-        const [lng, lat] = interpolateLngLat(
-          mapping.shanghaiRoad.path!,
-          mapping.shanghaiSegmentLengths,
-          mapping.shanghaiTotalLength,
-          prog,
-        )
+        let coordinate: [number, number] | null = null
+        if (Number.isFinite(v.lng) && Number.isFinite(v.lat)) {
+          coordinate = [v.lng!, v.lat!]
+        } else {
+          const mapping = roadMapping.get(v.roadId)
+          if (!mapping) continue
+          let prog = progressOnPolyline(v.x, v.y, mapping.cityFlowPoints, mapping.totalLength)
+          if (mapping.flipped) prog = 1 - prog
+          coordinate = interpolateLngLat(
+            mapping.shanghaiRoad.path!,
+            mapping.shanghaiSegmentLengths,
+            mapping.shanghaiTotalLength,
+            prog,
+          )
+        }
+        const [lng, lat] = coordinate
         if (vi < pool.length) {
           pool[vi]!.setCenter([lng, lat] as unknown as AMap.LngLat)
-          const fillColor = evIds?.has(v.id) ? EMERGENCY_FILL : (v.speed < 0.5 ? STOPPED_FILL : NORMAL_FILL)
+          const isEmergency = evIds?.has(v.id) ?? false
+          const fillColor = isEmergency ? EMERGENCY_FILL : (v.speed < 0.5 ? STOPPED_FILL : NORMAL_FILL)
           if (lastFillColors[vi] !== fillColor) {
             lastFillColors[vi] = fillColor
-            pool[vi]!.setOptions({ fillColor })
+            pool[vi]!.setOptions({ fillColor, radius: isEmergency ? MARKER_RADIUS * 1.6 : MARKER_RADIUS })
           }
           if (vi >= visibleCount) pool[vi]!.show()
           vi++

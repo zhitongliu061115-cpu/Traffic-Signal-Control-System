@@ -1,0 +1,16 @@
+{
+  "source": "traffic-r",
+  "simTime": 1.0,
+  "decisions": [
+    {
+      "intersectionId": "intersection_1_1",
+      "controllerType": "traffic-r",
+      "phaseIndex": 2,
+      "phaseCode": "NTST",
+      "durationSec": 10,
+      "confidence": 0.8,
+      "reason": "golden fixture",
+      "metadata": {"source": "traffic-r"}
+    }
+  ]
+}

@@ -35,14 +35,17 @@ TOKENIZER = None
 MODEL_LOCK = Lock()
 MODEL_PATH = ""
 MODEL_MODE = "not-loaded"
-SYSTEM_PROMPT = "You are an expert in traffic signal control."
+SYSTEM_PROMPT = (
+    "You are an expert in traffic management. You can use your knowledge of traffic commonsense "
+    "to solve this traffic signal control tasks."
+)
 PROMPT_MODE = "official-commonsense"
-# LLMTSCS/run_open_LLM.py defaults to 1024 generated tokens for finetuned LLM
-# inference. The official OpenAI commonsense controller uses temperature 0.0.
+# Match the open-model evaluation settings used by the official LLMTSCS trainer.
 MAX_NEW_TOKENS = 1024
-TEMPERATURE = 0.0
+TEMPERATURE = 0.1
+TOP_K = 50
 TOP_P = 1.0
-DO_SAMPLE = False
+DO_SAMPLE = True
 LOG_DIR = Path("logs")
 
 
@@ -114,6 +117,7 @@ def health():
         "promptMode": PROMPT_MODE,
         "maxNewTokens": MAX_NEW_TOKENS,
         "temperature": TEMPERATURE,
+        "topK": TOP_K,
         "topP": TOP_P,
         "doSample": DO_SAMPLE,
     }
@@ -186,7 +190,7 @@ def predict_batch(req: BatchPredictRequest):
             intersectionId=intersection.intersectionId,
             phaseIndex=PHASE_CODE_TO_INDEX[phase_code],
             phaseCode=phase_code,
-            durationSec=40,
+            durationSec=30,
             confidence=0.85,
             reason="Traffic-R1 generated a valid phase from model output",
             parsedFromModel=True,
@@ -299,27 +303,21 @@ def build_official_commonsense_messages(req: BatchPredictRequest, intersection: 
         {
             "role": "user",
             "content": (
-                "A crossroad connects two roads: the north-south and east-west. The traffic light is located at "
-                "the intersection of the two roads. The north-south road is divided into two sections by the intersection: "
-                "the north and south. Similarly, the east-west road is divided into the east and west. Each section "
-                "has two lanes: a through and a left-turn lane. Each lane is further divided into three segments. "
-                "Segment 1 is the closest to the intersection. Segment 2 is in the middle. Segment 3 is the farthest. "
-                "In a lane, there may be early queued vehicles and approaching vehicles traveling in different segments. "
-                "Early queued vehicles have arrived at the intersection and await passage permission. Approaching "
-                "vehicles will arrive at the intersection in the future.\n\n"
+                "A traffic light regulates a four-section intersection with northern, southern, eastern, and western "
+                "sections, each containing two lanes: one for through traffic and one for left-turns. Each lane is "
+                "further divided into three segments. Segment 1 is the closest to the intersection. Segment 2 is in the "
+                "middle. Segment 3 is the farthest. In a lane, there may be early queued vehicles and approaching "
+                "vehicles traveling in different segments. Early queued vehicles have arrived at the intersection and "
+                "await passage permission. Approaching vehicles will arrive at the intersection in the future.\n\n"
                 "The traffic light has 4 signal phases. Each signal relieves vehicles' flow in the group of two "
                 "specific lanes. The state of the intersection is listed below. It describes:\n"
-                "- The group of lanes relieving vehicles' flow under each traffic light phase.\n"
+                "- The group of lanes relieving vehicles' flow under each signal phase.\n"
                 "- The number of early queued vehicles of the allowed lanes of each signal.\n"
                 "- The number of approaching vehicles in different segments of the allowed lanes of each signal.\n\n"
                 + state_txt +
                 "Please answer:\n"
                 "Which is the most effective traffic signal that will most significantly improve the traffic "
-                "condition during the next phase, which relieves vehicles' flow of the allowed lanes of the signal?\n\n"
-                "Note:\n"
-                "The traffic congestion is primarily dictated by the early queued vehicles, with the MOST significant "
-                "impact. You MUST pay the MOST attention to lanes with long queue lengths. It is NOT URGENT to "
-                "consider vehicles in distant segments since they are unlikely to reach the intersection soon.\n\n"
+                "condition during the next phase?\n\n"
                 "Requirements:\n"
                 "- Let's think step by step.\n"
                 "- You can only choose one of the signals listed above.\n"
@@ -357,7 +355,7 @@ def state_to_official_commonsense_table(req: BatchPredictRequest, intersection: 
 
         state_txt += (
             f"Signal: {phase}\n"
-            f"Allowed lanes: {allowed_lanes_text(phase)}\n"
+            f"Relieves: {allowed_lanes_text(phase)}\n"
             f"- Early queued: {queue_len_1} ({LOCATION_DICT[lane_1[0]]}), "
             f"{queue_len_2} ({LOCATION_DICT[lane_2[0]]}), {queue_len_1 + queue_len_2} (Total)\n"
             f"- Segment 1: {seg_1_lane_1} ({LOCATION_DICT[lane_1[0]]}), "
@@ -498,6 +496,7 @@ def generate_batch(prompts: List[str], max_new_tokens: int) -> List[str]:
                 {
                     "do_sample": True,
                     "temperature": TEMPERATURE,
+                    "top_k": TOP_K,
                     "top_p": TOP_P,
                 }
             )
@@ -592,16 +591,18 @@ def main():
     parser.add_argument("--port", type=int, default=6008)
     parser.add_argument("--model-path", "--model-dir", dest="model_path", default="")
     parser.add_argument("--max-new-tokens", type=int, default=1024)
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=1.0)
-    parser.add_argument("--do-sample", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--do-sample", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--system-prompt-file", default="prompts/prompt_commonsense.json")
     args = parser.parse_args()
 
-    global MAX_NEW_TOKENS, TEMPERATURE, TOP_P, DO_SAMPLE, LOG_DIR
+    global MAX_NEW_TOKENS, TEMPERATURE, TOP_K, TOP_P, DO_SAMPLE, LOG_DIR
     MAX_NEW_TOKENS = args.max_new_tokens
     TEMPERATURE = args.temperature
+    TOP_K = args.top_k
     TOP_P = args.top_p
     DO_SAMPLE = args.do_sample
     LOG_DIR = Path(args.log_dir)

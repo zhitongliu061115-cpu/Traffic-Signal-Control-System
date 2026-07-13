@@ -1,0 +1,23 @@
+{
+  "scenes": [
+    {
+      "sceneId": "xian_5x5",
+      "name": "Xi'an 5x5 mixed-control roadnet",
+      "sceneDir": "xian_5x5",
+      "configFile": "xian_5x5.sumocfg",
+      "netFile": "xian_5x5.net.xml.gz",
+      "routeFiles": ["xian_5x5.trips.xml"],
+      "trafficRIntersections": [
+        "cluster_1928080310_5128988621_5128988623_7172182663",
+        "cluster_2402915318_2640751968_7172170106_7172182722",
+        "cluster_2407573771_7172182729",
+        "cluster_1928080332_4540069986_5128988689_5128988690",
+        "cluster_1928080334_2687328260_5128988656_5128988685",
+        "cluster_1928080330_5128988682",
+        "cluster_1928080345_4540069988",
+        "cluster_1928080341_2687328279",
+        "4028119615"
+      ]
+    }
+  ]
+}

@@ -58,13 +58,44 @@ const modelFound = ref(false)
 const showRoadnetDebug = ref(true)
 const showRoadnetSurface = ref(true)
 
-const intersection = computed(() =>
-  intersections.value.find((it) => it.id === props.intersectionId) ?? null,
-)
-
 // ================================================================
 // 从仿真帧派生选中路口的四方向车辆数 + 相位（Plan B 数据源）
 // ================================================================
+
+const intersection = computed<Intersection | null>(() => {
+  const dashboardIntersection = intersections.value.find((it) => it.id === props.intersectionId)
+  if (dashboardIntersection) return dashboardIntersection
+
+  const simIntersection = simRoadnet.value?.intersections.find(
+    (it) => it.id === props.intersectionId && !it.virtual,
+  )
+  if (!simIntersection) return null
+  const signal = simulationSignals.value.find((item) => item.intersectionId === simIntersection.id)
+  const currentPhase = toSignalPhase(signal?.phaseCode)
+  const connectedRoadIds = simRoadnet.value!.roads
+    .filter((road) => road.from === simIntersection.id || road.to === simIntersection.id)
+    .map((road) => road.id)
+  const connectedRoadSet = new Set(connectedRoadIds)
+  const nearbyVehicles = simulationVehicles.value.filter((vehicle) => connectedRoadSet.has(vehicle.roadId))
+  return {
+    id: simIntersection.id,
+    name: `SUMO 路口 ${simIntersection.id}`,
+    x: simIntersection.x,
+    y: simIntersection.y,
+    lng: simIntersection.lng ?? 0,
+    lat: simIntersection.lat ?? 0,
+    row: 0,
+    col: 0,
+    currentPhase,
+    greenRemain: signalRemainingSec(signal) ?? 0,
+    greenRemainKnown: signalRemainingSec(signal) !== null,
+    queueLength: nearbyVehicles.filter((vehicle) => vehicle.speed < 0.5).length,
+    averageDelay: 0,
+    congestionIndex: 0,
+    deviceStatus: 'online',
+    roadIds: connectedRoadIds,
+  }
+})
 
 /** 上海路口 → CityFlow 转置键 "R_C"（R=col, C=row） */
 function simKeyOf(it: Intersection): string {
@@ -72,20 +103,25 @@ function simKeyOf(it: Intersection): string {
 }
 
 function deriveIntersectionState(
-  shIt: Intersection | null,
+  selectedId: string | null,
+  displayIntersection: Intersection | null,
   simVehicles: SimVehicleState[],
   simSignals: SimSignalState[],
   roadnet: SimRoadnetResponse | null,
 ): IntersectionSimState | null {
-  if (!shIt || !roadnet) return null
-  const key = simKeyOf(shIt)
-  const cfId = `intersection_${key}`
+  if (!selectedId || !displayIntersection || !roadnet) return null
+  const directIntersection = roadnet.intersections.find((item) => item.id === selectedId && !item.virtual)
+  const legacyId = `intersection_${simKeyOf(displayIntersection)}`
+  const simulationId = directIntersection?.id ?? legacyId
 
-  // 找 CityFlow 路口中心坐标
-  const cfIt = roadnet.intersections.find((i) => i.id === cfId && !i.virtual)
+  const cfIt = directIntersection
+    ?? roadnet.intersections.find((item) => item.id === legacyId && !item.virtual)
   if (!cfIt) return null
   const cx = cfIt.x
   const cy = cfIt.y
+  const incomingRoadIds = new Set(
+    roadnet.roads.filter((road) => road.to === cfIt.id).map((road) => road.id),
+  )
 
   // 统计进场车辆：距中心一定范围内，按相对位置分四方向
   // CityFlow: x 轴道路 = 东西向(EW)，y 轴道路 = 南北向(NS)
@@ -93,23 +129,22 @@ function deriveIntersectionState(
   const RADIUS_Y = 420 // y 轴路口间距 800，取半略小
   let north = 0, south = 0, east = 0, west = 0
   for (const v of simVehicles) {
+    if (directIntersection && !incomingRoadIds.has(v.roadId)) continue
     const dx = v.x - cx
     const dy = v.y - cy
     if (Math.abs(dx) > Math.abs(dy)) {
-      // 东西向道路
-      if (Math.abs(dx) > RADIUS_X || Math.abs(dy) > 30) continue
+      if (!directIntersection && (Math.abs(dx) > RADIUS_X || Math.abs(dy) > 30)) continue
       if (dx > 0) east++
       else west++
     } else {
-      // 南北向道路
-      if (Math.abs(dy) > RADIUS_Y || Math.abs(dx) > 30) continue
+      if (!directIntersection && (Math.abs(dy) > RADIUS_Y || Math.abs(dx) > 30)) continue
       if (dy > 0) north++
       else south++
     }
   }
 
   // 当前相位
-  const sig = simSignals.find((s) => s.intersectionId === cfId)
+  const sig = simSignals.find((s) => s.intersectionId === simulationId)
   const currentPhase = toSignalPhase(sig?.phaseCode)
   const greenRemain = signalRemainingSec(sig)
 
@@ -120,6 +155,7 @@ function deriveIntersectionState(
 const simState = computed<IntersectionSimState | null>(() => {
   if (simulationStatus.value !== 'running') return null
   return deriveIntersectionState(
+    props.intersectionId,
     intersection.value,
     simulationVehicles.value as SimVehicleState[],
     simulationSignals.value as SimSignalState[],

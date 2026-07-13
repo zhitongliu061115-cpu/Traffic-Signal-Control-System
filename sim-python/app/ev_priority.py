@@ -48,8 +48,11 @@ class DijkstraPathPlanner:
             ei = road["endIntersection"]
             if si not in self.graph or ei not in self.graph:
                 continue
+            explicit_length = float(road.get("length", 0.0) or 0.0)
             pts = road.get("points", [])
-            if len(pts) >= 2:
+            if explicit_length > 0:
+                length = explicit_length
+            elif len(pts) >= 2:
                 dx = pts[-1]["x"] - pts[0]["x"]
                 dy = pts[-1]["y"] - pts[0]["y"]
                 length = (dx**2 + dy**2)**0.5
@@ -604,23 +607,25 @@ class EVDetector:
         dist_to_intersection = road_length - distance
 
         if dist_to_intersection <= cfg.EV_DETECTION_DISTANCE:
-            parts = current_road.split('_')
-            # road_r_c_r_c format (5 parts)
-            if len(parts) >= 5:
-                to_inter = f'intersection_{parts[3]}_{parts[4]}'
-            # road_X_Y_Z format (4 parts)
-            elif len(parts) >= 4:
-                try:
-                    x, y, z = int(parts[1]), int(parts[2]), int(parts[3])
-                    if z == 0: to_inter = f'intersection_{x+1}_{y}'
-                    elif z == 1: to_inter = f'intersection_{x}_{y+1}'
-                    elif z == 2: to_inter = f'intersection_{x-1}_{y}'
-                    elif z == 3: to_inter = f'intersection_{x}_{y-1}'
-                    else: return None
-                except ValueError:
+            to_inter = str(veh_info.get('next_intersection') or '')
+            if not to_inter:
+                parts = current_road.split('_')
+                # road_r_c_r_c format (5 parts)
+                if len(parts) >= 5:
+                    to_inter = f'intersection_{parts[3]}_{parts[4]}'
+                # road_X_Y_Z format (4 parts)
+                elif len(parts) >= 4:
+                    try:
+                        x, y, z = int(parts[1]), int(parts[2]), int(parts[3])
+                        if z == 0: to_inter = f'intersection_{x+1}_{y}'
+                        elif z == 1: to_inter = f'intersection_{x}_{y+1}'
+                        elif z == 2: to_inter = f'intersection_{x-1}_{y}'
+                        elif z == 3: to_inter = f'intersection_{x}_{y-1}'
+                        else: return None
+                    except ValueError:
+                        return None
+                else:
                     return None
-            else:
-                return None
             return {
                 'ev_id': veh_id,
                 'intersection_id': to_inter,

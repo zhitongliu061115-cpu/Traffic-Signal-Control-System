@@ -1,0 +1,20 @@
+{
+  "v": "1.0",
+  "type": "sim.frame",
+  "sid": "run_fixture",
+  "seq": 1,
+  "simTime": 1.0,
+  "sentAt": "2026-07-13T00:00:00Z",
+  "data": {
+    "simTime": 1.0,
+    "status": "running",
+    "vehicles": [],
+    "roads": [],
+    "laneStates": {},
+    "intersections": [],
+    "signals": [],
+    "metrics": {"vehicleCount": 0, "activeVehicleCount": 0, "scheduledDepartureCount": 0, "queueCount": 0, "avgSpeed": 0.0, "avgWait": 0.0, "throughput": 0},
+    "evEvents": [],
+    "evStatus": []
+  }
+}

@@ -59,6 +59,7 @@ Traffic-Signal-Control-System/
 - [CityFlow 云端部署指南](backend/docs/CITYFLOW_CLOUD_RUNBOOK.md)
 - [Traffic-R 云端模型启动指南](backend/docs/TRAFFIC_R_CLOUD_RUNBOOK.md)
 - [CFRP 前后端通信协议](docs/CFRP-1.0-前后端通信协议.md)
+- [SUMO 仿真迁移计划](docs/SUMO_MIGRATION_PLAN.md)
 - [Git 协作规范](docs/GIT_规范.md)
 - [团队 Prompt 规范](docs/PROMPTS.md)
 

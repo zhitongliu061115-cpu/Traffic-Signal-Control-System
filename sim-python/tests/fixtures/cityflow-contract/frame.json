@@ -1,0 +1,47 @@
+{
+  "sid": "run_fixture",
+  "sceneId": "jinan_3x4",
+  "seq": 1,
+  "simTime": 1.0,
+  "engineMode": "mock",
+  "status": "running",
+  "vehicles": [
+    {"id": "vehicle_0", "roadId": "road_0_2_0", "lane": 0, "x": -377.778, "y": 800.0, "angle": 0.0, "speed": 7.546},
+    {"id": "vehicle_665", "roadId": "road_0_1_0", "lane": 2, "x": -377.778, "y": 0.0, "angle": 0.0, "speed": 3.851}
+  ],
+  "roads": [
+    {"id": "road_0_1_0", "vehicleCount": 1, "queueCount": 0, "avgSpeed": 3.851, "level": "slow"},
+    {"id": "road_0_2_0", "vehicleCount": 1, "queueCount": 0, "avgSpeed": 7.546, "level": "free"}
+  ],
+  "laneStates": {
+    "intersection_1_1": {
+      "lanes": {
+        "WT": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0]},
+        "WL": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0]},
+        "ST": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0]},
+        "SL": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 1]},
+        "ET": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0]},
+        "EL": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0]},
+        "NT": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0]},
+        "NL": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 0, 0]}
+      }
+    }
+  },
+  "intersections": [
+    {"id": "intersection_1_1", "queueCount": 0, "avgWait": 0.0, "level": "free"}
+  ],
+  "signals": [
+    {"intersectionId": "intersection_1_1", "phaseIndex": 2, "phaseCode": "ETWT"}
+  ],
+  "metrics": {
+    "vehicleCount": 14,
+    "activeVehicleCount": 14,
+    "scheduledDepartureCount": 14,
+    "queueCount": 0,
+    "avgSpeed": 7.656,
+    "avgWait": 0.0,
+    "throughput": 0
+  },
+  "evEvents": [],
+  "evStatus": []
+}

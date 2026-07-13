@@ -11,7 +11,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-
 @RestController
 @RequestMapping("/api/v1/simulations")
 public class SimulationController {
@@ -44,5 +43,18 @@ public class SimulationController {
         simulationService.stop(sid);
         return ApiResponse.ok(null);
     }
+
+    /*
+     * Legacy dispatch endpoint disabled. EmergencyController now owns
+     * POST /api/v1/simulations/{sid}/dispatch.
+     *
+     * @PostMapping("/{sid}/dispatch")
+     * public ApiResponse<Map<String, Object>> dispatchEmergencyVehicle(
+     *         @PathVariable String sid,
+     *         @Valid @RequestBody EvDispatchRequest request
+     * ) {
+     *     return ApiResponse.ok(simulationService.dispatchEv(sid, request));
+     * }
+     */
 
 }

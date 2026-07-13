@@ -21,6 +21,7 @@ declare namespace AMap {
     getContainer(): HTMLElement
     getZoom(): number
     setZoomAndCenter(zoom: number, center: [number, number]): void
+    setFitView(overlays?: unknown[], immediately?: boolean, avoid?: number[], maxZoom?: number): void
     lngLatToContainer(lngLat: [number, number]): { x: number; y: number }
   }
 

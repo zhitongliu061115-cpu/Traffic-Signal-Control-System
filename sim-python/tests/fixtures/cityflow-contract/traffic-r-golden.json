@@ -1,0 +1,45 @@
+{
+  "request": {
+    "sceneId": "jinan_3x4",
+    "simTime": 120.0,
+    "intersections": [
+      {
+        "intersectionId": "intersection_1_1",
+        "currentPhaseIndex": 1,
+        "currentPhaseCode": "ETWT",
+        "phaseCandidates": [
+          {"phaseIndex": 1, "phaseCode": "ETWT"},
+          {"phaseIndex": 2, "phaseCode": "NTST"},
+          {"phaseIndex": 3, "phaseCode": "ELWL"},
+          {"phaseIndex": 4, "phaseCode": "NLSL"}
+        ]
+      }
+    ],
+    "observation": {
+      "roads": [],
+      "laneStates": {
+        "intersection_1_1": {
+          "lanes": {
+            "WT": {"queue_len": 4, "avg_wait_time": 12.0, "cells": [1, 2, 3, 4]},
+            "WL": {"queue_len": 1, "avg_wait_time": 3.0, "cells": [0, 1, 1, 1]},
+            "ST": {"queue_len": 6, "avg_wait_time": 18.0, "cells": [2, 1, 0, 0]},
+            "SL": {"queue_len": 2, "avg_wait_time": 6.0, "cells": [1, 0, 1, 0]},
+            "ET": {"queue_len": 3, "avg_wait_time": 9.0, "cells": [2, 2, 1, 1]},
+            "EL": {"queue_len": 0, "avg_wait_time": 0.0, "cells": [0, 0, 1, 0]},
+            "NT": {"queue_len": 5, "avg_wait_time": 15.0, "cells": [1, 1, 2, 2]},
+            "NL": {"queue_len": 1, "avg_wait_time": 3.0, "cells": [0, 1, 0, 1]}
+          }
+        }
+      },
+      "metrics": {"vehicleCount": 32, "queueCount": 22, "avgSpeed": 6.5, "avgWait": 10.0, "throughput": 8}
+    }
+  },
+  "laneOrder": ["WT", "WL", "ST", "SL", "ET", "EL", "NT", "NL"],
+  "phaseOrder": ["ETWT", "NTST", "ELWL", "NLSL"],
+  "cellToPromptSegments": {
+    "segment1": [0],
+    "segment2": [1],
+    "segment3": [2, 3]
+  },
+  "expectedStateTable": "Signal: ETWT\nRelieves: Eastern and western through lanes\n- Early queued: 3 (East), 4 (West), 7 (Total)\n- Segment 1: 2 (East), 1 (West), 3 (Total)\n- Segment 2: 2 (East), 2 (West), 4 (Total)\n- Segment 3: 2 (East), 7 (West), 9 (Total)\n\nSignal: NTST\nRelieves: Northern and southern through lanes\n- Early queued: 5 (North), 6 (South), 11 (Total)\n- Segment 1: 1 (North), 2 (South), 3 (Total)\n- Segment 2: 1 (North), 1 (South), 2 (Total)\n- Segment 3: 4 (North), 0 (South), 4 (Total)\n\nSignal: ELWL\nRelieves: Eastern and western left-turn lanes\n- Early queued: 0 (East), 1 (West), 1 (Total)\n- Segment 1: 0 (East), 0 (West), 0 (Total)\n- Segment 2: 0 (East), 1 (West), 1 (Total)\n- Segment 3: 1 (East), 2 (West), 3 (Total)\n\nSignal: NLSL\nRelieves: Northern and southern left-turn lanes\n- Early queued: 1 (North), 2 (South), 3 (Total)\n- Segment 1: 0 (North), 1 (South), 1 (Total)\n- Segment 2: 1 (North), 0 (South), 1 (Total)\n- Segment 3: 1 (North), 1 (South), 2 (Total)\n\n"
+}

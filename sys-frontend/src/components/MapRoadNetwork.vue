@@ -15,13 +15,15 @@ import RoadNetwork from '@/components/RoadNetwork.vue'
 import MapLegend from '@/components/MapLegend.vue'
 import Intersection3DViewer from '@/components/Intersection3DViewer.vue'
 import { createVehicleLayer, type VehicleLayer } from '@/map/amapVehicleLayer'
+import { createSimulationMapLayer, type SimulationMapLayer } from '@/map/amapSimulationLayer'
 import type { SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 
 const store = useTrafficStore()
 const {
   intersections, roads, vehicles,
-  systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId,
-  simulationVehicles, simulationStatus, simRoadnet, emergencyCfVehicleId,
+  systemMode, emergencyRoute, emergencyRouteRoads, activeGreenWaveIndex, selectedIntersectionId,
+  simulationVehicles, simulationRoads, simulationSignals,
+  simulationSimTime, simulationStatus, simRoadnet, emergencyCfVehicleId,
 } = storeToRefs(store)
 
 const mapBox = ref<HTMLDivElement | null>(null)
@@ -29,6 +31,7 @@ const mapReady = ref(false)
 const mapFailed = ref(false)
 const dataLoading = ref(false)
 const viewerOpen = ref(false)
+const selectedSimulationIntersectionId = ref<string | null>(null)
 const selectedRoadId = ref<string | null>(null)
 
 let amapInstance: AMapInstance | null = null
@@ -36,6 +39,9 @@ let roadLayer: ReturnType<typeof addAMapRoadLayer> | null = null
 let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
 let emergencyLine: AMap.Polyline | null = null
 let vehicleLayer: VehicleLayer | null = null
+let simulationLayer: SimulationMapLayer | null = null
+let simulationTLMarkers: ReturnType<typeof createTLMarkers> | null = null
+let simulationLayerRoadnet: SimRoadnetResponse | null = null
 let vehicleUpdateTimer: ReturnType<typeof setTimeout> | null = null
 let dashboardVideo: HTMLVideoElement | null = null
 let resumeDashboardVideo = false
@@ -106,6 +112,7 @@ async function bootstrapMap(): Promise<void> {
 
     // 后台加载真实数据，完成后一次性渲染
     await loadRealData()
+    syncSimulationLayer()
     dataLoading.value = false
   } catch {
     mapFailed.value = true
@@ -180,13 +187,41 @@ async function loadRealData(): Promise<void> {
 
   // ---- 第 3 步：一次性创建 ----
   roadLayer = addAMapRoadLayer(map, intersections.value, roads.value, (id) => { selectedRoadId.value = id })
-  tlMarkers = createTLMarkers(map, intersections.value, (id) => store.selectIntersection(id))
+  tlMarkers = createTLMarkers(map, intersections.value, (id) => {
+    selectedSimulationIntersectionId.value = null
+    store.selectIntersection(id)
+  })
 
 }
 
 function syncEmergency(): void {
   if (!emergencyLine) return
   if (systemMode.value === 'emergency' && emergencyRoute.value.length > 0) {
+    const sumoPoints: [number, number][] = []
+    const appendSumoPoint = (point: [number, number]): void => {
+      const previous = sumoPoints[sumoPoints.length - 1]
+      if (!previous || Math.abs(previous[0] - point[0]) > 1e-10 || Math.abs(previous[1] - point[1]) > 1e-10) {
+        sumoPoints.push(point)
+      }
+    }
+    if (simRoadnet.value && emergencyRouteRoads.value.length > 0) {
+      const roadsById = new Map(simRoadnet.value.roads.map((road) => [road.id, road]))
+      for (const roadId of emergencyRouteRoads.value) {
+        const road = roadsById.get(roadId)
+        if (!road) continue
+        for (const point of road.points) {
+          if (Number.isFinite(point.lng) && Number.isFinite(point.lat)) {
+            appendSumoPoint([point.lng!, point.lat!])
+          }
+        }
+      }
+    }
+    if (sumoPoints.length >= 2) {
+      emergencyLine.setPath(sumoPoints)
+      emergencyLine.show()
+      return
+    }
+
     // 将 CityFlow 路口 ID 映射为 mock 路口 ID
     const cfToMock = (cfId: string): string | null => {
       const direct = intersections.value.find((i) => i.id === cfId)
@@ -203,8 +238,8 @@ function syncEmergency(): void {
     // 逐段找路网中的真实道路路径
     const allPts: [number, number][] = []
     for (let i = 0; i < emergencyRoute.value.length - 1; i++) {
-      const fromMock = cfToMock(emergencyRoute.value[i])
-      const toMock = cfToMock(emergencyRoute.value[i + 1])
+      const fromMock = cfToMock(emergencyRoute.value[i]!)
+      const toMock = cfToMock(emergencyRoute.value[i + 1]!)
       if (!fromMock || !toMock) continue
 
       // 找连接这两个 mock 路口的路
@@ -229,6 +264,8 @@ function syncEmergency(): void {
     if (allPts.length >= 2) {
       emergencyLine.setPath(allPts)
       emergencyLine.show()
+    } else {
+      emergencyLine.hide()
     }
   } else {
     emergencyLine.hide()
@@ -246,8 +283,7 @@ watch([roads, intersections], () => {
     syncEmergency()
   }, 300)
 }, { deep: true })
-watch(systemMode, syncEmergency)
-watch(emergencyRoute, () => { if (systemMode.value === 'emergency') syncEmergency() }, { deep: true })
+watch([systemMode, emergencyRoute, emergencyRouteRoads, simRoadnet], syncEmergency, { deep: true })
 
 // 单击路口 marker → 镜头拉近放大到该路口
 watch(selectedIntersectionId, (id) => {
@@ -257,6 +293,78 @@ watch(selectedIntersectionId, (id) => {
   amapInstance.map.setZoomAndCenter(15, [it.lng, it.lat])
   }
 })
+
+function syncSimulationLayer(): void {
+  if (!amapInstance || !simRoadnet.value || simulationStatus.value === 'finished') {
+    simulationLayer?.dispose()
+    simulationTLMarkers?.dispose()
+    simulationLayer = null
+    simulationTLMarkers = null
+    simulationLayerRoadnet = null
+    return
+  }
+  if (simulationLayer && simulationLayerRoadnet === simRoadnet.value) return
+  simulationLayer?.dispose()
+  simulationTLMarkers?.dispose()
+  simulationLayer = createSimulationMapLayer(amapInstance.map, simRoadnet.value)
+  simulationTLMarkers = createTLMarkers(
+    amapInstance.map,
+    buildSimulationIntersections(),
+    selectSimulationIntersection,
+  )
+  simulationLayerRoadnet = simRoadnet.value
+  simulationLayer.fitView()
+}
+
+watch([simRoadnet, simulationStatus], syncSimulationLayer)
+
+let simulationLayerUpdateTimer: ReturnType<typeof setTimeout> | null = null
+watch([simulationRoads, simulationSignals], () => {
+  if (!simulationLayer || simulationLayerUpdateTimer !== null) return
+  simulationLayerUpdateTimer = setTimeout(() => {
+    simulationLayerUpdateTimer = null
+    simulationLayer?.update(simulationRoads.value)
+    simulationTLMarkers?.updateAll(buildSimulationIntersections())
+  }, 200)
+}, { deep: true })
+
+const SIM_PHASE_MAP: Record<string, import('@/types/traffic').SignalPhase> = {
+  ETWT: 'eastwest_straight',
+  NTST: 'northsouth_straight',
+  ELWL: 'eastwest_left',
+  NLSL: 'northsouth_left',
+}
+
+function buildSimulationIntersections(): import('@/types/traffic').Intersection[] {
+  if (!simRoadnet.value) return []
+  return simRoadnet.value.intersections
+    .filter((intersection) => !intersection.virtual && Number.isFinite(intersection.lng) && Number.isFinite(intersection.lat))
+    .map((intersection) => {
+      const signal = simulationSignals.value.find((item) => item.intersectionId === intersection.id)
+      const roadIds = simRoadnet.value!.roads
+        .filter((road) => road.from === intersection.id || road.to === intersection.id)
+        .map((road) => road.id)
+      const roadIdSet = new Set(roadIds)
+      const relatedVehicles = simulationVehicles.value.filter((vehicle) => roadIdSet.has(vehicle.roadId))
+      return {
+        id: intersection.id,
+        name: `SUMO 路口 ${intersection.id}`,
+        x: intersection.x,
+        y: intersection.y,
+        lng: intersection.lng!,
+        lat: intersection.lat!,
+        row: 0,
+        col: 0,
+        currentPhase: SIM_PHASE_MAP[signal?.phaseCode ?? ''] ?? 'all_red',
+        greenRemain: 10 - (simulationSimTime.value % 10),
+        queueLength: relatedVehicles.filter((vehicle) => vehicle.speed < 0.5).length,
+        averageDelay: 0,
+        congestionIndex: 0,
+        deviceStatus: 'online',
+        roadIds,
+      }
+    })
+}
 
 // ---- 仿真车辆图层：路网就绪后按帧刷新 ----
 watch([simulationVehicles, simRoadnet, simulationStatus, viewerOpen], () => {
@@ -273,8 +381,21 @@ watch([simulationVehicles, simRoadnet, simulationStatus, viewerOpen], () => {
   scheduleVehicleLayerUpdate()
 })
 
+function selectSimulationIntersection(id: string): void {
+  selectedSimulationIntersectionId.value = id
+  store.selectIntersection(null)
+  const intersection = simRoadnet.value?.intersections.find((item) => item.id === id)
+  if (amapInstance && Number.isFinite(intersection?.lng) && Number.isFinite(intersection?.lat)) {
+    amapInstance.map.setZoomAndCenter(17, [intersection!.lng!, intersection!.lat!])
+  }
+}
+
+const viewerIntersectionId = computed(
+  () => selectedSimulationIntersectionId.value ?? selectedIntersectionId.value,
+)
+
 function onMapDblClick(): void {
-  if (selectedIntersectionId.value) viewerOpen.value = true
+  if (viewerIntersectionId.value) viewerOpen.value = true
 }
 
 setTimeout(bootstrapMap, 100)
@@ -282,9 +403,12 @@ setTimeout(bootstrapMap, 100)
 onBeforeUnmount(() => {
   if (resumeDashboardVideo) void dashboardVideo?.play().catch(() => undefined)
   if (vehicleUpdateTimer) clearTimeout(vehicleUpdateTimer)
+  if (simulationLayerUpdateTimer) clearTimeout(simulationLayerUpdateTimer)
   roadLayer?.dispose()
   tlMarkers?.dispose()
   vehicleLayer?.dispose()
+  simulationLayer?.dispose()
+  simulationTLMarkers?.dispose()
   emergencyLine?.setMap(null)
   amapInstance?.destroy()
 })
@@ -356,7 +480,7 @@ const selectedRoadName = computed(
 
     <Intersection3DViewer
       v-if="viewerOpen"
-      :intersection-id="selectedIntersectionId"
+      :intersection-id="viewerIntersectionId"
       @close="viewerOpen = false"
     />
   </section>

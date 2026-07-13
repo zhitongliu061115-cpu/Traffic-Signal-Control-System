@@ -86,6 +86,8 @@ export const useTrafficStore = defineStore('traffic', () => {
   /** CityFlow 分配的车辆 ID，用于在仿真帧数据中匹配 EV */
   const emergencyCfVehicleId = ref<string>('')
   const emergencyRoute = ref<string[]>(structuredClone(mockEmergencyRoute))
+  const emergencyRouteRoads = ref<string[]>([])
+  const emergencyEstimatedTravelTimeSec = ref(0)
   const activeGreenWaveIndex = ref(0)
   const alerts = ref<Alert[]>(structuredClone(mockInitialAlerts))
   const statistics = ref<GlobalStatistics>(structuredClone(mockStatistics))
@@ -133,7 +135,7 @@ export const useTrafficStore = defineStore('traffic', () => {
   // ---- 仿真状态 ----
   const simulationStatus = ref<SimulationStatus>('booting')
   const simulationSid = ref<string | null>(null)
-  const simulationSceneId = ref('jinan_3x4')
+  const simulationSceneId = ref('xian_5x5')
   const simulationSpeed = ref(1.0)
   const simulationControllerType = ref('fixed-time')
   const simulationSimTime = ref(0)
@@ -231,7 +233,7 @@ export const useTrafficStore = defineStore('traffic', () => {
   // 4. Actions — 应急绿波
   // =========================================================
   /**
-   * 调度应急车辆（优先调用后端 API，失败降级到 mock）
+   * 调度应急车辆；存在真实仿真会话时禁止静默降级到 mock。
    * @returns 调度结果，失败时返回 null
    */
   async function dispatchEmergencyVehicle(params: {
@@ -243,11 +245,15 @@ export const useTrafficStore = defineStore('traffic', () => {
     const evId = `EV-${Date.now()}`
     const startInter = intersections.value.find((it) => it.id === params.startIntersection)
     const endInter = intersections.value.find((it) => it.id === params.endIntersection)
+    const simStartInter = simRoadnet.value?.intersections.find((it) => it.id === params.startIntersection)
+    const simEndInter = simRoadnet.value?.intersections.find((it) => it.id === params.endIntersection)
 
-    if (!startInter || !endInter) {
+    if ((!startInter && !simStartInter) || (!endInter && !simEndInter)) {
       console.error('[TrafficStore] Invalid intersection IDs for dispatch')
       return null
     }
+    const startName = startInter?.name ?? `SUMO 路口 ${params.startIntersection}`
+    const endName = endInter?.name ?? `SUMO 路口 ${params.endIntersection}`
 
     // 将 mock 路口 ID 映射为 CityFlow 真实路口 ID
     const toCityFlowId = (id: string): string => {
@@ -257,8 +263,8 @@ export const useTrafficStore = defineStore('traffic', () => {
       }
       return id
     }
-    const realStartId = toCityFlowId(params.startIntersection)
-    const realEndId = toCityFlowId(params.endIntersection)
+    const realStartId = simStartInter ? simStartInter.id : toCityFlowId(params.startIntersection)
+    const realEndId = simEndInter ? simEndInter.id : toCityFlowId(params.endIntersection)
 
     // 优先调用后端 API
     if (simulationSid.value) {
@@ -271,30 +277,31 @@ export const useTrafficStore = defineStore('traffic', () => {
           priority: params.priority,
         })
 
-        applyDispatchResult(result, startInter.name, endInter.name)
+        applyDispatchResult(result, startName, endName)
         return {
           evId: result.evId,
           route: result.route,
           routeRoads: result.routeRoads,
-          estimatedTravelTime: result.estimatedTravelTime,
-          startName: startInter.name,
-          endName: endInter.name,
+          estimatedTravelTime: result.estimatedTravelTime / 60,
+          startName,
+          endName,
         }
       } catch (err) {
-        console.warn('[TrafficStore] Backend dispatch API failed, falling back to mock', err)
+        console.error('[TrafficStore] Backend dispatch API failed', err)
+        throw err
       }
     }
 
     // 降级：mock 路径
     const mockRoute = buildMockRoute(params.startIntersection, params.endIntersection)
-    applyMockDispatchResult(mockRoute, params.evType, evId, startInter.name, endInter.name)
+    applyMockDispatchResult(mockRoute, params.evType, evId, startName, endName)
     return {
       evId,
       route: mockRoute,
       routeRoads: [],
       estimatedTravelTime: mockRoute.length * 2.5,
-      startName: startInter.name,
-      endName: endInter.name,
+      startName,
+      endName,
     }
   }
 
@@ -316,6 +323,8 @@ export const useTrafficStore = defineStore('traffic', () => {
       eta: +(result.estimatedTravelTime / 60).toFixed(1),
     }
     emergencyRoute.value = result.route
+    emergencyRouteRoads.value = result.routeRoads
+    emergencyEstimatedTravelTimeSec.value = result.estimatedTravelTime
     activeGreenWaveIndex.value = 0
     systemMode.value = 'emergency'
 
@@ -336,6 +345,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     startName: string,
     endName: string,
   ): void {
+    emergencyCfVehicleId.value = ''
     emergencyVehicle.value = {
       id: evId,
       type: evType,
@@ -347,6 +357,8 @@ export const useTrafficStore = defineStore('traffic', () => {
       eta: route.length * 1.8,
     }
     emergencyRoute.value = route
+    emergencyRouteRoads.value = []
+    emergencyEstimatedTravelTimeSec.value = route.length * 108
     activeGreenWaveIndex.value = 0
     systemMode.value = 'emergency'
 
@@ -942,6 +954,27 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
     if (frame.evStatus && frame.evStatus.length > 0) {
       latestEvStatus.value = frame.evStatus
+      const activeStatus = frame.evStatus.find((status) =>
+        status.evId === emergencyVehicle.value.id,
+      )
+      if (activeStatus) {
+        if (activeStatus.route.length > 0) emergencyRoute.value = activeStatus.route
+        activeGreenWaveIndex.value = Math.min(
+          Math.max(0, activeStatus.passedCount),
+          Math.max(0, activeStatus.totalCount - 1),
+        )
+        emergencyVehicle.value.currentIntersectionId =
+          activeStatus.route[Math.min(activeGreenWaveIndex.value, activeStatus.route.length - 1)] ?? ''
+        emergencyVehicle.value.eta = Math.max(
+          0,
+          (emergencyEstimatedTravelTimeSec.value - activeStatus.elapsedTime) / 60,
+        )
+        if (activeStatus.completed) {
+          emergencyVehicle.value.greenWaveActive = false
+          systemMode.value = 'normal'
+          activeGreenWaveIndex.value = Math.max(0, activeStatus.totalCount - 1)
+        }
+      }
     }
     if (frame.status === 'finished') {
       simulationStatus.value = 'finished'
@@ -1065,7 +1098,6 @@ export const useTrafficStore = defineStore('traffic', () => {
       }
     }
 
-    // ---- 车辆：将 SimVehicleState[] 注入到 vehicles[] ----
     // ---- 全局统计 ----
     if (frame.metrics) {
       statistics.value.totalFlow = frame.metrics.vehicleCount ?? statistics.value.totalFlow
@@ -1211,7 +1243,10 @@ export const useTrafficStore = defineStore('traffic', () => {
     roads.value = structuredClone(mockRoads)
     vehicles.value = structuredClone(mockVehicles)
     emergencyVehicle.value = structuredClone(mockEmergencyVehicle)
+    emergencyCfVehicleId.value = ''
     emergencyRoute.value = structuredClone(mockEmergencyRoute)
+    emergencyRouteRoads.value = []
+    emergencyEstimatedTravelTimeSec.value = 0
     alerts.value = structuredClone(mockInitialAlerts)
     statistics.value = structuredClone(mockStatistics)
     compareMetrics.value = structuredClone(mockCompareMetrics)
@@ -1243,6 +1278,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     emergencyVehicle,
     emergencyCfVehicleId,
     emergencyRoute,
+    emergencyRouteRoads,
     activeGreenWaveIndex,
     alerts,
     statistics,

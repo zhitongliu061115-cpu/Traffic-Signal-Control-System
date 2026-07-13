@@ -5,6 +5,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,13 +20,14 @@ from app.config import (
     CITYFLOW_TOKEN_HEADER,
     DATA_DIR,
     DEFAULT_SCENE_ID,
+    ENGINE_MODE,
     MAX_REQUEST_BYTES,
 )
 from app.errors import ApiError, error_response
 
 
 class CityFlowRequestHandler(BaseHTTPRequestHandler):
-    adapter: CityFlowAdapter
+    adapter: Any
 
     def do_GET(self) -> None:
         path_parts = self._path_parts()
@@ -56,7 +58,7 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
             self._require_cityflow_auth(path_parts)
             if self._matches(path_parts, ["cityflow", "simulations"]):
                 body = self._read_json_body()
-                scene_id = body.get("sceneId", DEFAULT_SCENE_ID)
+                scene_id = body.get("sceneId", getattr(self.adapter, "default_scene_id", DEFAULT_SCENE_ID))
                 speed = body.get("speed", 1.0)
                 warmup_seconds = body.get("warmupSeconds", 0.0)
                 self._send_json(200, self.adapter.create_simulation(scene_id, speed, warmup_seconds, self._client_id()))
@@ -181,17 +183,22 @@ class CityFlowRequestHandler(BaseHTTPRequestHandler):
 
 def run(host: str, port: int) -> None:
     try:
-        CityFlowRequestHandler.adapter = CityFlowAdapter(DATA_DIR)
+        if ENGINE_MODE == "sumo":
+            from app.sumo_adapter import SumoAdapter
+
+            CityFlowRequestHandler.adapter = SumoAdapter(DATA_DIR)
+        else:
+            CityFlowRequestHandler.adapter = CityFlowAdapter(DATA_DIR)
     except ApiError as ex:
-        print(f"Failed to initialize CityFlow adapter: {ex.code} {ex.message}", file=sys.stderr)
+        print(f"Failed to initialize simulation adapter: {ex.code} {ex.message}", file=sys.stderr)
         raise
     server = ThreadingHTTPServer((host, port), CityFlowRequestHandler)
-    print(f"Python CityFlow service listening on http://{host}:{port}")
+    print(f"Python simulation service ({ENGINE_MODE}) listening on http://{host}:{port}")
     server.serve_forever()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Python CityFlow HTTP service")
+    parser = argparse.ArgumentParser(description="Python CityFlow-compatible simulation HTTP service")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9000)
     args = parser.parse_args()

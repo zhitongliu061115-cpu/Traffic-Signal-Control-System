@@ -1,0 +1,16 @@
+{
+  "status": "UP",
+  "service": "sim-python",
+  "version": "0.2.0",
+  "engineMode": "mock",
+  "sceneIds": ["jinan_3x4", "jinan_3x4_stress"],
+  "activeSessions": 0,
+  "maxActiveSessions": 0,
+  "maxSpeed": 10.0,
+  "autoSignalCycle": false,
+  "sessionIdleTtlSeconds": 900.0,
+  "sessionAbandonedTtlSeconds": 300.0,
+  "sessionMaxLifetimeSeconds": 3600.0,
+  "sessionCleanupIntervalSeconds": 60.0,
+  "sessionDrainTimeoutSeconds": 600.0
+}

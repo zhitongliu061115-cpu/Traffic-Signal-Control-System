@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes>
+    <vType id="passenger" vClass="passenger" accel="2.6" decel="4.5" length="5.0" maxSpeed="13.89"/>
+    <route id="west_to_east" edges="west_in east_out"/>
+    <route id="east_to_west" edges="east_in west_out"/>
+    <route id="north_to_south" edges="north_in south_out"/>
+    <route id="south_to_north" edges="south_in north_out"/>
+    <vehicle id="veh_we" type="passenger" route="west_to_east" depart="0"/>
+    <vehicle id="veh_ew" type="passenger" route="east_to_west" depart="2"/>
+    <vehicle id="veh_ns" type="passenger" route="north_to_south" depart="4"/>
+    <vehicle id="veh_sn" type="passenger" route="south_to_north" depart="6"/>
+</routes>

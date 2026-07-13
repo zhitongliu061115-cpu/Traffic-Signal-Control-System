@@ -77,6 +77,36 @@ Spring Boot 默认访问：
 http://localhost:9000
 ```
 
+## 本地 SUMO 基础环境
+
+当前 Windows 开发默认使用解压版 SUMO：
+
+```text
+D:\Download\SUMO
+```
+
+项目不修改系统环境变量。`app/sumo_config.py` 从 `SUMO_HOME`、
+`SUMO_BINARY`、`SUMO_GUI_BINARY` 和 `SUMO_NETCONVERT_BINARY` 读取配置，
+未配置时使用上述本地开发路径。运行验证脚本时，PowerShell 只为当前进程
+注入这些变量。
+
+验证 SUMO、NETCONVERT、Python `traci`/`sumolib` 和标准四进口最小场景：
+
+```powershell
+cd D:\Github\Traffic-Signal-Control-System
+.\scripts\verify-sumo.cmd
+```
+
+覆盖安装路径：
+
+```powershell
+.\scripts\verify-sumo.cmd -SumoHome 'D:\tools\sumo'
+```
+
+验证脚本会在系统临时目录生成 `.net.xml`，启动独立 SUMO 进程，通过
+TraCI 推进四辆测试车辆直至结束，然后自动关闭进程并删除临时场景。
+该脚本只验证迁移阶段 1 的本地运行环境，尚未将 SUMO 接入现有 HTTP 接口。
+
 ## 真实 CityFlow 模式
 
 真实模式必须在装有 CityFlow 的 Python 环境中运行。当前已验证环境：

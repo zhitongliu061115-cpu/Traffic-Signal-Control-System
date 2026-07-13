@@ -1,0 +1,8 @@
+{
+  "evId": "EV_FIXTURE",
+  "evType": "ambulance",
+  "priority": 1,
+  "maxSpeed": 20.0,
+  "startIntersection": "intersection_1_1",
+  "endIntersection": "intersection_3_4"
+}

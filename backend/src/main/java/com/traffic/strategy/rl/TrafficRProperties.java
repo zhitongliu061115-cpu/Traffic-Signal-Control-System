@@ -12,7 +12,7 @@ public class TrafficRProperties {
     private String healthPath = "/health";
     private String predictPath = "/predict";
     private String batchPredictPath = "/predict-batch";
-    private int decisionIntervalSec = 10;
+    private int decisionIntervalSec = 30;
     private int timeoutSec = 30;
     private String fallbackController = "max-pressure";
 

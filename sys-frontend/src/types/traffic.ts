@@ -59,6 +59,8 @@ export interface Intersection {
   currentPhase: SignalPhase
   /** 当前相位剩余绿灯时长 (秒) */
   greenRemain: number
+  /** false 表示仿真端未提供可信的相位倒计时 */
+  greenRemainKnown?: boolean
   /** 当前排队车辆数 */
   queueLength: number
   /** 平均延误 (秒) */
@@ -113,6 +115,10 @@ export interface Vehicle {
   y?: number
   /** 后端推送的车头朝向角度（度，来自 SimVehicleState） */
   angle?: number
+  /** 高德地图 GCJ-02 经度（SUMO 真实地图场景） */
+  lng?: number
+  /** 高德地图 GCJ-02 纬度（SUMO 真实地图场景） */
+  lat?: number
 }
 
 /** 应急车辆（继承普通车辆 + 应急元信息） */
@@ -314,18 +320,16 @@ export type SimulationStatus =
 
 /** 路口车道状态（后端 IntersectionLaneStateDto） */
 export interface IntersectionLaneState {
-  intersectionId: string
-  lanes: LaneMovementState[]
+  lanes: Record<TrafficRMovementCode, TrafficRMovementState>
 }
 
-/** 车道通行状态 */
-export interface LaneMovementState {
-  fromRoadId: string
-  toRoadId: string
-  vehicleCount: number
-  queueCount: number
-  avgSpeed: number
-  level: 'free' | 'slow' | 'jammed' | 'unknown'
+export type TrafficRMovementCode = 'WT' | 'WL' | 'ST' | 'SL' | 'ET' | 'EL' | 'NT' | 'NL'
+
+/** Traffic-R movement lane 状态（后端 LaneMovementStateDto） */
+export interface TrafficRMovementState {
+  queue_len: number
+  avg_wait_time: number
+  cells: number[]
 }
 
 /** 单帧车辆状态（后端 VehicleStateDto） */
@@ -335,8 +339,15 @@ export interface SimVehicleState {
   lane: number
   x: number
   y: number
+  lng?: number
+  lat?: number
   angle: number
   speed: number
+  drivableId?: string
+  drivableType?: 'lane' | 'lane_link'
+  distance?: number
+  nextRoadId?: string
+  nextLane?: number
 }
 
 /** 单帧道路状态（后端 RoadStateDto） */
@@ -361,11 +372,17 @@ export interface SimSignalState {
   intersectionId: string
   phaseIndex: number
   phaseCode: string
+  remainingSec?: number
+  phaseStartedAt?: number
+  appliedDurationSec?: number
+  transition?: 'green' | 'yellow' | 'all_red' | 'unknown'
 }
 
 /** 单帧聚合指标（后端 SimulationMetricsDto） */
 export interface SimMetrics {
   vehicleCount: number
+  activeVehicleCount?: number
+  scheduledDepartureCount?: number
   queueCount: number
   avgSpeed: number
   avgWait: number
@@ -476,6 +493,8 @@ export interface SimRoadnetIntersection {
   id: string
   x: number
   y: number
+  lng?: number
+  lat?: number
   virtual: boolean
 }
 
@@ -483,8 +502,21 @@ export interface SimRoadnetRoad {
   id: string
   from: string
   to: string
-  points: Array<{ x: number; y: number }>
+  points: Array<{ x: number; y: number; lng?: number; lat?: number }>
   laneCount: number
+  lanes?: SimRoadnetLane[]
+}
+
+export interface SimRoadnetLane {
+  index: number
+  width: number
+}
+
+export interface SimLaneLink {
+  id: string
+  startLaneIndex: number
+  endLaneIndex: number
+  points: Array<{ x: number; y: number; lng?: number; lat?: number }>
 }
 
 export interface SimRoadLink {
@@ -493,6 +525,7 @@ export interface SimRoadLink {
   fromRoadId: string
   toRoadId: string
   type: 'go_straight' | 'turn_left' | 'turn_right'
+  laneLinks?: SimLaneLink[]
 }
 
 export interface SimPhase {

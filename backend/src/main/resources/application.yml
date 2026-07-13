@@ -65,11 +65,11 @@ auth:
     email: ${AUTH_INITIAL_EMAIL:admin@traffic.local}
 
 cityflow:
-  base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9000}
+  base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9001}
   health-path: ${CITYFLOW_HEALTH_PATH:/health}
-  api-token: ${CITYFLOW_API_TOKEN:jLEc-o3L16migUKQ7f_OlH94qsjEstFf}
+  api-token: ${CITYFLOW_API_TOKEN:b20dda1757aaabaa43f6abfd897c355ab4cf277fb8084c6825224521e6d001f4}
   client-id: ${CITYFLOW_CLIENT_ID:hcj}
-  default-scene-id: jinan_3x4
+  default-scene-id: ${SIM_DEFAULT_SCENE_ID:xian_5x5}
   frame-poll-interval-ms: ${CITYFLOW_FRAME_POLL_INTERVAL_MS:500}
 
 traffic-r:
@@ -78,7 +78,7 @@ traffic-r:
   health-path: ${TRAFFIC_R_HEALTH_PATH:/health}
   predict-path: ${TRAFFIC_R_PREDICT_PATH:/predict}
   batch-predict-path: ${TRAFFIC_R_BATCH_PREDICT_PATH:/predict-batch}
-  decision-interval-sec: ${TRAFFIC_R_DECISION_INTERVAL_SEC:20}
+  decision-interval-sec: ${TRAFFIC_R_DECISION_INTERVAL_SEC:30}
   timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:60}
   fallback-controller: ${TRAFFIC_R_FALLBACK_CONTROLLER:max-pressure}
 

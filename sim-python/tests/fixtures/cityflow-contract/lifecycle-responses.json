@@ -1,0 +1,6 @@
+{
+  "start": {"sid": "run_fixture", "status": "running"},
+  "pause": {"sid": "run_fixture", "status": "paused"},
+  "stop": {"sid": "run_fixture", "status": "stopped"},
+  "terminalFrameStatus": "finished"
+}

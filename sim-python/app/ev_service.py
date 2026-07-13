@@ -111,6 +111,42 @@ class EVPriorityService:
         self.phase_counts[sid] = pc
         self.approach_phases[sid] = ap
 
+    def register_external_vehicle(
+            self,
+            sid: str,
+            roadnet: dict,
+            ev_id: str,
+            vehicle_id: str,
+            route: List[str],
+            route_roads: List[str],
+            sim_time: float,
+            ev_type: str = "fire_truck",
+            priority: Optional[int] = None,
+            max_speed: float = 20.0,
+    ) -> None:
+        """Register a vehicle injected by another simulator, such as SUMO."""
+        self.ev_sessions.setdefault(sid, {})
+        self.handled.setdefault(sid, set())
+        self.load_roadnet(sid, roadnet)
+        resolved_priority = priority if priority is not None else VEHICLE_TYPE_PRIORITY.get(ev_type, 99)
+        self.ev_sessions[sid][ev_id] = EVSession(
+            ev_id=ev_id,
+            ev_type=ev_type,
+            priority=int(resolved_priority),
+            max_speed=float(max_speed),
+            dispatch_time=float(sim_time),
+            cf_vehicle_id=vehicle_id,
+            start_road=route_roads[0] if route_roads else "",
+            route=list(route),
+            route_roads=list(route_roads),
+        )
+        self.logger.log(
+            timestamp=sim_time,
+            ev_id=ev_id,
+            event_type="dispatched",
+            detail=f"route={'->'.join(route)} cf_id={vehicle_id}",
+        )
+
     # ================================================================
     #  Dispatch: plan route + push vehicle into CityFlow
     # ================================================================
@@ -285,7 +321,12 @@ class EVPriorityService:
 
             detection = self.detector.poll_vehicle(
                 ev_session.cf_vehicle_id or ev_id,
-                {"road": current_road, "distance": distance, "speed": speed},
+                {
+                    "road": current_road,
+                    "distance": distance,
+                    "speed": speed,
+                    "next_intersection": vehicle_info.get("next_intersection"),
+                },
                 sim_time,
                 road_length=road_length,
                 is_detected_ev=True,
@@ -359,14 +400,17 @@ class EVPriorityService:
                     current_phase = int(cityflow_phase) + 1
 
                     pc = phase_counts.get(inter_id, 4)
+                    signal_approach_phases = {
+                        road_id: [phase + 1 for phase in phases]
+                        for road_id, phases in approach_phases.get(inter_id, {}).get("by_road", {}).items()
+                    }
+                    if approach_road and pri_green:
+                        signal_approach_phases[approach_road] = list(pri_green)
                     signal = SignalState(
                         intersection_id=inter_id, current_phase=current_phase,
                         phase_count=pc, phase_durations=[30] * pc,
                         phase_elapsed=0.0,
-                        approach_phases={
-                            road_id: [phase + 1 for phase in phases]
-                            for road_id, phases in approach_phases.get(inter_id, {}).get("by_road", {}).items()
-                        },
+                        approach_phases=signal_approach_phases,
                     )
 
                     ta = detection["distance_to_stop"] / max(detection["speed"], 0.1)
@@ -586,6 +630,9 @@ class EVPriorityService:
 
     def _road_length(self, road_id: str, road_by_id: dict) -> float:
         if road_id in road_by_id:
+            explicit_length = float(road_by_id[road_id].get("length", 0.0) or 0.0)
+            if explicit_length > 0:
+                return explicit_length
             pts = road_by_id[road_id].get("points", [])
             if len(pts) >= 2:
                 dx = pts[-1]["x"] - pts[0]["x"]

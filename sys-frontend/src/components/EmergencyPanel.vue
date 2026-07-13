@@ -5,6 +5,7 @@
 // ================================================================
 import { computed, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { ElMessage } from 'element-plus'
 import { useTrafficStore } from '@/stores/traffic'
 import type { EmergencyEvType } from '@/types/traffic'
 
@@ -21,6 +22,9 @@ const {
   compareMetrics,
   latestEvEvents,
   latestEvStatus,
+  simRoadnet,
+  simulationSid,
+  simulationStatus,
 } = storeToRefs(store)
 
 // ---- 本地状态：是否曾经触发过（区分"未触发"与"已完成"） ----
@@ -47,6 +51,20 @@ const dispatchForm = reactive({
   priority: 3 as number,
 })
 
+const dispatchIntersections = computed(() => {
+  const sumoIntersections = simRoadnet.value?.intersections
+    .filter((intersection) => !intersection.virtual)
+    .map((intersection) => ({
+      id: intersection.id,
+      name: `SUMO 路口 ${intersection.id}`,
+    })) ?? []
+  if (sumoIntersections.length > 0) return sumoIntersections
+  return intersections.value.map((intersection) => ({
+    id: intersection.id,
+    name: intersection.name,
+  }))
+})
+
 
 /** 确认按钮是否可用 */
 const canDispatch = computed(
@@ -54,6 +72,7 @@ const canDispatch = computed(
     dispatchForm.startId !== dispatchForm.endId &&
     dispatchForm.startId !== '' &&
     dispatchForm.endId !== '' &&
+    (!simulationSid.value || simulationStatus.value === 'running') &&
     !dispatching.value,
 )
 
@@ -171,10 +190,18 @@ watch(emergencyPhase, (phase) => {
 
 function openDispatchDialog(e: MouseEvent): void {
   dispatchResult.value = null
-  dispatchForm.startId = emergencyRoute.value[0] ?? 'A01'
-  dispatchForm.endId = emergencyRoute.value[emergencyRoute.value.length - 1] ?? 'A10'
+  const options = dispatchIntersections.value
+  const optionIds = new Set(options.map((option) => option.id))
+  const previousStart = emergencyRoute.value[0]
+  const previousEnd = emergencyRoute.value[emergencyRoute.value.length - 1]
+  dispatchForm.startId = previousStart && optionIds.has(previousStart)
+    ? previousStart
+    : options[0]?.id ?? ''
+  dispatchForm.endId = previousEnd && optionIds.has(previousEnd)
+    ? previousEnd
+    : options[options.length - 1]?.id ?? ''
   dispatchForm.vehicleType = 'ambulance'
-  dispatchForm.priority = 3
+  dispatchForm.priority = 1
   // 边界检测
   const pw = 420, ph = 400, margin = 12
   let x = e.clientX + 10, y = e.clientY - 10
@@ -210,6 +237,7 @@ async function handleConfirmDispatch(): Promise<void> {
     }
   } catch (err) {
     console.error('[EmergencyPanel] dispatch failed', err)
+    ElMessage.error(err instanceof Error ? err.message : '应急车辆调度失败')
   } finally {
     dispatching.value = false
   }
@@ -256,6 +284,7 @@ const latestEvDecision = computed(() => {
   const evEvents = events.filter(e => e.evId === evId)
   if (evEvents.length === 0) return null
   const latest = evEvents[evEvents.length - 1]
+  if (!latest) return null
   const label = intersections.value.find((it) => it.id === latest.intersectionId)?.name ?? latest.intersectionId
   return { ...latest, label }
 })
@@ -471,7 +500,7 @@ const signalDispatchList = computed(() => {
                   class="ep-select"
                 >
                   <el-option
-                    v-for="it in intersections"
+                    v-for="it in dispatchIntersections"
                     :key="it.id"
                     :label="`${it.name} [${it.id}]`"
                     :value="it.id"
@@ -488,7 +517,7 @@ const signalDispatchList = computed(() => {
                   class="ep-select"
                 >
                   <el-option
-                    v-for="it in intersections"
+                    v-for="it in dispatchIntersections"
                     :key="it.id"
                     :label="`${it.name} [${it.id}]`"
                     :value="it.id"
@@ -507,11 +536,11 @@ const signalDispatchList = computed(() => {
                 <div class="ep-field ep-field--half">
                   <label class="ep-label">优先级别</label>
                   <el-select v-model="dispatchForm.priority" class="ep-select">
-                    <el-option label="5 · 最高" :value="5" />
-                    <el-option label="4 · 高" :value="4" />
+                    <el-option label="1 · 最高" :value="1" />
+                    <el-option label="2 · 高" :value="2" />
                     <el-option label="3 · 中" :value="3" />
-                    <el-option label="2 · 低" :value="2" />
-                    <el-option label="1 · 最低" :value="1" />
+                    <el-option label="4 · 低" :value="4" />
+                    <el-option label="5 · 最低" :value="5" />
                   </el-select>
                 </div>
               </div>

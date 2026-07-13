@@ -6,6 +6,8 @@ public record VehicleStateDto(
         int lane,
         double x,
         double y,
+        Double lng,
+        Double lat,
         double angle,
         double speed
 ) {

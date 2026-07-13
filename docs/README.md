@@ -7,6 +7,8 @@
 - `项目简介.md`：项目简要介绍，包含当前实现、计划模块和整体路线。
 - `PROJECT_STRUCTURE.md`：项目整体目录结构和模块边界。
 - `CFRP-1.0-前后端通信协议.md`：前后端实时仿真通信协议。
+- `CITYFLOW_CONTRACT_BASELINE.md`：SUMO 迁移前冻结的 CityFlow 数据契约、指标口径、后端处理链路和 Traffic-R golden 基线。
+- `SUMO_MIGRATION_PLAN.md`：CityFlow 到 SUMO 的权威迁移计划、阶段门禁、数据对齐和真实地图场景路线。
 - `TRAFFIC_R1_REFERENCES.md`：Traffic-R1 / LLMTSCS 算法实验资料索引和接入关系。
 - `GIT_规范.md`：Git 分支、提交和协作规范。
 - `PROMPTS.md`：团队可复用 Prompt 和 AI 协作提示词。

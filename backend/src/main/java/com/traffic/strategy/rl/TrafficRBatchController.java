@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 @Component
 public class TrafficRBatchController {
 
-    private static final int DEFAULT_DURATION_SEC = 10;
+    private static final int DEFAULT_DURATION_SEC = 30;
 
     private final CloudTrafficRClient trafficRClient;
     private final TrafficRProperties properties;

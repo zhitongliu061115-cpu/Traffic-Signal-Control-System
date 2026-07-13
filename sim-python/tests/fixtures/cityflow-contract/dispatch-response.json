@@ -1,0 +1,11 @@
+{
+  "sid": "run_fixture",
+  "evId": "EV_FIXTURE",
+  "evType": "ambulance",
+  "priority": 1,
+  "cfVehicleId": "vehicle_fixture_ev",
+  "route": ["intersection_1_1", "intersection_2_1", "intersection_3_1", "intersection_3_2", "intersection_3_3", "intersection_3_4"],
+  "routeRoads": ["road_1_1_2", "road_2_1_2", "road_3_1_1", "road_3_2_1", "road_3_3_1"],
+  "estimatedTravelTime": 180.0,
+  "totalIntersections": 6
+}

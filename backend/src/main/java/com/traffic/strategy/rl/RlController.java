@@ -20,7 +20,7 @@ import java.util.Objects;
 @Component
 public class RlController implements TrafficSignalController {
 
-    private static final int DEFAULT_DURATION_SEC = 10;
+    private static final int DEFAULT_DURATION_SEC = 30;
 
     private final CloudTrafficRClient trafficRClient;
     private final TrafficRProperties properties;

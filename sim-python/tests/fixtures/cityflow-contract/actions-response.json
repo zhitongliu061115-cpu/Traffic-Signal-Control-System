@@ -1,0 +1,12 @@
+{
+  "sid": "run_fixture",
+  "applied": [
+    {
+      "intersectionId": "intersection_1_1",
+      "phaseIndex": 3,
+      "cityflowPhaseId": 2,
+      "phaseCode": "NTST",
+      "status": "applied"
+    }
+  ]
+}
