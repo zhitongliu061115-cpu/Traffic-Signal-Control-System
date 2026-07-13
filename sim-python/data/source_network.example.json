@@ -1,0 +1,57 @@
+{
+  "sceneId": "custom_real",
+  "coordinateSystem": "lnglat",
+  "intersections": [
+    {
+      "id": "W_IN_1",
+      "name": "west boundary entry",
+      "lng": 117.110000,
+      "lat": 36.660000,
+      "virtual": true
+    },
+    {
+      "id": "I001",
+      "name": "Road A - Road B",
+      "lng": 117.120000,
+      "lat": 36.660000,
+      "signalized": true
+    },
+    {
+      "id": "I002",
+      "name": "Road A - Road C",
+      "lng": 117.130000,
+      "lat": 36.660000,
+      "signalized": true
+    },
+    {
+      "id": "E_OUT_1",
+      "name": "east boundary exit",
+      "lng": 117.140000,
+      "lat": 36.660000,
+      "virtual": true
+    }
+  ],
+  "edges": [
+    {
+      "from": "W_IN_1",
+      "to": "I001",
+      "name": "Road A west segment",
+      "bidirectional": false,
+      "laneCount": 3
+    },
+    {
+      "from": "I001",
+      "to": "I002",
+      "name": "Road A middle segment",
+      "bidirectional": true,
+      "laneCount": 3
+    },
+    {
+      "from": "I002",
+      "to": "E_OUT_1",
+      "name": "Road A east segment",
+      "bidirectional": false,
+      "laneCount": 3
+    }
+  ]
+}

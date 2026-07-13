@@ -31,12 +31,51 @@ const dataLoading = ref(false)
 const viewerOpen = ref(false)
 const selectedRoadId = ref<string | null>(null)
 
+type SourceCollectorMode = 'idle' | 'real' | 'virtual' | 'edge'
+interface SourceIntersectionDraft {
+  id: string
+  name: string
+  lng: number
+  lat: number
+  signalized?: boolean
+  virtual?: boolean
+}
+interface SourceEdgeDraft {
+  id: string
+  from: string
+  to: string
+  name: string
+  bidirectional: boolean
+  laneCount: number
+}
+
+const SOURCE_COLLECTOR_KEY = 'custom_real_source_draft'
+const SHOW_DEFAULT_ROADNET = import.meta.env.VITE_SHOW_DEFAULT_ROADNET !== 'false'
+const sourceCollectorMode = ref<SourceCollectorMode>('idle')
+const sourceIntersections = ref<SourceIntersectionDraft[]>([])
+const sourceEdges = ref<SourceEdgeDraft[]>([])
+const sourceSelectedNodeId = ref<string | null>(null)
+const edgeBidirectional = ref(true)
+const edgeLaneCount = ref(3)
+
+const sourceNodeCount = computed(() => sourceIntersections.value.length)
+const sourceEdgeCount = computed(() => sourceEdges.value.length)
+const sourceModeText = computed(() => {
+  if (sourceCollectorMode.value === 'real') return '点击地图添加真实路口'
+  if (sourceCollectorMode.value === 'virtual') return '点击地图添加边界入口/出口'
+  if (sourceCollectorMode.value === 'edge') return '依次点击两个采集点添加道路连接'
+  return '选择采集模式'
+})
+
 let amapInstance: AMapInstance | null = null
 let roadLayer: ReturnType<typeof addAMapRoadLayer> | null = null
 let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
 let emergencyLine: AMap.Polyline | null = null
 let vehicleLayer: VehicleLayer | null = null
 let vehicleUpdateTimer: ReturnType<typeof setTimeout> | null = null
+const sourceMarkers = new Map<string, AMap.Marker>()
+const sourceMarkerContents = new Map<string, HTMLElement>()
+const sourceEdgeLines: AMap.Polyline[] = []
 
 async function bootstrapMap(): Promise<void> {
   if (!mapBox.value) return
@@ -53,12 +92,16 @@ async function bootstrapMap(): Promise<void> {
     map.on('dblclick', () => {
       if (selectedIntersectionId.value) viewerOpen.value = true
     })
+    map.on('click', (event: any) => {
+      handleSourceMapClick(event)
+    })
 
     mapReady.value = true
     dataLoading.value = true
 
     // 后台加载真实数据，完成后一次性渲染
     await loadRealData()
+    restoreSourceDraft()
     dataLoading.value = false
   } catch {
     mapFailed.value = true
@@ -73,6 +116,8 @@ function addEndpoint(map: Map<string, Array<[number, number]>>, itId: string, pt
 
 async function loadRealData(): Promise<void> {
   const map = amapInstance!.map
+
+  if (!SHOW_DEFAULT_ROADNET) return
 
   // ---- 第 1 步：从后端加载数据（失败自动降级 mock）----
   await store.loadDashboardData()
@@ -164,6 +209,230 @@ function toggleAddMode(): void {
   }
 }
 
+function setSourceMode(mode: SourceCollectorMode): void {
+  sourceCollectorMode.value = sourceCollectorMode.value === mode ? 'idle' : mode
+  if (sourceCollectorMode.value !== 'edge') sourceSelectedNodeId.value = null
+  syncSourceMarkerStyles()
+}
+
+function nextSourceId(prefix: string): string {
+  const used = new Set(sourceIntersections.value.map((item) => item.id))
+  let index = 1
+  let id = `${prefix}${String(index).padStart(3, '0')}`
+  while (used.has(id)) {
+    index += 1
+    id = `${prefix}${String(index).padStart(3, '0')}`
+  }
+  return id
+}
+
+function edgeId(from: string, to: string): string {
+  return `E_${from}_${to}`.replace(/[^A-Za-z0-9_]/g, '_')
+}
+
+function sourceNodeLabel(node: SourceIntersectionDraft): string {
+  return node.virtual ? 'V' : 'I'
+}
+
+function sourceNodeColor(node: SourceIntersectionDraft): string {
+  return node.virtual ? '#f5a623' : '#22d3a0'
+}
+
+function createSourceMarker(node: SourceIntersectionDraft): void {
+  if (!amapInstance) return
+  sourceMarkers.get(node.id)?.setMap(null)
+  const content = document.createElement('button')
+  content.type = 'button'
+  content.className = 'source-node-marker'
+  content.textContent = sourceNodeLabel(node)
+  content.title = `${node.name}\nlng=${node.lng.toFixed(6)} lat=${node.lat.toFixed(6)}`
+  content.style.borderColor = sourceNodeColor(node)
+  content.style.color = sourceNodeColor(node)
+
+  const marker = new AMap.Marker({
+    position: [node.lng, node.lat],
+    map: amapInstance.map,
+    content,
+    offset: new AMap.Pixel(-10, -10),
+    zIndex: 120,
+    draggable: true,
+  } as any)
+  marker.on('click', (event: any) => {
+    event?.originEvent?.stopPropagation?.()
+    handleSourceMarkerClick(node.id)
+  })
+  marker.on('dragging', (event: any) => {
+    const pos = event.lnglat
+    node.lng = pos.lng
+    node.lat = pos.lat
+    content.title = `${node.name}\nlng=${node.lng.toFixed(6)} lat=${node.lat.toFixed(6)}`
+    redrawSourceEdges()
+  })
+  marker.on('dragend', () => {
+    saveSourceDraft()
+    redrawSourceEdges()
+  })
+  sourceMarkers.set(node.id, marker)
+  sourceMarkerContents.set(node.id, content)
+  syncSourceMarkerStyles()
+}
+
+function syncSourceMarkerStyles(): void {
+  for (const node of sourceIntersections.value) {
+    const content = sourceMarkerContents.get(node.id)
+    if (!content) continue
+    const selected = sourceSelectedNodeId.value === node.id
+    content.style.background = selected ? 'rgba(34,211,160,0.95)' : 'rgba(4,21,39,0.94)'
+    content.style.color = selected ? '#041527' : sourceNodeColor(node)
+    content.style.boxShadow = selected ? '0 0 14px rgba(34,211,160,0.65)' : `0 0 10px ${sourceNodeColor(node)}66`
+  }
+}
+
+function handleSourceMapClick(event: any): void {
+  if (sourceCollectorMode.value !== 'real' && sourceCollectorMode.value !== 'virtual') return
+  const lng = event.lnglat.lng
+  const lat = event.lnglat.lat
+  const isVirtual = sourceCollectorMode.value === 'virtual'
+  const id = nextSourceId(isVirtual ? 'V' : 'I')
+  const node: SourceIntersectionDraft = {
+    id,
+    name: isVirtual ? `边界点 ${id}` : `路口 ${id}`,
+    lng,
+    lat,
+    ...(isVirtual ? { virtual: true } : { signalized: true }),
+  }
+  sourceIntersections.value.push(node)
+  createSourceMarker(node)
+  saveSourceDraft()
+}
+
+function handleSourceMarkerClick(nodeId: string): void {
+  if (sourceCollectorMode.value !== 'edge') {
+    sourceSelectedNodeId.value = nodeId
+    syncSourceMarkerStyles()
+    return
+  }
+  if (!sourceSelectedNodeId.value) {
+    sourceSelectedNodeId.value = nodeId
+    syncSourceMarkerStyles()
+    return
+  }
+  if (sourceSelectedNodeId.value === nodeId) {
+    sourceSelectedNodeId.value = null
+    syncSourceMarkerStyles()
+    return
+  }
+  addSourceEdge(sourceSelectedNodeId.value, nodeId)
+  sourceSelectedNodeId.value = null
+  syncSourceMarkerStyles()
+}
+
+function addSourceEdge(from: string, to: string): void {
+  if (sourceEdges.value.some((edge) => edge.from === from && edge.to === to)) return
+  const fromNode = sourceIntersections.value.find((item) => item.id === from)
+  const toNode = sourceIntersections.value.find((item) => item.id === to)
+  if (!fromNode || !toNode) return
+  sourceEdges.value.push({
+    id: edgeId(from, to),
+    from,
+    to,
+    name: `${fromNode.name}-${toNode.name}`,
+    bidirectional: edgeBidirectional.value,
+    laneCount: Math.max(1, Math.min(6, edgeLaneCount.value)),
+  })
+  redrawSourceEdges()
+  saveSourceDraft()
+}
+
+function redrawSourceEdges(): void {
+  if (!amapInstance) return
+  sourceEdgeLines.forEach((line) => line.setMap(null))
+  sourceEdgeLines.length = 0
+  for (const edge of sourceEdges.value) {
+    const from = sourceIntersections.value.find((item) => item.id === edge.from)
+    const to = sourceIntersections.value.find((item) => item.id === edge.to)
+    if (!from || !to) continue
+    const line = new AMap.Polyline({
+      map: amapInstance.map,
+      path: [[from.lng, from.lat], [to.lng, to.lat]],
+      strokeColor: edge.bidirectional ? '#7af7ff' : '#f5a623',
+      strokeWeight: 3,
+      strokeOpacity: 0.82,
+      lineJoin: 'round',
+      lineCap: 'round',
+      zIndex: 115,
+    } as any)
+    sourceEdgeLines.push(line)
+  }
+}
+
+function buildSourcePayload(): any {
+  return {
+    sceneId: 'custom_real',
+    coordinateSystem: 'lnglat',
+    intersections: sourceIntersections.value.map((item) => ({
+      id: item.id,
+      name: item.name,
+      lng: +item.lng.toFixed(6),
+      lat: +item.lat.toFixed(6),
+      ...(item.virtual ? { virtual: true } : { signalized: true }),
+    })),
+    edges: sourceEdges.value.map((edge) => ({
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      name: edge.name,
+      bidirectional: edge.bidirectional,
+      laneCount: edge.laneCount,
+    })),
+  }
+}
+
+function saveSourceDraft(): void {
+  try {
+    localStorage.setItem(SOURCE_COLLECTOR_KEY, JSON.stringify(buildSourcePayload()))
+  } catch { /* ignore */ }
+}
+
+function restoreSourceDraft(): void {
+  try {
+    const raw = localStorage.getItem(SOURCE_COLLECTOR_KEY)
+    if (!raw) return
+    const data = JSON.parse(raw)
+    sourceIntersections.value = Array.isArray(data.intersections) ? data.intersections : []
+    sourceEdges.value = Array.isArray(data.edges) ? data.edges : []
+    sourceMarkers.forEach((marker) => marker.setMap(null))
+    sourceMarkers.clear()
+    sourceMarkerContents.clear()
+    for (const node of sourceIntersections.value) createSourceMarker(node)
+    redrawSourceEdges()
+  } catch { /* ignore */ }
+}
+
+function exportCustomSourceNetwork(): void {
+  const json = JSON.stringify(buildSourcePayload(), null, 2)
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'custom_real_source.json'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function clearSourceDraft(): void {
+  if (!window.confirm('清空当前采集的路口和道路连接？')) return
+  sourceIntersections.value = []
+  sourceEdges.value = []
+  sourceSelectedNodeId.value = null
+  sourceMarkers.forEach((marker) => marker.setMap(null))
+  sourceMarkers.clear()
+  sourceMarkerContents.clear()
+  sourceEdgeLines.forEach((line) => line.setMap(null))
+  sourceEdgeLines.length = 0
+  localStorage.removeItem(SOURCE_COLLECTOR_KEY)
+}
+
 async function loadExpandedNetwork(map: AMap.Map): Promise<void> {
   try {
     // 清除旧的图层
@@ -188,7 +457,7 @@ async function loadExpandedNetwork(map: AMap.Map): Promise<void> {
         strokeWeight: 5, strokeOpacity: 0.7,
         lineJoin: 'round', lineCap: 'round',
         zIndex: 50,
-      })
+      } as any)
       expandedLines.push(poly)
     }
 
@@ -208,7 +477,7 @@ async function loadExpandedNetwork(map: AMap.Map): Promise<void> {
         offset: new AMap.Pixel(isEx ? -11 : -9, isEx ? -11 : -9),
         zIndex: 90,
         draggable: true,
-      })
+      } as any)
 
       // 拖拽时显示坐标
       m.on('dragging', (e: any) => {
@@ -254,7 +523,7 @@ async function loadExpandedNetwork(map: AMap.Map): Promise<void> {
         offset: new AMap.Pixel(-9, -9),
         zIndex: 91,
         draggable: true,
-      })
+      } as any)
       m.on('dragging', (ev: any) => {
         const p = ev.lnglat
         newIt.lng = p.lng; newIt.lat = p.lat
@@ -358,6 +627,8 @@ onBeforeUnmount(() => {
   emergencyLine?.setMap(null)
   expandedLines.forEach((l) => l.setMap(null))
   expandedMarkers.forEach((m) => m.setMap(null))
+  sourceMarkers.forEach((m) => m.setMap(null))
+  sourceEdgeLines.forEach((l) => l.setMap(null))
   amapInstance?.destroy()
 })
 
@@ -391,6 +662,25 @@ const selectedRoadName = computed(
           <span class="status-dot status-dot--warning" /> 离线/降级
         </span>
         <span class="titlebar-deco"><i /><i /><i /></span>
+        <div v-if="mapReady" class="source-toolbar">
+          <button
+            class="source-tool-btn"
+            :class="{ active: sourceCollectorMode === 'real' }"
+            @click="setSourceMode('real')"
+          >真实路口</button>
+          <button
+            class="source-tool-btn"
+            :class="{ active: sourceCollectorMode === 'virtual' }"
+            @click="setSourceMode('virtual')"
+          >边界点</button>
+          <button
+            class="source-tool-btn"
+            :class="{ active: sourceCollectorMode === 'edge' }"
+            @click="setSourceMode('edge')"
+          >道路连接</button>
+          <button class="source-tool-btn" @click="exportCustomSourceNetwork">导出配置</button>
+          <button class="source-tool-btn subtle" @click="clearSourceDraft">清空</button>
+        </div>
         <button
           v-if="mapReady"
           class="cyber-btn mrn-export-btn"
@@ -427,7 +717,29 @@ const selectedRoadName = computed(
           </div>
         </div>
 
-        <MapLegend :visible="!mapFailed && !dataLoading" />
+        <MapLegend :visible="SHOW_DEFAULT_ROADNET && !mapFailed && !dataLoading" />
+
+        <div v-if="!mapFailed && !dataLoading" class="source-collector-panel">
+          <div class="source-collector-panel__title">路网采集</div>
+          <div class="source-collector-panel__mode">{{ sourceModeText }}</div>
+          <div class="source-collector-panel__stats">
+            <span>路口 {{ sourceNodeCount }}</span>
+            <span>道路 {{ sourceEdgeCount }}</span>
+          </div>
+          <div class="source-collector-panel__controls">
+            <label>
+              <input v-model="edgeBidirectional" type="checkbox">
+              双向道路
+            </label>
+            <label>
+              车道
+              <input v-model.number="edgeLaneCount" type="number" min="1" max="6">
+            </label>
+          </div>
+          <div v-if="sourceSelectedNodeId" class="source-collector-panel__selected">
+            已选 {{ sourceSelectedNodeId }}
+          </div>
+        </div>
 
 
         <div class="mrn-hint" v-if="!mapFailed && !dataLoading">
@@ -471,4 +783,20 @@ const selectedRoadName = computed(
 .mrn-enter-btn { padding: 3px 7px; font-size: 10px; color: #00d4ff; background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.35); cursor: pointer; transition: all 0.2s; white-space: nowrap; }
 .mrn-enter-btn:hover { background: rgba(0,212,255,0.18); box-shadow: 0 0 8px rgba(0,212,255,0.25); }
 .mrn-hint { position: absolute; top: 8px; right: 10px; z-index: 4; font-size: 10px; color: #8da8c5; padding: 3px 8px; background: rgba(4,21,39,0.7); border: 1px solid rgba(0,212,255,0.15); pointer-events: none; }
+.mrn-export-btn { display: none; }
+.source-toolbar { margin-left: 8px; display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.source-tool-btn { min-height: 24px; padding: 3px 9px; font-size: 11px; color: #9db8d6; background: rgba(4,21,39,0.72); border: 1px solid rgba(0,212,255,0.25); cursor: pointer; }
+.source-tool-btn:hover { color: #d9f7ff; border-color: rgba(0,212,255,0.55); background: rgba(0,212,255,0.1); }
+.source-tool-btn.active { color: #041527; border-color: #22d3a0; background: #22d3a0; }
+.source-tool-btn.subtle { color: #f2b23d; border-color: rgba(245,166,35,0.45); }
+.source-collector-panel { position: absolute; left: 8px; bottom: 8px; z-index: 6; width: 230px; padding: 9px 10px; background: rgba(4,21,39,0.9); border: 1px solid rgba(0,212,255,0.28); color: #9db8d6; backdrop-filter: blur(4px); }
+.source-collector-panel__title { font-size: 12px; font-weight: 700; color: #d9f7ff; }
+.source-collector-panel__mode { margin-top: 4px; font-size: 11px; color: #7af7ff; line-height: 1.35; }
+.source-collector-panel__stats { margin-top: 7px; display: flex; gap: 8px; font-size: 11px; color: #f2b23d; }
+.source-collector-panel__controls { margin-top: 8px; display: flex; align-items: center; gap: 10px; font-size: 11px; }
+.source-collector-panel__controls label { display: inline-flex; align-items: center; gap: 4px; }
+.source-collector-panel__controls input[type="number"] { width: 42px; color: #d9f7ff; background: rgba(2,8,23,0.75); border: 1px solid rgba(0,212,255,0.25); padding: 2px 4px; }
+.source-collector-panel__selected { margin-top: 6px; font-size: 11px; color: #22d3a0; }
+:deep(.source-node-marker) { width: 20px; height: 20px; border-radius: 50%; border: 2px solid currentColor; background: rgba(4,21,39,0.94); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; cursor: grab; padding: 0; font-family: 'DINPro','Rajdhani',sans-serif; }
+:deep(.source-node-marker:active) { cursor: grabbing; }
 </style>
