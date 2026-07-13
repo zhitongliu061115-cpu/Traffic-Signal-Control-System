@@ -183,7 +183,9 @@ describe('AiAssistant', () => {
     await flushPromises()
 
     const aiMessages = wrapper.findAll('.ai-chat-msg--ai .ai-chat-bubble__text')
-    const latestHtml = aiMessages[aiMessages.length - 1].html()
+    const latestMessage = aiMessages[aiMessages.length - 1]
+    if (!latestMessage) throw new Error('Expected an AI response message')
+    const latestHtml = latestMessage.html()
     expect(latestHtml).toContain('<br>1.')
     expect(latestHtml).toContain('<br>2.')
     expect(latestHtml).toContain('<br>3.')
