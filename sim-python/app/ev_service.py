@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # ev_service.py - EV Priority Service Layer
 # =========================================
 # Full EV priority pipeline:
@@ -53,6 +53,31 @@ class EVSession:
     completed: bool = False
     completion_time: float = 0.0
 
+
+def _build_phase_durations_cache(roadnet: dict) -> dict:
+    """Build {intersection_id: [durations]} from roadnet."""
+    cache = {}
+    for inter in roadnet.get("intersections", []):
+        if inter.get("virtual"):
+            continue
+        phases = inter.get("trafficLight", {}).get("lightphases", [])
+        if phases:
+            cache[inter["id"]] = [p.get("duration", 30.0) for p in phases]
+    return cache
+
+def _get_phase_durations(inter_id: str, roadnet: dict, pc: int) -> list:
+    """Read actual phase durations from roadnet, fallback to [30]*pc."""
+    try:
+        intersections = {i["id"]: i for i in roadnet.get("intersections", [])}
+        inter = intersections.get(inter_id, {})
+        phases = inter.get("trafficLight", {}).get("lightphases", [])
+        if phases:
+            durations = [p.get("duration", 30.0) for p in phases]
+            if len(durations) == pc:
+                return durations
+    except Exception:
+        pass
+    return [30.0] * pc
 class EVPriorityService:
 
     def __init__(self):
@@ -71,6 +96,7 @@ class EVPriorityService:
         self.handled: Dict[str, set] = {}
         self.phase_counts: Dict[str, Dict[str, int]] = {}
         self.approach_phases: Dict[str, Dict[str, Dict[str, List[int]]]] = {}
+        self._phase_durations: Dict[str, Dict[str, List[float]]] = {}
 
     # ================================================================
     #  Roadnet loading
@@ -80,6 +106,7 @@ class EVPriorityService:
         self.planner.load_roadnet(roadnet)
         self.snapper.load_roadnet(roadnet)
         self.road_index[sid] = {r["id"]: r for r in roadnet.get("roads", [])}
+        self._phase_durations[sid] = _build_phase_durations_cache(roadnet)
         intersections = {i["id"]: i for i in roadnet.get("intersections", [])}
         pc: Dict[str, int] = {}
         ap: Dict[str, Dict[str, List[int]]] = {}
@@ -151,6 +178,18 @@ class EVPriorityService:
                 retryable=False,
             )
 
+        # [DYNAMIC-DIJKSTRA] Read edge vehicle counts from SUMO for congestion-aware routing
+        if hasattr(engine, 'get_lane_vehicle_count'):
+            try:
+                lane_counts = engine.get_lane_vehicle_count()
+                edge_vehicles = {}
+                for lane_id, cnt in lane_counts.items():
+                    edge = lane_id.rsplit('_', 1)[0] if '_' in lane_id else lane_id
+                    edge_vehicles[edge] = edge_vehicles.get(edge, 0) + cnt
+                self.planner.set_congestion_weights(edge_vehicles)
+            except Exception:
+                pass
+
         path = self.planner.find_path(start_inter, end_inter)
         if not path:
             raise ApiError(
@@ -220,6 +259,7 @@ class EVPriorityService:
             route_roads=road_route,
         )
 
+
         self.logger.log(
             timestamp=sim_time, ev_id=ev_id, event_type="dispatched",
             detail=f"route={'->'.join(path)} cf_id={cf_vehicle_id}",
@@ -271,7 +311,6 @@ class EVPriorityService:
                 continue
             ev_session.seen_in_engine = True
             ev_session.missing_since = None
-
             current_road = str(vehicle_info.get("road", ""))
             distance = float(vehicle_info.get("distance", 0))
             speed = float(vehicle_info.get("speed", 0))
@@ -355,7 +394,7 @@ class EVPriorityService:
                     pc = phase_counts.get(inter_id, 4)
                     signal = SignalState(
                         intersection_id=inter_id, current_phase=current_phase,
-                        phase_count=pc, phase_durations=[30] * pc,
+                        phase_count=pc, phase_durations=self._phase_durations.get(sid, {}).get(inter_id, [30.0] * pc),
                         phase_elapsed=0.0,
                         approach_phases={
                             road_id: [phase + 1 for phase in phases]
@@ -385,8 +424,60 @@ class EVPriorityService:
                         resolved = pri_green[0] if pri_green else current_phase
                     elif decision == SignalStrategy.DECISION_FORCE_GREEN:
                         resolved = pri_green[0] if pri_green else current_phase
+
+                    # Safety guard: validate phase change
+                    # FORCE_GREEN is an emergency override ? skip safety check
+                    # Other decisions must pass the guard
+                    safe_ok = True
+                    if resolved != current_phase and decision != SignalStrategy.DECISION_FORCE_GREEN:
+                        # Build current_phases from engine + existing overrides
+                        all_current_phases = dict(self._active_overrides.get(sid, {}))
+                        if inter_id not in all_current_phases:
+                            all_current_phases[inter_id] = current_phase
+                        for other_inter in by_intersection:
+                            if other_inter == inter_id:
+                                continue
+                            if other_inter not in all_current_phases:
+                                try:
+                                    all_current_phases[other_inter] = int(engine.get_tl_phase(other_inter)) + 1
+                                except Exception:
+                                    pass
+
+                        safe_ok, safe_msg, safe_phase = self.safety_guard.guard(
+                            sid=sid,
+                            inter_id=inter_id,
+                            current_phase=current_phase,
+                            target_phase=resolved,
+                            sim_time=sim_time,
+                            current_phases=all_current_phases,
+                            roadnet_roads=list(road_by_id.values()),
+                            is_emergency=True,
+                        )
+                        if not safe_ok:
+                            print(f"[SafetyGuard] BLOCKED {inter_id}: {safe_msg}", flush=True)
+                            ev_events.append({
+                                "evId": ev_id,
+                                "evType": ev_session.ev_type,
+                                "intersectionId": inter_id,
+                                "decision": "blocked_by_safety",
+                                "phaseIndex": -1,
+                                "phaseIndexBefore": current_phase,
+                                "timestamp": round(sim_time, 3),
+                                "status": "blocked",
+                                "detail": safe_msg,
+                            })
+                            continue
+
                     signal_overrides[inter_id] = resolved
                     signal_override_owners[inter_id] = ev_id
+
+                    # [PAPER-REFACTOR] Apply via duration manipulation
+                    if inter_id not in self._active_overrides.get(sid, {}):
+                        self._apply_duration_override(
+                            engine, inter_id, resolved, current_phase,
+                            decision, adjustment, sim_time,
+                            self.phase_counts.get(sid, {}).get(inter_id, 4))
+
 
                     self.logger.log(
                         timestamp=sim_time, ev_id=ev_id, event_type="detection",
@@ -462,6 +553,17 @@ class EVPriorityService:
             except Exception:
                 pass
 
+        # Check for EVs that have completed their journey
+        for ev_id, ev in self.ev_sessions.get(sid, {}).items():
+            if ev.completed or not ev.cf_vehicle_id:
+                continue
+            if len(ev.passed_intersections) >= len(ev.route_roads):
+                try:
+                    engine.remove_vehicle(ev.cf_vehicle_id)
+                    print(f'[EV] Removed vehicle {ev.cf_vehicle_id} (route complete, passed={len(ev.passed_intersections)}/{len(ev.route)})')
+                except Exception as e:
+                    print(f'[EV] Failed to remove vehicle {ev.cf_vehicle_id}: {e}')
+
         # Merge new + persisted overrides
         result = dict(self._active_overrides.get(sid, {}))
         return result, ev_events, self._build_ev_status(sid, sim_time)
@@ -498,6 +600,7 @@ class EVPriorityService:
         self.handled.pop(sid, None)
         self.phase_counts.pop(sid, None)
         self.approach_phases.pop(sid, None)
+        self._phase_durations.pop(sid, None)
         self._active_overrides.pop(sid, None)
         self._override_owners.pop(sid, None)
 
@@ -624,6 +727,28 @@ class EVPriorityService:
                     return phases
         # Fallback: all phases
         return list(range(phase_counts.get(inter_id, 4)))
+
+    # [PAPER-REFACTOR] Duration-based signal control (paper Section 3.5-3.6)
+    # Uses setPhaseDuration / setCompleteRedYellowGreenDefinition instead
+    # of setPhase (phase jumping). Phase order is NEVER changed, so
+    # conflicting directions cannot be green simultaneously.
+    def _apply_duration_override(self, engine, inter_id, target_phase, current_phase,
+                                  decision, adjustment, sim_time, phase_count):
+        if not hasattr(engine, 'set_tl_phase_duration'):
+            return  # Not a SUMO engine, skip silently
+        if decision == 'green_extend':
+            remaining = engine.get_tl_phase_remaining(inter_id)
+            new_dur = max(5.0, remaining + adjustment + 5.0)
+            engine.set_tl_phase_duration(inter_id, new_dur)
+            print(f'  [PAPER] GREEN_EXTEND {inter_id}: +{adjustment:.0f}s '
+                  f'(remaining {remaining:.0f}s -> {new_dur:.0f}s)')
+        elif decision in ('red_early', 'force_green'):
+            if hasattr(engine, 'build_ev_priority_program'):
+                engine.build_ev_priority_program(inter_id, target_phase)
+                skipped = abs(target_phase - current_phase) if current_phase >= 0 else '?'
+                print(f'  [PAPER] {decision.upper()} {inter_id}: '
+                      f'phase{current_phase}->phase{target_phase} '
+                      f'(intermediate phases compressed, EV phase extended)')
 
     def _intersections_to_roads(self, sid: str, path: List[str]) -> List[str]:
         roads = []

@@ -44,6 +44,10 @@ class SimulationEngine(ABC):
     def next_frame(self, sid: str, owner_id: str = "default") -> JsonDict:
         """Advance one simulation step and return a frame."""
 
+    def remove_vehicle(self, vid: str) -> bool:
+        """Remove a vehicle from the simulation. Default: no-op."""
+        return False
+
 
 class RealCityFlowEngine(SimulationEngine):
     """Adapter for the real CityFlow Python Engine.
@@ -702,6 +706,10 @@ class RealCityFlowEngine(SimulationEngine):
             "avgWait": round(queue_count * 3.0, 3),
             "throughput": finished_vehicle_count,
         }
+
+    def remove_vehicle(self, vid: str) -> bool:
+        """CityFlow does not support dynamic vehicle removal. No-op."""
+        return False
 
     def _finished_vehicle_count(self, engine: object) -> int:
         try:

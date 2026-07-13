@@ -21,8 +21,25 @@ from app import ev_config as cfg
 class DijkstraPathPlanner:
     def __init__(self):
         self.graph: Dict[str, Dict[str, float]] = {}
+        self._base_weights: Dict[str, Dict[str, float]] = {}  # original weights w/o congestion
+        self.congestion_weights: Dict[str, float] = {}  # road_id -> vehicle count
         self.conflict_nodes: set = set()
         self._build_graph()
+
+    # [DYNAMIC-DIJKSTRA] Real-time congestion-aware edge weights
+    def set_congestion_weights(self, edge_vehicles: dict) -> None:
+        self.congestion_weights = dict(edge_vehicles)
+
+    def _get_congested_weight(self, from_node: str, to_node: str, base: float) -> float:
+        if not self.congestion_weights:
+            return base
+        for rid, count in self.congestion_weights.items():
+            if rid not in getattr(self, '_road_index', {}):
+                continue
+            ri = self._road_index[rid]
+            if ri.get("startIntersection") == from_node and ri.get("endIntersection") == to_node:
+                return base * (1.0 + count * 0.015)  # congestion: each vehicle adds ~1.5% weight
+        return base
 
     def _build_graph(self):
         edge_time = cfg.ROAD_LENGTH / cfg.SPEED_LIMIT
@@ -41,11 +58,16 @@ class DijkstraPathPlanner:
     def load_roadnet(self, roadnet):
         """Rebuild graph from actual roadnet data (replaces grid-based _build_graph)."""
         self.graph = {}
+        self._base_weights = {}
+        self._road_index = {}  # [DYNAMIC-DIJKSTRA] road_id -> road_dict
         for inter in roadnet.get("intersections", []):
             self.graph[inter["id"]] = {}
         for road in roadnet.get("roads", []):
             si = road["startIntersection"]
             ei = road["endIntersection"]
+            rid = road.get("id", "")
+            if rid:
+                self._road_index[rid] = road
             if si not in self.graph or ei not in self.graph:
                 continue
             pts = road.get("points", [])
@@ -57,6 +79,7 @@ class DijkstraPathPlanner:
                 length = 400.0
             travel_time = length / 16.67  # cfg.SPEED_LIMIT default
             self.graph[si][ei] = travel_time
+            self._base_weights.setdefault(si, {})[ei] = travel_time
 
 
     def add_conflict(self, node_id: str):
@@ -82,7 +105,8 @@ class DijkstraPathPlanner:
             if current == end:
                 break
             for neighbor, base_weight in self.graph[current].items():
-                weight = base_weight
+                # [DYNAMIC-DIJKSTRA] Apply congestion multiplier
+                weight = self._get_congested_weight(current, neighbor, base_weight)
                 if neighbor in self.conflict_nodes:
                     weight += cfg.CONFLICT_WEIGHT
                 new_dist = dist + weight
