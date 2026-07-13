@@ -28,7 +28,7 @@ public class AgentIntentClassifier {
         AgentLlmClient.LlmResult llmResult = llmClient.chat("tool_plan", plannerSystemPrompt(), plannerUserPrompt(input));
         String rawPlan = llmResult.text();
         try {
-            AgentPlan parsed = parsePlan(rawPlan);
+            AgentPlan parsed = normalizePlan(parsePlan(rawPlan), input);
             return parsed.withRawPlan(rawPlan, llmResult.source(), llmResult.fallback());
         } catch (Exception ex) {
             return AgentPlan.directAnswer(
@@ -68,6 +68,122 @@ public class AgentIntentClassifier {
             }
         }
         return new AgentPlan(intent, needsTools && !toolCalls.isEmpty(), rationale, toolCalls, rawPlan, "llm", false);
+    }
+
+    private AgentPlan normalizePlan(AgentPlan plan, AgentPlanningInput input) {
+        List<AgentPlan.PlannedToolCall> normalizedCalls = new ArrayList<>();
+        for (AgentPlan.PlannedToolCall call : plan.toolCalls()) {
+            AgentPlan.PlannedToolCall normalized = normalizeRealtimeToolChoice(call, input);
+            if (hasInvalidRequiredArguments(normalized)) {
+                continue;
+            }
+            normalizedCalls.add(normalized);
+        }
+        if (normalizedCalls.isEmpty()) {
+            String rationale = plan.rationale();
+            if (looksLikeEmergencyDraft(input.message())) {
+                rationale = appendRationale(rationale, "生成应急调度草案需要真实起点和终点路口 ID，当前请求未提供，后端已阻止占位参数调用。");
+            } else if (plan.needsTools()) {
+                rationale = appendRationale(rationale, "工具计划包含缺失或占位参数，后端已阻止执行。");
+            }
+            return new AgentPlan(plan.intent(), false, rationale, List.of(), plan.rawPlan(), plan.plannerSource(), plan.fallback());
+        }
+        return new AgentPlan(plan.intent(), plan.needsTools(), plan.rationale(), normalizedCalls, plan.rawPlan(), plan.plannerSource(), plan.fallback());
+    }
+
+    private AgentPlan.PlannedToolCall normalizeRealtimeToolChoice(
+            AgentPlan.PlannedToolCall call,
+            AgentPlanningInput input
+    ) {
+        if ("get_region_metrics".equals(call.toolName()) && looksLikeRealtimeCongestionQuestion(input.message())) {
+            Map<String, Object> arguments = new LinkedHashMap<>();
+            if (StringUtils.hasText(input.sid())) {
+                arguments.put("sid", input.sid());
+            }
+            return new AgentPlan.PlannedToolCall(
+                    "diagnose_congestion",
+                    arguments,
+                    appendRationale(call.reason(), "实时拥堵问题应读取内存最新帧，因此改用 diagnose_congestion。")
+            );
+        }
+        return call;
+    }
+
+    private boolean hasInvalidRequiredArguments(AgentPlan.PlannedToolCall call) {
+        return switch (call.toolName()) {
+            case "get_intersection_detail" -> invalidArg(call.arguments(), "intersectionId");
+            case "get_road_detail" -> invalidArg(call.arguments(), "roadId");
+            case "get_decision_trace" -> invalidArg(call.arguments(), "decisionId");
+            case "search_knowledge_base" -> invalidArg(call.arguments(), "query");
+            case "draft_emergency_dispatch" ->
+                    invalidArg(call.arguments(), "startIntersection") || invalidArg(call.arguments(), "endIntersection");
+            default -> false;
+        };
+    }
+
+    private boolean invalidArg(Map<String, Object> arguments, String name) {
+        if (arguments == null) {
+            return true;
+        }
+        Object value = arguments.get(name);
+        if (value == null) {
+            return true;
+        }
+        String text = String.valueOf(value).trim();
+        if (!StringUtils.hasText(text)) {
+            return true;
+        }
+        return List.of(
+                "待用户提供",
+                "用户提供",
+                "未提供",
+                "未知",
+                "unknown",
+                "undefined",
+                "null",
+                "none",
+                "todo",
+                "tbd",
+                "起点",
+                "终点",
+                "示例",
+                "example",
+                "xxx",
+                "路口A",
+                "路口B",
+                "A",
+                "B"
+        ).stream().anyMatch(placeholder -> placeholder.equalsIgnoreCase(text));
+    }
+
+    private boolean looksLikeRealtimeCongestionQuestion(String message) {
+        if (!StringUtils.hasText(message)) {
+            return false;
+        }
+        return containsAny(message, "当前", "实时", "现在", "最新", "哪个路口最拥堵", "最堵", "拥堵排名");
+    }
+
+    private boolean looksLikeEmergencyDraft(String message) {
+        if (!StringUtils.hasText(message)) {
+            return false;
+        }
+        return containsAny(message, "调度建议", "应急调度", "绿波", "救护车", "消防车", "警车");
+    }
+
+    private boolean containsAny(String text, String... patterns) {
+        for (String pattern : patterns) {
+            if (text.contains(pattern)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String appendRationale(String original, String addition) {
+        if (!StringUtils.hasText(original)) {
+            return addition;
+        }
+        return original + "；" + addition;
     }
 
     private String extractJson(String rawText) {
@@ -125,10 +241,13 @@ public class AgentIntentClassifier {
                 - 纯概念、规范、部署说明问题优先调用 search_knowledge_base。
                 - 排查 Traffic-R 调用失败、云端隧道、CityFlow、WebSocket 或数据库状态时，优先调用 get_system_health。
                 - 解释“为什么模型选了 A，最终执行 B”时，必须调用 get_decision_trace；如果没有 decisionId，不要编造 ID，可先调用 get_latest_control_decisions。
-                - 生成应急调度方案时，只能调用 draft_emergency_dispatch，不能调用任何执行控制动作的接口。
+                - 用户只说“生成调度建议/调度建议”但没有给出明确起点和终点时，不要调用 draft_emergency_dispatch；应设置 needsTools=false，并在 rationale 中说明需要用户提供 startIntersection 和 endIntersection。
+                - 只有用户明确给出真实起点和终点路口 ID 时，才能调用 draft_emergency_dispatch；不能调用任何执行控制动作的接口。
                 - 检查 phase 映射、Traffic-R 被 safety 阻断、roadnet/数据库/相位不一致时，优先调用 audit_configuration_consistency。
-                - 诊断类问题优先选择 diagnose_congestion、detect_signal_anomaly、detect_spillback_risk、get_region_metrics 或 compare_strategy_metrics。
-                - 不要创造工具名。不要填入未知 ID；如果用户没有提供必填 ID，就不要调用该工具，除非先用其他工具查询候选。
+                - “当前/实时/现在/哪个路口最拥堵/最堵/拥堵排名”优先选择 diagnose_congestion 或 get_current_simulation_state，不能优先选择 get_region_metrics。
+                - get_region_metrics 只用于历史复盘、区域平均指标、明确 regionId/intersectionIds 的低频统计或策略效果汇总；不要把它当作实时状态工具。
+                - 诊断类问题优先选择 diagnose_congestion、detect_signal_anomaly、detect_spillback_risk；历史区域统计才选择 get_region_metrics 或 compare_strategy_metrics。
+                - 不要创造工具名。不要填入未知 ID；禁止使用“待用户提供”“A”“B”“起点”“终点”“unknown”等占位值。如果用户没有提供必填 ID，就不要调用该工具，除非先用其他工具查询候选。
                 - 最多输出 4 个 toolCalls。
 
                 输出 JSON 格式：

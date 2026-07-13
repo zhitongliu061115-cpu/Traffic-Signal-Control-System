@@ -1070,3 +1070,17 @@ export interface AlertCreatedData {
 
 这些内容可以在其他设计文档中单独定义。
 
+---
+
+## 21. 数据分析短时预测 REST
+
+前端仅通过 Spring Boot 获取短时预测：
+
+```http
+GET /api/v1/data-analysis/forecast
+```
+
+`data.available=true` 时，`intersections` 是每个路口的 +10 分钟预测，`timeline` 是路网 +2/+4/+6/+8/+10 分钟预测。每个预测点包含 `flow`、`queue`、`wait`、`risk` 和 `riskLevel`。响应同时携带 `modelVersion`、`modelType`、`generatedAt`、`dataUntil` 和 `trainedSource`。
+
+`data.available=false` 时 `intersections` 与 `timeline` 为空，`message` 给出数据不足、模型关闭或服务不可达原因。前端不得使用本地模拟值替代该状态，也不得直接访问 Python `traffic-forecast` 服务。
+

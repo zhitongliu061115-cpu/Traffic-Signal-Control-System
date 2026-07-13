@@ -1,9 +1,9 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 // ================================================================
 // EmergencyPanel — 应急绿波控制面板
 // 驱动应急车辆模拟、绿波激活、路线高亮（与 RoadNetwork 联动）
 // ================================================================
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useTrafficStore } from '@/stores/traffic'
 import type { EmergencyEvType } from '@/types/traffic'
@@ -18,6 +18,8 @@ const {
   intersections,
   vehicles,
   compareMetrics,
+  latestEvEvents,
+  latestEvStatus,
 } = storeToRefs(store)
 
 // ---- 本地状态：是否曾经触发过（区分"未触发"与"已完成"） ----
@@ -125,9 +127,9 @@ type EmergencyPhase = 'idle' | 'planning' | 'executing' | 'completed'
 const emergencyPhase = computed<EmergencyPhase>(() => {
   if (!wasEverTriggered.value) return 'idle'
   if (systemMode.value === 'emergency' && emergencyVehicle.value.greenWaveActive) return 'executing'
-  if (wasEverTriggered.value && systemMode.value === 'normal') return 'completed'
-  // 绿波未激活但车辆在路上
-  if (wasEverTriggered.value && emergencyVehOnRoad.value) return 'planning'
+  // 车辆在路上但绿波未激活
+  if (emergencyVehOnRoad.value) return 'planning'
+  if (systemMode.value === 'normal') return 'completed'
   return 'completed'
 })
 
@@ -149,6 +151,17 @@ const canStartWave = computed(() =>
   emergencyVehOnRoad.value != null,
 )
 const canRestore = computed(() => systemMode.value === 'emergency')
+
+let completedTimer: ReturnType<typeof setTimeout> | null = null
+watch(emergencyPhase, (phase) => {
+  if (phase === 'completed') {
+    if (completedTimer) clearTimeout(completedTimer)
+    completedTimer = setTimeout(() => {
+      wasEverTriggered.value = false
+      completedTimer = null
+    }, 4000)
+  }
+})
 
 // ================================================================
 // 按钮处理
@@ -206,6 +219,7 @@ function handleSimulateVehicle(): void {
 
 function handleStartGreenWave(): void {
   store.startEmergencyGreenWave()
+  if (completedTimer) { clearTimeout(completedTimer); completedTimer = null }
   wasEverTriggered.value = true
   store.generateMockAlert(
     'green_wave_start',
@@ -229,6 +243,53 @@ function handleRestoreNormal(): void {
 const waveProgress = computed(() => {
   if (totalRouteNodes.value <= 1) return 0
   return (activatedNodeCount.value / totalRouteNodes.value) * 100
+})
+
+// ---- 应急车辆事件 ----
+const latestEvDecision = computed(() => {
+  const events = latestEvEvents.value
+  if (!events || events.length === 0) return null
+  const evId = emergencyVehicle.value.id
+  if (!evId) return null
+  const evEvents = events.filter(e => e.evId === evId)
+  if (evEvents.length === 0) return null
+  const latest = evEvents[evEvents.length - 1]
+  const label = intersections.value.find((it) => it.id === latest.intersectionId)?.name ?? latest.intersectionId
+  return { ...latest, label }
+})
+
+const processedIntersections = computed(() => {
+  const events = latestEvEvents.value
+  if (!events || events.length === 0) return []
+  const evId = emergencyVehicle.value.id
+  if (!evId) return []
+  const seen = new Set()
+  const result = []
+  for (const e of events) {
+    if (e.evId !== evId) continue
+    if (seen.has(e.intersectionId)) continue
+    seen.add(e.intersectionId)
+    const label = intersections.value.find((it) => it.id === e.intersectionId)?.name ?? e.intersectionId
+    result.push({ id: e.intersectionId, label, decision: e.decision })
+  }
+  return result
+})
+
+// ---- 信号调度列表（路线所有路口 + 当前决策） ----
+const signalDispatchList = computed(() => {
+  const events = latestEvEvents.value
+  const evId = emergencyVehicle.value.id
+  return routeNodeLabels.value.map(node => {
+    const nodeEvents = events.filter(e => e.evId === evId && e.intersectionId === node.id)
+    const latest = nodeEvents.length > 0 ? nodeEvents[nodeEvents.length - 1] : null
+    const active = latest !== null
+    return {
+      id: node.id,
+      label: node.name,
+      decision: latest ? latest.decision : '暂无',
+      active,
+    }
+  })
 })
 </script>
 
@@ -290,41 +351,32 @@ const waveProgress = computed(() => {
         </div>
       </div>
 
-      <!-- ===== 绿波路线进度 ===== -->
+      <!-- ===== 调度路线 & 信号调度 ===== -->
       <div v-if="emergencyPhase !== 'idle'" class="ep-wave-section">
-        <div class="ep-wave-section__head">
-          <span class="ep-wave-section__label">绿波路线</span>
-          <span class="ep-wave-section__count">
-            {{ activatedNodeCount }} / {{ totalRouteNodes }} 路口已放行
-          </span>
-        </div>
-
-        <!-- 节点链 -->
-        <div class="ep-node-chain">
-          <template v-for="(n, idx) in routeNodeLabels" :key="n.id">
-            <div
-              class="ep-node-chip"
-              :class="{
-                'ep-node-chip--active': idx <= activeGreenWaveIndex && emergencyPhase === 'executing',
-                'ep-node-chip--current': idx === activeGreenWaveIndex && emergencyPhase === 'executing',
-              }"
-            >
-              <span class="ep-node-chip__dot" />
-              <span class="ep-node-chip__id">{{ n.id }}</span>
-            </div>
-            <span v-if="idx < routeNodeLabels.length - 1" class="ep-node-chip__arrow">→</span>
-          </template>
-        </div>
-
-        <!-- 进度条 -->
-        <div class="ep-wave-bar">
-          <div class="health-bar" style="flex:1;">
-            <div
-              class="health-bar-fill"
-              :style="{ width: `${waveProgress}%`, background: 'linear-gradient(90deg, #00E5FF, #22D3A0)' }"
-            />
+        <!-- 调度路线 -->
+        <div class="ep-route-box">
+          <div class="ep-route-box__title">调度路线</div>
+          <div class="ep-route-box__nodes">
+            <template v-for="(n, idx) in routeNodeLabels" :key="n.id">
+              <span class="ep-route-box__node">
+                {{ n.name || n.id }}
+              </span>
+              <span v-if="idx < routeNodeLabels.length - 1" class="ep-route-box__arrow">→</span>
+            </template>
           </div>
-          <span class="ep-wave-bar__pct">{{ Math.round(waveProgress) }}%</span>
+        </div>
+
+        <!-- 信号调度 -->
+        <div class="ep-signal-table">
+          <div class="ep-signal-table__title">信号调度</div>
+          <div class="ep-signal-table__rows">
+            <div v-for="item in signalDispatchList" :key="item.id" class="ep-signal-row">
+              <span class="ep-signal-row__name">{{ item.label }}</span>
+              <span class="ep-signal-row__decision" :class="{ 'ep-signal-row__decision--active': item.active }">
+                {{ item.decision }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1042,4 +1094,87 @@ const waveProgress = computed(() => {
   font-weight: 700;
   text-align: right;
 }
+
+/* 调度路线 & 信号调度 */
+.ep-route-box {
+  padding: 10px 12px;
+  background: rgba(0, 212, 255, 0.05);
+  border: 1px solid rgba(0, 212, 255, 0.15);
+  border-radius: 6px;
+}
+.ep-route-box__title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5a7595;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.ep-route-box__nodes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.ep-route-box__node {
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(4, 21, 39, 0.4);
+  color: #8da8c5;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+}
+.ep-route-box__node--active {
+  background: rgba(0, 212, 255, 0.15);
+  color: #00d4ff;
+}
+.ep-route-box__arrow { color: #3a5575; font-weight: 700; }
+
+.ep-signal-table {
+  margin-top: 10px;
+  border: 1px solid rgba(0, 212, 255, 0.12);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ep-signal-table__title {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #00d4ff;
+  letter-spacing: 0.06em;
+  background: rgba(0, 212, 255, 0.06);
+  border-bottom: 1px solid rgba(0, 212, 255, 0.1);
+}
+.ep-signal-table__rows {
+  display: flex;
+  flex-direction: column;
+}
+.ep-signal-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.06);
+  transition: background 0.2s;
+}
+.ep-signal-row:last-child { border-bottom: none; }
+.ep-signal-row:hover { background: rgba(0, 212, 255, 0.04); }
+.ep-signal-row__name {
+  font-size: 12px;
+  color: #c0d8f0;
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+}
+.ep-signal-row__decision {
+  font-size: 11px;
+  color: #5a7595;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: rgba(4, 21, 39, 0.3);
+}
+.ep-signal-row__decision--active {
+  color: #22d3a0;
+  background: rgba(34, 211, 160, 0.12);
+}
+
 </style>

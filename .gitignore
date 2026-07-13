@@ -1,5 +1,7 @@
 # Dependencies and build output
 node_modules/
+cloud/traffic-forecast/.venv/
+cloud/traffic-forecast/models/
 dist/
 coverage/
 target/
@@ -43,6 +45,7 @@ temp-three-frontend/*.log
 # Generated test outputs
 cloud/traffic-r/test-results/
 backend/agent-eval/reports/
+backend/agent-eval-v2/reports/
 docs/agent-finetuning/
 output/
 
@@ -51,4 +54,3 @@ output/
 .idea/
 .DS_Store
 Thumbs.db
-outputs/

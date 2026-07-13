@@ -5,12 +5,14 @@ import com.traffic.agent.dto.AgentChatRequest;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AgentResponseAssemblerTest {
@@ -107,5 +109,29 @@ class AgentResponseAssemblerTest {
         assertTrue(answer.reply().contains("结论：\n1."));
         assertTrue(answer.reply().contains("\n2."));
         assertTrue(answer.reply().contains("\n3."));
+    }
+
+    @Test
+    void doesNotForceSyntheticAnswerLengthInPrompts() {
+        AgentLlmClient llmClient = mock(AgentLlmClient.class);
+        when(llmClient.chat(eq("answer"), anyString(), anyString())).thenReturn(new AgentLlmClient.LlmResult(
+                "结论：当前没有需要补充的实时信息。",
+                "test",
+                false
+        ));
+        AgentResponseAssembler assembler = new AgentResponseAssembler(llmClient, new ObjectMapper());
+
+        assembler.assemble(
+                new AgentChatRequest("说明当前状态", "session-1", "run-1", null, Map.of()),
+                new AgentContextBuilder.AgentContext("run-1", "{}"),
+                AgentPlan.directAnswer("无需工具", "{}", "test", false),
+                List.of()
+        );
+
+        ArgumentCaptor<String> systemPrompt = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> userPrompt = ArgumentCaptor.forClass(String.class);
+        verify(llmClient).chat(eq("answer"), systemPrompt.capture(), userPrompt.capture());
+        assertFalse(systemPrompt.getValue().contains("300-600 字"));
+        assertFalse(userPrompt.getValue().contains("300-600 字"));
     }
 }

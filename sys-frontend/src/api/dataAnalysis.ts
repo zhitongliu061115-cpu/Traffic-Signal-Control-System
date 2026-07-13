@@ -99,12 +99,30 @@ interface DashboardToast {
   tone: 'cyan' | 'emerald' | 'rose'
 }
 
+export interface StrategyMetric {
+  baseline: number
+  label: string
+  maxPressure: number
+  trafficR1: number
+  unit: string
+  lowerBetter: boolean
+}
+
+interface MetricTrend {
+  label: string
+  values: number[]
+}
+
 export interface DataAnalysisBootstrapData {
   sampleCount: number
   sampleRate: number
   healthScore: number
   sampledPointId: string
+  liveCursor: number
+  livePollIntervalMs: number
+  scatterCorrelation: number
   metrics: MonitoringMetric[]
+  metricTrends: MetricTrend[]
   statusDistribution: StatusBucket[]
   dailySeries: DailyPoint[]
   hourlySeries: HourlyPoint[]
@@ -112,8 +130,56 @@ export interface DataAnalysisBootstrapData {
   heatmap: HeatmapCell[]
   composition: CompositionItem[]
   scatterPoints: ScatterPoint[]
+  strategyMetrics: StrategyMetric[]
   records: MonitoringRecord[]
   toasts: DashboardToast[]
+}
+
+export interface DataAnalysisLiveUpdateData {
+  cursor: number
+  sampleCount: number
+  healthScore: number
+  sampledPointId: string
+  metrics: MonitoringMetric[]
+  statusDistribution: StatusBucket[]
+  hourlyPoint: HourlyPoint
+  composition: CompositionItem[]
+  record: MonitoringRecord
+  toast: DashboardToast | null
+}
+
+export type ForecastRiskLevel = 'free' | 'jammed' | 'slow'
+
+export interface ForecastIntersection {
+  flow: number
+  id: string
+  label: string
+  queue: number
+  risk: string
+  riskLevel: ForecastRiskLevel
+  wait: number
+}
+
+export interface ForecastTimelinePoint {
+  flow: number
+  horizonMinutes: number
+  minute: string
+  queue: number
+  risk: string
+  riskLevel: ForecastRiskLevel
+  wait: number
+}
+
+export interface DataAnalysisForecastData {
+  available: boolean
+  dataUntil: string | null
+  generatedAt: string | null
+  intersections: ForecastIntersection[]
+  message: string
+  modelType: string | null
+  modelVersion: string | null
+  timeline: ForecastTimelinePoint[]
+  trainedSource: string | null
 }
 
 export async function fetchDataAnalysisBootstrap(): Promise<DataAnalysisBootstrapData> {
@@ -125,6 +191,34 @@ export async function fetchDataAnalysisBootstrap(): Promise<DataAnalysisBootstra
   const body = (await response.json()) as ApiResponse<DataAnalysisBootstrapData>
   if (!body.success) {
     throw new Error(body.message || 'data analysis bootstrap failed')
+  }
+
+  return body.data
+}
+
+export async function fetchNextDataAnalysisUpdate(cursor: number): Promise<DataAnalysisLiveUpdateData | null> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/data-analysis/updates/next?cursor=${encodeURIComponent(cursor)}`)
+  if (!response.ok) {
+    throw new Error(`data analysis update failed: ${response.status}`)
+  }
+
+  const body = (await response.json()) as ApiResponse<DataAnalysisLiveUpdateData | null>
+  if (!body.success) {
+    throw new Error(body.message || 'data analysis update failed')
+  }
+
+  return body.data
+}
+
+export async function fetchDataAnalysisForecast(): Promise<DataAnalysisForecastData> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/data-analysis/forecast`)
+  if (!response.ok) {
+    throw new Error(`data analysis forecast failed: ${response.status}`)
+  }
+
+  const body = (await response.json()) as ApiResponse<DataAnalysisForecastData>
+  if (!body.success) {
+    throw new Error(body.message || 'data analysis forecast failed')
   }
 
   return body.data

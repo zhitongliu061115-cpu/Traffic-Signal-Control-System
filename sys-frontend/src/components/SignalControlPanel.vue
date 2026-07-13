@@ -177,7 +177,7 @@ const deviceOk = computed(
 
 // ---- AI 决策建议（根据路口实时状态动态生成） ----
 const aiPhaseIndex = computed(() => {
-  if (!activeIntersection.value || activeIntersection.value.greenRemainKnown === false) return 0
+  if (!activeIntersection.value) return 0
   const idx = PHASE_ORDER.indexOf(activeIntersection.value.currentPhase as SignalPhase)
   return idx >= 0 ? idx : 0
 })
@@ -266,7 +266,7 @@ const phaseProgress = computed(() => {
 })
 
 const phaseProgressColor = computed(() => {
-  if (!activeIntersection.value || activeIntersection.value.greenRemainKnown === false) return '#5A7595'
+  if (!activeIntersection.value) return '#5A7595'
   if (activeIntersection.value.deviceStatus !== 'online') return '#5A7595'
   const r = activeIntersection.value.greenRemain
   if (r <= 3) return '#FF4D6D'

@@ -99,7 +99,7 @@ Record-Call "tool.get_system_health.enhanced" "tool" {
 $currentState = Record-Call "tool.get_current_simulation_state" "tool" {
     $path = "/api/v1/agent/tools/get_current_simulation_state"
     if (-not [string]::IsNullOrWhiteSpace($Sid)) {
-        $path = "$path?sid=$([uri]::EscapeDataString($Sid))"
+        $path = "${path}?sid=$([uri]::EscapeDataString($Sid))"
     }
     Invoke-JsonGet $path
 }
@@ -162,7 +162,7 @@ if (-not [string]::IsNullOrWhiteSpace($StartIntersection) -and -not [string]::Is
 $latestDecisions = Record-Call "tool.get_latest_control_decisions" "tool" {
     $path = "/api/v1/agent/tools/get_latest_control_decisions?limit=1"
     if (-not [string]::IsNullOrWhiteSpace($Sid)) {
-        $path = "$path&sid=$([uri]::EscapeDataString($Sid))"
+        $path = "${path}&sid=$([uri]::EscapeDataString($Sid))"
     }
     Invoke-JsonGet $path
 }
@@ -182,7 +182,7 @@ if (-not $SkipAgentChat) {
     Record-Call "agent.chat.system_health" "agent" {
         $response = Invoke-AgentChat "Check Spring Boot, CityFlow, Traffic-R, WebSocket and database health. Return only the final user-facing conclusion."
         Assert-AgentReplyClean $response
-        if (($response.data.toolCalls | Where-Object { $_.toolName -eq "get_system_health" }).Count -lt 1) {
+        if (@($response.data.toolCalls | Where-Object { $_.toolName -eq "get_system_health" }).Count -lt 1) {
             throw "agent did not call get_system_health"
         }
         $response
@@ -191,7 +191,7 @@ if (-not $SkipAgentChat) {
     Record-Call "agent.chat.knowledge" "agent" {
         $response = Invoke-AgentChat "Explain the relationship between Traffic-R and the safety layer. Return only the final user-facing explanation."
         Assert-AgentReplyClean $response
-        if (($response.data.toolCalls | Where-Object { $_.toolName -eq "search_knowledge_base" }).Count -lt 1) {
+        if (@($response.data.toolCalls | Where-Object { $_.toolName -eq "search_knowledge_base" }).Count -lt 1) {
             throw "agent did not call search_knowledge_base"
         }
         $response
@@ -202,7 +202,7 @@ if (-not $SkipAgentChat) {
             $message = "Draft an emergency vehicle dispatch plan from $StartIntersection to $EndIntersection. Return only final user-facing advice and do not output JSON."
             $response = Invoke-AgentChat $message
             Assert-AgentReplyClean $response
-            if (($response.data.toolCalls | Where-Object { $_.toolName -eq "draft_emergency_dispatch" }).Count -lt 1) {
+            if (@($response.data.toolCalls | Where-Object { $_.toolName -eq "draft_emergency_dispatch" }).Count -lt 1) {
                 throw "agent did not call draft_emergency_dispatch"
             }
             $response
