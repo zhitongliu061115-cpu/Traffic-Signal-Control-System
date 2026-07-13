@@ -134,26 +134,50 @@ async function loadRealData(): Promise<void> {
 
 function syncEmergency(): void {
   if (!emergencyLine) return
-  if (systemMode.value === 'emergency') {
-    const pts: [number, number][] = []
-    for (const id of emergencyRoute.value) {
-      // 优先直接匹配 mock ID，否则尝试 CityFlow intersection_{col}_{row} 格式反向映射
-      let it = intersections.value.find((i) => i.id === id)
-      if (!it) {
-        const m = id.match(/^intersection_(\d+)_(\d+)$/)
-        if (m) {
-          const [, colText, rowText] = m
-          if (colText !== undefined && rowText !== undefined) {
-            const col = Number(colText)
-            const row = Number(rowText)
-            it = intersections.value.find((i) => i.col === col && i.row === row)
-          }
+  if (systemMode.value === 'emergency' && emergencyRoute.value.length > 0) {
+    // 将 CityFlow 路口 ID 映射为 mock 路口 ID
+    const cfToMock = (cfId: string): string | null => {
+      const direct = intersections.value.find((i) => i.id === cfId)
+      if (direct) return direct.id
+      const m = cfId.match(/^intersection_(\d+)_(\d+)$/)
+      if (m) {
+        const col = Number(m[1]), row = Number(m[2])
+        const it = intersections.value.find((i) => i.col === col && i.row === row)
+        return it ? it.id : null
+      }
+      return null
+    }
+
+    // 逐段找路网中的真实道路路径
+    const allPts: [number, number][] = []
+    for (let i = 0; i < emergencyRoute.value.length - 1; i++) {
+      const fromMock = cfToMock(emergencyRoute.value[i])
+      const toMock = cfToMock(emergencyRoute.value[i + 1])
+      if (!fromMock || !toMock) continue
+
+      // 找连接这两个 mock 路口的路
+      const road = roads.value.find(
+        (r) => (r.from === fromMock && r.to === toMock) || (r.from === toMock && r.to === fromMock)
+      )
+      if (road && road.path && road.path.length >= 2) {
+        const path = road.from === fromMock ? road.path : [...road.path].reverse()
+        for (const pt of path) {
+          allPts.push([pt[0], pt[1]])
+        }
+      } else {
+        // 降级：直连路口中心
+        const fi = intersections.value.find((it) => it.id === fromMock)
+        const ti = intersections.value.find((it) => it.id === toMock)
+        if (fi && ti) {
+          if (allPts.length === 0) allPts.push([fi.lng, fi.lat])
+          allPts.push([ti.lng, ti.lat])
         }
       }
-      if (it) pts.push([it.lng, it.lat])
     }
-    emergencyLine.setPath(pts)
-    emergencyLine.show()
+    if (allPts.length >= 2) {
+      emergencyLine.setPath(allPts)
+      emergencyLine.show()
+    }
   } else {
     emergencyLine.hide()
   }
@@ -171,6 +195,7 @@ watch([roads, intersections], () => {
   }, 300)
 }, { deep: true })
 watch(systemMode, syncEmergency)
+watch(emergencyRoute, () => { if (systemMode.value === 'emergency') syncEmergency() }, { deep: true })
 
 // 单击路口 marker → 镜头拉近放大到该路口
 watch(selectedIntersectionId, (id) => {
