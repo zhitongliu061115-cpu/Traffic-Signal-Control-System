@@ -43,6 +43,7 @@ temp-three-frontend/*.log
 # Generated test outputs
 cloud/traffic-r/test-results/
 backend/agent-eval/reports/
+backend/agent-eval-v2/reports/
 docs/agent-finetuning/
 output/
 
