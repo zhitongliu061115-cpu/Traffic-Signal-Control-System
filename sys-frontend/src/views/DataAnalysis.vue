@@ -1,23 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 
-import { fetchDataAnalysisBootstrap, type DataAnalysisBootstrapData } from '@/api/dataAnalysis'
+import {
+  fetchDataAnalysisBootstrap,
+  fetchNextDataAnalysisUpdate,
+  type DataAnalysisBootstrapData,
+  type DataAnalysisLiveUpdateData,
+  type StrategyMetric,
+} from '@/api/dataAnalysis'
 import AiAssistant from '@/components/AiAssistant.vue'
 import SystemWorkbenchHeader from '@/components/SystemWorkbenchHeader.vue'
 import bgVideo from '@/assets/images/bg/bg-video.mp4'
 
 type Tone = 'amber' | 'emerald' | 'rose' | 'sky'
 type StatusTone = 'amber' | 'emerald' | 'rose' | 'slate'
-type NumberRange = readonly [number, number]
-
-interface TrafficStatusProfile {
-  delay: NumberRange
-  load: NumberRange
-  queue: NumberRange
-  saturation: NumberRange
-  speed: NumberRange
-}
-
 interface MonitoringMetric {
   detail: string
   label: string
@@ -176,29 +172,25 @@ const colors = {
   violet: '#7c5cff',
 }
 
-const framesPerMinute = 96
-
-function todayFrameCount(date = new Date()) {
-  const secondsSinceMidnight = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds()
-  return Math.floor((secondsSinceMidnight / 60) * framesPerMinute)
-}
-
 const now = ref(new Date())
-const syncSeconds = ref(2)
-const sampleCount = ref(todayFrameCount(now.value))
-const sampleRate = ref(framesPerMinute)
+const syncSeconds = ref(0)
+const sampleCount = ref(0)
+const sampleRate = ref(0)
 const hoveredDailyIndex = ref<number | null>(null)
 const hoveredHourlyIndex = ref<number | null>(null)
 const hoveredComposition = ref<string | null>(null)
 const hoveredHeatmap = ref<{ date?: string; hour?: string; mode: 'cell' | 'column' | 'row' } | null>(null)
 const sampledHeatmapKey = ref<string | null>(null)
-const scanIndex = ref(3)
-const sampledPointId = ref('intersection_3_4-27')
+const scanIndex = ref(0)
+const sampledPointId = ref('')
 const hoveredScatterTone = ref<Tone | null>(null)
 const hoveredScatterRiskChart = ref<string | null>(null)
 const hoveredScatterTrendChart = ref<string | null>(null)
 const hiddenTones = ref<Set<Tone>>(new Set())
 const forecastTick = ref(0)
+const liveCursor = ref(0)
+const livePollIntervalMs = ref(2000)
+const scatterCorrelation = ref(0)
 const metricDeltas = ref<Record<string, { tone: 'down' | 'up'; value: string }>>({})
 const metricFlash = ref<Record<string, 'down' | 'up'>>({})
 const metricTrendPoints = ref<Record<string, number[]>>({})
@@ -209,16 +201,10 @@ const tooltipPosition = ref({ x: 0, y: 0 })
 
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let syncTimer: ReturnType<typeof setInterval> | null = null
-let scanTimer: ReturnType<typeof setInterval> | null = null
 let forecastTimer: ReturnType<typeof setInterval> | null = null
-let liveMetricTimer: ReturnType<typeof setInterval> | null = null
-let hourlyTimer: ReturnType<typeof setInterval> | null = null
-let energyTimer: ReturnType<typeof setInterval> | null = null
-let healthTimer: ReturnType<typeof setInterval> | null = null
 let tableTimer: number | null = null
-let eventTimer: number | null = null
-let sampleFrameCarry = 0
 let tooltipHideTimer: number | null = null
+let dataStreamActive = false
 
 const metrics = ref<MonitoringMetric[]>([
   {
@@ -260,7 +246,7 @@ const statusDistribution = ref<StatusBucket[]>([
   { count: 0, label: '离线', tone: 'slate' },
 ])
 
-const dailySeries = reactive<DailyPoint[]>(withHistoricalDates([
+const dailySeries = reactive<DailyPoint[]>([
   { date: '06-28', electricity: 42860, hvac: 0, occupancy: 28.6, water: 0 },
   { date: '06-29', electricity: 46210, hvac: 0, occupancy: 31.2, water: 0 },
   { date: '06-30', electricity: 48780, hvac: 0, occupancy: 35.8, water: 0 },
@@ -273,7 +259,7 @@ const dailySeries = reactive<DailyPoint[]>(withHistoricalDates([
   { date: '07-07', electricity: 70420, hvac: 0, occupancy: 56.7, water: 0 },
   { date: '07-08', electricity: 74180, hvac: 0, occupancy: 61.8, water: 0 },
   { date: '07-09', electricity: 64280, hvac: 0, occupancy: 46.8, water: 0 },
-]))
+])
 
 const hourlySeries = ref<HourlyPoint[]>([
   { electricity: 320, hour: '00:00', hvac: 24, occupancy: 32, temperature: 5.4 },
@@ -608,29 +594,19 @@ const records = ref<MonitoringRecord[]>([
   },
 ])
 
+// Never expose local fallback values while the database bootstrap is pending.
+metrics.value = []
+statusDistribution.value = []
+dailySeries.splice(0)
+hourlySeries.value = []
+buildingSummaries.value = []
+heatmap.splice(0)
+composition.value = []
+scatterPoints.splice(0)
+records.value = []
+
 function replaceReactiveArray<T>(target: T[], source: T[]) {
   target.splice(0, target.length, ...source)
-}
-
-function previousDateLabels(count: number, reference = now.value) {
-  return Array.from({ length: count }, (_, index) => {
-    const offset = count - index
-    const date = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate() - offset)
-    return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-  })
-}
-
-function withHistoricalDates(points: DailyPoint[]) {
-  const source = points.slice(-12)
-  const labels = previousDateLabels(source.length)
-  return source.map((point, index) => ({ ...point, date: labels[index] ?? point.date }))
-}
-
-function withHistoricalHeatmapDates(cells: HeatmapCell[]) {
-  const sourceDates = [...new Set(cells.map((cell) => cell.date))]
-  const labels = previousDateLabels(sourceDates.length)
-  const dateMapping = new Map(sourceDates.map((date, index) => [date, labels[index] ?? date]))
-  return cells.map((cell) => ({ ...cell, date: dateMapping.get(cell.date) ?? cell.date }))
 }
 
 function applyBootstrapData(data: DataAnalysisBootstrapData) {
@@ -638,17 +614,71 @@ function applyBootstrapData(data: DataAnalysisBootstrapData) {
   sampleRate.value = data.sampleRate
   healthScore.value = data.healthScore
   sampledPointId.value = data.sampledPointId
+  liveCursor.value = data.liveCursor
+  livePollIntervalMs.value = data.livePollIntervalMs
+  scatterCorrelation.value = data.scatterCorrelation
   metrics.value = data.metrics
+  metricTrendPoints.value = Object.fromEntries(data.metricTrends.map((trend) => [trend.label, trend.values]))
   statusDistribution.value = data.statusDistribution
-  replaceReactiveArray(dailySeries, withHistoricalDates(data.dailySeries))
+  replaceReactiveArray(dailySeries, data.dailySeries)
   hourlySeries.value = data.hourlySeries
   buildingSummaries.value = data.buildingSummaries
-  replaceReactiveArray(heatmap, withHistoricalHeatmapDates(data.heatmap))
+  replaceReactiveArray(heatmap, data.heatmap)
   composition.value = data.composition
   replaceReactiveArray(scatterPoints, data.scatterPoints)
+  strategyMetrics.value = data.strategyMetrics
   records.value = data.records
   toasts.value = data.toasts
   syncSeconds.value = 0
+}
+
+function applyLiveUpdate(data: DataAnalysisLiveUpdateData) {
+  const previousMetrics = new Map(metrics.value.map((metric) => [metric.label, parseMetricValue(metric.value).numeric]))
+  const nextDeltas: Record<string, { tone: 'down' | 'up'; value: string }> = {}
+  const nextFlashes: Record<string, 'down' | 'up'> = {}
+
+  for (const metric of data.metrics) {
+    const previous = previousMetrics.get(metric.label)
+    const next = parseMetricValue(metric.value).numeric
+    if (previous !== undefined && Math.abs(next - previous) > 0.001) {
+      const tone = next >= previous ? 'up' : 'down'
+      nextDeltas[metric.label] = { tone, value: `${next >= previous ? '+' : ''}${formatNumber(next - previous, 1)}` }
+      nextFlashes[metric.label] = tone
+    }
+    const source = metricTrendPoints.value[metric.label] ?? []
+    metricTrendPoints.value = {
+      ...metricTrendPoints.value,
+      [metric.label]: [...source.slice(-6), next],
+    }
+  }
+
+  liveCursor.value = data.cursor
+  sampleCount.value = data.sampleCount
+  healthScore.value = data.healthScore
+  sampledPointId.value = data.sampledPointId
+  metrics.value = data.metrics
+  metricDeltas.value = nextDeltas
+  metricFlash.value = nextFlashes
+  statusDistribution.value = data.statusDistribution
+  records.value = [data.record, ...records.value].slice(0, 12)
+  if (data.toast) {
+    toasts.value = [data.toast, ...toasts.value].slice(0, 3)
+  }
+  syncSeconds.value = 0
+}
+
+async function pollNextDatabaseUpdate() {
+  if (!dataStreamActive) return
+  try {
+    const update = await fetchNextDataAnalysisUpdate(liveCursor.value)
+    if (update) applyLiveUpdate(update)
+  } catch (error) {
+    console.error('Failed to read the next data-analysis database event', error)
+  } finally {
+    if (dataStreamActive) {
+      tableTimer = window.setTimeout(pollNextDatabaseUpdate, livePollIntervalMs.value)
+    }
+  }
 }
 
 const statusTotal = computed(() => statusDistribution.value.reduce((sum, item) => sum + item.count, 0))
@@ -658,39 +688,37 @@ const warningCount = computed(
 const normalCount = computed(
   () => statusDistribution.value.find((item) => item.tone === 'emerald')?.count ?? 0,
 )
-const maintenanceCount = computed(
-  () => statusDistribution.value.find((item) => item.tone === 'amber')?.count ?? 0,
-)
 const offlineCount = computed(
   () => statusDistribution.value.find((item) => item.tone === 'slate')?.count ?? 0,
 )
 const riskCount = computed(() => warningCount.value)
 const emergencyHandlingCount = computed(() => Math.min(2, Math.max(0, warningCount.value - 1)))
 
-const healthScore = ref(82)
+const healthScore = ref(0)
 const healthGaugeStyle = computed(() => ({
   backgroundImage: `conic-gradient(${colors.cyan} 0deg ${healthScore.value * 3.6}deg, rgba(0,212,255,0.08) ${healthScore.value * 3.6}deg 360deg)`,
 }))
 
-const peakPoint = computed(() =>
-  hourlySeries.value.reduce((best, point) => (point.electricity > best.electricity ? point : best)),
-)
-const quietPoint = computed(() =>
-  hourlySeries.value.reduce((best, point) => (point.electricity < best.electricity ? point : best)),
-)
-const busiestPoint = computed(() =>
-  hourlySeries.value.reduce((best, point) => (point.temperature > best.temperature ? point : best)),
-)
+const emptyHourlyPoint: HourlyPoint = { electricity: 0, hour: '-', hvac: 0, occupancy: 0, temperature: 0 }
+const peakPoint = computed(() => hourlySeries.value.length === 0
+  ? emptyHourlyPoint
+  : hourlySeries.value.reduce((best, point) => (point.electricity > best.electricity ? point : best)))
+const quietPoint = computed(() => hourlySeries.value.length === 0
+  ? emptyHourlyPoint
+  : hourlySeries.value.reduce((best, point) => (point.electricity < best.electricity ? point : best)))
+const busiestPoint = computed(() => hourlySeries.value.length === 0
+  ? emptyHourlyPoint
+  : hourlySeries.value.reduce((best, point) => (point.temperature > best.temperature ? point : best)))
 
 const heatmapDates = computed(() => [...new Set(heatmap.map((item) => item.date))])
 const heatmapHours = computed(() => [...new Set(heatmap.map((item) => item.hour))])
-const peakHeatmapCell = computed(() =>
-  heatmap.reduce((best, item) => (item.electricity > best.electricity ? item : best)),
-)
-const previousDayLabel = computed(() => previousDateLabels(1)[0] ?? '')
-const peakHeatmapDisplay = computed(() => `${previousDayLabel.value} ${peakHeatmapCell.value.hour}`)
+const emptyHeatmapCell: HeatmapCell = { date: '-', electricity: 0, hour: '-', intensity: 0, occupancy: 0 }
+const peakHeatmapCell = computed(() => heatmap.length === 0
+  ? emptyHeatmapCell
+  : heatmap.reduce((best, item) => (item.electricity > best.electricity ? item : best)))
+const peakHeatmapDisplay = computed(() => `${peakHeatmapCell.value.date} ${peakHeatmapCell.value.hour}`)
 const averageHeatmapElectricity = computed(
-  () => heatmap.reduce((sum, item) => sum + item.electricity, 0) / heatmap.length,
+  () => heatmap.reduce((sum, item) => sum + item.electricity, 0) / Math.max(heatmap.length, 1),
 )
 
 const compositionTotal = computed(() => composition.value.reduce((sum, item) => sum + item.value, 0))
@@ -771,7 +799,7 @@ const hourlyChart = computed(() => {
 
 const scatterCharts = computed(() => [
   makeScatterChart({
-    correlation: 0.82,
+    correlation: scatterCorrelation.value,
     title: '排队长度与到达流量关系',
     xKey: 'occupancy',
     xLabel: '到达流量 辆/h',
@@ -797,13 +825,7 @@ const detailHeaders = [
   { colClass: 'col-status', label: '状态', meaning: '路口运行状态' },
 ] as const
 
-const strategyMetrics = [
-  { baseline: 18, label: '平均排队长度', maxPressure: 12.4, trafficR1: 9.7, unit: '辆', lowerBetter: true },
-  { baseline: 1260, label: '累计排队车辆数', maxPressure: 880, trafficR1: 690, unit: '辆', lowerBetter: true },
-  { baseline: 52, label: '平均等待时间', maxPressure: 38, trafficR1: 31, unit: '秒', lowerBetter: true },
-  { baseline: 238, label: '平均旅行时间', maxPressure: 209, trafficR1: 196, unit: '秒', lowerBetter: true },
-  { baseline: 7200, label: '通行量', maxPressure: 7900, trafficR1: 8350, unit: '辆/h', lowerBetter: false },
-]
+const strategyMetrics = ref<StrategyMetric[]>([])
 
 const strategySeries = [
   { color: colors.slate, key: 'baseline', label: 'FixedTime' },
@@ -933,28 +955,10 @@ const forecastChart = computed(() => {
 })
 
 const queueImprovement = computed(() => {
-  const queueMetric = strategyMetrics[0]!
+  const queueMetric = strategyMetrics.value[0]
+  if (!queueMetric) return 0
   return Math.round(((queueMetric.baseline - queueMetric.trafficR1) / queueMetric.baseline) * 100)
 })
-
-function seedMetricTrends() {
-  metricTrendPoints.value = Object.fromEntries(
-    metrics.value.map((metric, metricIndex) => [
-      metric.label,
-      Array.from({ length: 7 }, (_, index) => 38 + metricIndex * 5 + Math.sin(index * 0.9 + metricIndex) * 10),
-    ]),
-  )
-}
-
-function updateMetricTrend(label: string) {
-  const source = metricTrendPoints.value[label] ?? [42, 48, 45, 55, 52, 60, 58]
-  const last = source[source.length - 1] ?? 50
-  const next = clamp(last + randomBetween(-8, 8), 22, 82)
-  metricTrendPoints.value = {
-    ...metricTrendPoints.value,
-    [label]: [...source.slice(1), next],
-  }
-}
 
 function metricTrendPolyline(label: string) {
   const points = metricTrendPoints.value[label] ?? []
@@ -981,199 +985,6 @@ function metricTrendLastPoint(label: string) {
     x: 160,
     y: 24 - ((value - min) / range) * 18,
   }
-}
-
-function getMetricNumber(label: string) {
-  const metric = metrics.value.find((item) => item.label === label)
-  return metric ? parseMetricValue(metric.value).numeric : 0
-}
-
-function updateMetricNumber(
-  label: string,
-  nextValue: number,
-  options: { decimals?: number; detail?: string; suffix?: string } = {},
-) {
-  const currentValue = getMetricNumber(label)
-  const decimals = options.decimals ?? (String(nextValue).includes('.') ? 1 : 0)
-  const suffix = options.suffix ?? metrics.value.find((item) => item.label === label)?.value.replace(/^[-\d.]+/, '') ?? ''
-  const rounded = Number(nextValue.toFixed(decimals))
-  const delta = rounded - currentValue
-
-  metrics.value = metrics.value.map((metric) =>
-    metric.label === label
-      ? {
-          ...metric,
-          detail: options.detail ?? metric.detail,
-          value: `${formatNumber(rounded, decimals)}${suffix}`,
-        }
-      : metric,
-  )
-
-  if (Math.abs(delta) > 0.001) {
-    const tone = delta >= 0 ? 'up' : 'down'
-    metricFlash.value = { ...metricFlash.value, [label]: tone }
-    metricDeltas.value = {
-      ...metricDeltas.value,
-      [label]: {
-        tone,
-        value: `${delta >= 0 ? '+' : ''}${formatNumber(delta, decimals)}`,
-      },
-    }
-    window.setTimeout(() => {
-      const nextFlash = { ...metricFlash.value }
-      const nextDeltas = { ...metricDeltas.value }
-      delete nextFlash[label]
-      delete nextDeltas[label]
-      metricFlash.value = nextFlash
-      metricDeltas.value = nextDeltas
-    }, 1000)
-  }
-
-  updateMetricTrend(label)
-}
-
-function pushToast(toast: Omit<DashboardToast, 'id'>) {
-  toasts.value = [{ ...toast, id: Date.now() + Math.random() }, ...toasts.value].slice(0, 3)
-}
-
-function currentSlotIndex() {
-  const hour = now.value.getHours()
-  if (hour < 6) return 0
-  if (hour < 12) return 1
-  if (hour < 18) return 2
-  return 3
-}
-
-function trafficStatusProfile(status: MonitoringRecord['device_status']): TrafficStatusProfile {
-  if (status === 'warning') {
-    return {
-      delay: [58, 90],
-      load: [1.08, 1.2],
-      queue: [24, 40],
-      saturation: [95, 118],
-      speed: [8, 20],
-    }
-  }
-  if (status === 'maintenance') {
-    return {
-      delay: [32, 58],
-      load: [0.86, 1.04],
-      queue: [12, 23],
-      saturation: [72, 92],
-      speed: [18, 38],
-    }
-  }
-  return {
-    delay: [10, 30],
-    load: [0.58, 0.9],
-    queue: [2, 10],
-    saturation: [38, 72],
-    speed: [38, 60],
-  }
-}
-
-function createLiveMonitoringRecord(id: number, warning = false): MonitoringRecord {
-  const buildingPool = [
-    { id: 'intersection_1_1', name: '路口 1-1', status: 'normal' as const },
-    { id: 'intersection_1_3', name: '路口 1-3', status: 'normal' as const },
-    { id: 'intersection_2_2', name: '路口 2-2', status: 'maintenance' as const },
-    { id: 'intersection_2_4', name: '路口 2-4', status: warning ? ('warning' as const) : ('normal' as const) },
-    { id: 'intersection_3_2', name: '路口 3-2', status: warning ? ('warning' as const) : ('maintenance' as const) },
-  ]
-  const building = buildingPool[randomInt(0, buildingPool.length - 1)]!
-  const slot = hourlySeries.value[currentSlotIndex()]!
-  const status = warning ? ('warning' as const) : building.status
-  const profile = trafficStatusProfile(status)
-  const loadFactor = randomBetween(profile.load[0], profile.load[1])
-  const phasePool = ['东西直行', '南北直行', '东西左转', '南北左转'] as const
-  const strategyPool = ['FixedTime', 'MaxPressure', 'RL', 'Traffic-R1', '应急绿波'] as const
-  const queue = randomBetween(profile.queue[0], profile.queue[1])
-  const delay = randomBetween(profile.delay[0], profile.delay[1])
-  const saturation = randomBetween(profile.saturation[0], profile.saturation[1])
-  const speed = randomBetween(profile.speed[0], profile.speed[1])
-  const monitorTime = `${now.value.getFullYear()}-${String(now.value.getMonth() + 1).padStart(2, '0')}-${String(now.value.getDate()).padStart(2, '0')} ${slot.hour}`
-
-  return {
-    building_id: building.name,
-    building_type: building.id,
-    chilled_water_return_temp: Number(queue.toFixed(1)),
-    chilled_water_supply_temp: Number(saturation.toFixed(1)),
-    control_strategy: strategyPool[randomInt(0, strategyPool.length - 1)]!,
-    device_id: phasePool[randomInt(0, phasePool.length - 1)]!,
-    device_status: status,
-    electricity_kwh: Number(clamp(slot.electricity * loadFactor, 200, 1500).toFixed(0)),
-    env_humidity: Number(saturation.toFixed(0)),
-    env_temperature: Number(speed.toFixed(1)),
-    hvac_kwh: Number(queue.toFixed(1)),
-    id,
-    monitor_time: monitorTime,
-    occupancy_density: Number(clamp(saturation * 0.58, 10, 90).toFixed(1)),
-    water_m3: Number(delay.toFixed(1)),
-  }
-}
-
-function insertLiveRecord(warning = false) {
-  const newRecord = createLiveMonitoringRecord(Date.now(), warning)
-  records.value = [newRecord, ...records.value].slice(0, 12)
-  syncSeconds.value = 0
-
-  if (warning) {
-    const nextWarning = getMetricNumber('今日拥堵/事件告警') + 1
-    updateMetricNumber('今日拥堵/事件告警', nextWarning, {
-      decimals: 0,
-      detail: `${newRecord.building_id} 触发拥堵事件告警`,
-      suffix: ' 条',
-    })
-    let shifted = false
-    statusDistribution.value = statusDistribution.value.map((bucket) => {
-      if (bucket.tone === 'rose') return { ...bucket, count: Math.min(12, bucket.count + 1) }
-      if (!shifted && bucket.tone === 'emerald' && bucket.count > 0) {
-        shifted = true
-        return { ...bucket, count: bucket.count - 1 }
-      }
-      return bucket
-    })
-  }
-}
-
-function scheduleTableInsert() {
-  tableTimer = window.setTimeout(() => {
-    insertLiveRecord(false)
-    scheduleTableInsert()
-  }, randomInt(2000, 3000))
-}
-
-function scheduleRandomEvent() {
-  eventTimer = window.setTimeout(() => {
-    const eventType = randomInt(1, 4)
-    if (eventType === 1) {
-      insertLiveRecord(true)
-      pushToast({
-        body: `路口 3-2 排队长度超阈值 ${randomInt(12, 28)}%`,
-        title: '新拥堵告警',
-        tone: 'rose',
-      })
-    } else if (eventType === 2) {
-      pushToast({
-        body: `共扫描 ${statusTotal.value} 个路口`,
-        title: '系统扫描完成',
-        tone: 'emerald',
-      })
-    } else if (eventType === 3) {
-      pushToast({
-        body: `${['路口 1-2', '路口 2-3', '路口 3-2', '路口 3-4'][randomInt(0, 3)]} 完成相位巡检`,
-        title: '路口状态刷新',
-        tone: 'emerald',
-      })
-    } else {
-      pushToast({
-        body: '热力矩阵与关系图完成一次路网采集脉冲',
-        title: '采集周期完成',
-        tone: 'cyan',
-      })
-    }
-    scheduleRandomEvent()
-  }, randomInt(8000, 15000))
 }
 
 function tooltipAttrs(content: DashboardTooltipContent) {
@@ -1389,6 +1200,7 @@ function heatmapCellTooltip(cell: HeatmapCell | undefined): DashboardTooltipCont
 }
 
 function riskRowTooltip(summary: BuildingSummary, rank: number): DashboardTooltipContent {
+  void rank
   return {
     rows: [
       { label: '路口', value: `${intersectionName(summary.buildingId)} / ${summary.buildingId}` },
@@ -1445,11 +1257,9 @@ function tableRowTooltip(record: MonitoringRecord): DashboardTooltipContent {
   return {
     rows: [
       { label: '路口详情', value: `${record.building_id} / ${record.building_type}` },
-      { label: '流入量基线', value: compactVehicles(record.electricity_kwh * 0.88, 0) },
-      {
-        label: '拥堵规则',
-        value: record.device_status === 'warning' ? '排队长度或延误超阈值' : '未触发规则',
-      },
+      { label: '到达流量', value: compactFlow(record.electricity_kwh, 0) },
+      { label: '排队长度', value: `${formatNumber(record.hvac_kwh)} 辆` },
+      { label: '拥堵判定', value: congestionReason(record) },
       { label: '当前相位', value: record.device_id },
       { label: '控制策略', value: record.control_strategy },
       { label: '24小时趋势', value: '▁▂▃▅▆▅▇' },
@@ -1480,8 +1290,8 @@ function detailMetricCells(record: MonitoringRecord): Array<{
       decimals: 0,
       label: '流入量',
       rows: [
-        { label: '参考范围', value: '200-1500 辆' },
-        { label: '高峰状态', tone: record.electricity_kwh > 1200 ? 'amber' : 'emerald', value: record.electricity_kwh > 1200 ? '是' : '否' },
+        { label: '参考范围', value: '180-660 辆/h' },
+        { label: '高需求', tone: record.electricity_kwh >= 550 ? 'amber' : 'emerald', value: record.electricity_kwh >= 550 ? '是' : '否' },
         { label: '历史均值', value: compactVehicles(record.electricity_kwh * 0.88, 0) },
       ],
       suffix: ' 辆',
@@ -1491,8 +1301,9 @@ function detailMetricCells(record: MonitoringRecord): Array<{
       decimals: 1,
       label: '排队长度',
       rows: [
-        { label: '参考范围', value: '0-40 辆' },
-        { label: '拥堵状态', tone: record.hvac_kwh > 24 ? 'rose' : 'emerald', value: record.hvac_kwh > 24 ? '是' : '否' },
+        { label: '参考范围', value: '0-14 辆' },
+        { label: '当前状态', tone: record.device_status === 'warning' ? 'rose' : 'emerald', value: statusText(record.device_status) },
+        { label: '联合判定', value: congestionReason(record) },
         { label: '历史均值', value: `${formatNumber(record.hvac_kwh * 0.9)} 辆` },
       ],
       suffix: ' 辆',
@@ -1588,19 +1399,14 @@ function handleTooltipHide(event: PointerEvent) {
 }
 
 onMounted(() => {
+  dataStreamActive = true
   void fetchDataAnalysisBootstrap()
     .then((data) => {
       applyBootstrapData(data)
+      void pollNextDatabaseUpdate()
     })
-    .catch(() => {
-      pushToast({
-        body: '暂时无法读取数据库，已保留页面内置演示数据。',
-        title: '数据库连接异常',
-        tone: 'rose',
-      })
-    })
-    .finally(() => {
-      seedMetricTrends()
+    .catch((error) => {
+      console.error('Failed to load data-analysis database bootstrap', error)
     })
 
   clockTimer = setInterval(() => {
@@ -1609,123 +1415,22 @@ onMounted(() => {
 
   syncTimer = setInterval(() => {
     syncSeconds.value += 1
-    sampleFrameCarry += sampleRate.value / 60
-    const framesToAdd = Math.floor(sampleFrameCarry)
-    if (framesToAdd > 0) {
-      sampleCount.value += framesToAdd
-      sampleFrameCarry -= framesToAdd
-    }
   }, 1000)
-
-  liveMetricTimer = setInterval(() => {
-    const nextQueue = clamp(getMetricNumber('当前平均排队长度') + randomBetween(-1.2, 1.4), 3, 18)
-    updateMetricNumber('当前平均排队长度', nextQueue, {
-      decimals: 1,
-      detail: '当前 12 个路口进口道平均排队长度，2 秒小幅浮动。',
-      suffix: ' 辆',
-    })
-    const current = records.value[0]
-    if (current) {
-      const profile = trafficStatusProfile(current.device_status)
-      records.value = [
-        {
-          ...current,
-          env_temperature: Number(clamp(current.env_temperature + randomBetween(-1.1, 1.3), profile.speed[0], profile.speed[1]).toFixed(1)),
-          hvac_kwh: Number(clamp(current.hvac_kwh + randomBetween(-1.4, 1.6), profile.queue[0], profile.queue[1]).toFixed(1)),
-          water_m3: Number(clamp(current.water_m3 + randomBetween(-2.2, 2.8), profile.delay[0], profile.delay[1]).toFixed(1)),
-        },
-        ...records.value.slice(1),
-      ]
-    }
-  }, 2000)
-
-  scanTimer = setInterval(() => {
-    scanIndex.value = (scanIndex.value + 1) % dailySeries.length
-    sampledPointId.value = scatterPoints[(scanIndex.value + 4) % scatterPoints.length]?.id ?? sampledPointId.value
-    const sampledCell = heatmap[(scanIndex.value * 3) % heatmap.length]
-    if (sampledCell) {
-      sampledHeatmapKey.value = `${sampledCell.date}-${sampledCell.hour}`
-      window.setTimeout(() => {
-        sampledHeatmapKey.value = null
-      }, 600)
-    }
-  }, 3200)
-
-  hourlyTimer = setInterval(() => {
-    const index = currentSlotIndex()
-    hourlySeries.value = hourlySeries.value.map((point, pointIndex) =>
-      pointIndex === index
-        ? {
-            ...point,
-            electricity: Number((point.electricity * (1 + randomBetween(-0.03, 0.03))).toFixed(1)),
-            hvac: Number((point.hvac * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
-            occupancy: Number((point.occupancy * (1 + randomBetween(-0.025, 0.025))).toFixed(1)),
-            temperature: Number(clamp(point.temperature + randomBetween(-1.2, 1.4), 3, 40).toFixed(1)),
-          }
-        : point,
-    )
-    const slot = hourlySeries.value[index]!
-    updateMetricNumber('当前平均等待时间', clamp(slot.temperature * randomBetween(1.5, 2.2), 15, 120), {
-      decimals: 0,
-      detail: `${slot.hour} 当前时段等待时间估算`,
-      suffix: ' 秒',
-    })
-    updateMetricNumber('自适应控制覆盖率', clamp(getMetricNumber('自适应控制覆盖率') + randomBetween(-0.4, 0.5), 0, 100), {
-      decimals: 1,
-      suffix: '%',
-    })
-    syncSeconds.value = 0
-  }, 8000)
-
-  energyTimer = setInterval(() => {
-    const increment = randomBetween(90, 280)
-    const signalSecondsIncrement = 120
-    const nextTraffic = getMetricNumber('今日累计通行量') + increment
-    updateMetricNumber('今日累计通行量', nextTraffic, {
-      decimals: 0,
-      suffix: ' 辆',
-    })
-    composition.value = composition.value.map((item) => ({
-      ...item,
-      value: Number((item.value + signalSecondsIncrement * (item.value / Math.max(compositionTotal.value, 1))).toFixed(1)),
-    }))
-    pushToast({
-      body: `今日累计通行量 +${increment.toFixed(0)} 辆`,
-      title: '通行量更新',
-      tone: 'cyan',
-    })
-    syncSeconds.value = 0
-  }, 10000)
-
-  healthTimer = setInterval(() => {
-    healthScore.value = Math.round(clamp(healthScore.value + randomInt(-1, 1), 52, 96))
-    buildingSummaries.value = buildingSummaries.value.map((summary) => ({
-      ...summary,
-      efficiencyScore: Math.round(clamp(summary.efficiencyScore + randomBetween(-1, 1), 55, 98)),
-    }))
-  }, 20000)
 
   forecastTimer = setInterval(() => {
     forecastTick.value += 1
   }, 2600)
-  scheduleTableInsert()
-  scheduleRandomEvent()
   document.addEventListener('pointerover', handleTooltipShow)
   document.addEventListener('pointermove', handleTooltipMove)
   document.addEventListener('pointerout', handleTooltipHide)
 })
 
 onUnmounted(() => {
+  dataStreamActive = false
   if (clockTimer) clearInterval(clockTimer)
   if (syncTimer) clearInterval(syncTimer)
-  if (scanTimer) clearInterval(scanTimer)
   if (forecastTimer) clearInterval(forecastTimer)
-  if (liveMetricTimer) clearInterval(liveMetricTimer)
-  if (hourlyTimer) clearInterval(hourlyTimer)
-  if (energyTimer) clearInterval(energyTimer)
-  if (healthTimer) clearInterval(healthTimer)
   if (tableTimer) clearTimeout(tableTimer)
-  if (eventTimer) clearTimeout(eventTimer)
   if (tooltipHideTimer) clearTimeout(tooltipHideTimer)
   document.removeEventListener('pointerover', handleTooltipShow)
   document.removeEventListener('pointermove', handleTooltipMove)
@@ -1734,14 +1439,6 @@ onUnmounted(() => {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
-}
-
-function randomBetween(min: number, max: number) {
-  return min + Math.random() * (max - min)
-}
-
-function randomInt(min: number, max: number) {
-  return Math.floor(randomBetween(min, max + 1))
 }
 
 function stableRatio(seed: string, min: number, max: number) {
@@ -1765,10 +1462,6 @@ function compactVehicles(value: number, decimals = 0) {
 
 function compactFlow(value: number, decimals = 0) {
   return `${formatNumber(value, decimals)} 辆/h`
-}
-
-function compactKwh(value: number, decimals = 1) {
-  return compactVehicles(value, decimals)
 }
 
 function parseMetricValue(value: string) {
@@ -1803,6 +1496,13 @@ function statusText(status: MonitoringRecord['device_status']) {
   if (status === 'maintenance') return '缓行'
   if (status === 'offline') return '离线'
   return '畅通'
+}
+
+function congestionReason(record: MonitoringRecord) {
+  if (record.device_status === 'offline') return '设备离线，暂不判定'
+  if (record.device_status === 'warning') return `${record.control_strategy} 下高到达流量与长排队同时触发`
+  if (record.device_status === 'maintenance') return `${record.control_strategy} 下流量-排队压力偏高`
+  return `${record.control_strategy} 下队列可随到达流量消散`
 }
 
 function buildingTypeReadable(type: string) {

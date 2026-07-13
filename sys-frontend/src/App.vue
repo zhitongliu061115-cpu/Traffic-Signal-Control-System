@@ -1,7 +1,11 @@
 <script setup lang="ts"></script>
 
 <template>
-  <router-view />
+  <RouterView v-slot="{ Component }">
+    <KeepAlive include="DataAnalysis">
+      <component :is="Component" />
+    </KeepAlive>
+  </RouterView>
 </template>
 
 <style scoped></style>

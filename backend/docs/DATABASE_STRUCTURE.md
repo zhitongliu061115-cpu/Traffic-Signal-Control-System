@@ -8,7 +8,7 @@
 
 | 场景 | 数据库 | 建表方式 | 说明 |
 | --- | --- | --- | --- |
-| 默认本地启动 | H2 内存库 | Flyway 自动执行 `db/migration` | 用于本地快速验证，应用重启后数据丢失。 |
+| 默认本地启动 | H2 内存库 | Flyway 自动执行 `db/migration/common` 与 `db/migration/h2` | 用于本地快速验证，应用重启后数据丢失。 |
 | `postgres` profile | PostgreSQL `traffic_signal` | Flyway 由 `TRAFFIC_DB_FLYWAY_ENABLED` 控制，Hibernate 不建表 | 用于连接共享数据库并执行版本化增量迁移。 |
 
 注意：`postgres` profile 中 `spring.jpa.hibernate.ddl-auto=none`，结构只由 Flyway migration 演进。共享 PostgreSQL 已建立 V5 baseline 并执行后续迁移，禁止使用 Hibernate 自动补表。
@@ -154,7 +154,15 @@ erDiagram
 
 ### `analytics_*`
 
-`analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` 继续作为数据分析页演示数据表保留。
+数据分析页使用数据库快照与顺序事件，不再由浏览器随机生成指标、消息或监测记录：
+
+- `analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` 保存页面首次加载快照。
+- `analytics_metric_trend_point` 保存五个指标卡的历史趋势点。
+- `analytics_strategy_metric` 保存 FixedTime、MaxPressure、Traffic-R1 的策略效果对比数据。
+- `analytics_stream_metadata` 保存数据集起始时间和前端轮询间隔。
+- `analytics_live_update` 以 `sequence_no` 为游标保存逐条更新事件。每条事件包含 KPI、健康评分、状态分布、小时流量/排队、六类通行构成、路口监测记录及可选 toast；V8 初始化 10,000 条事件，V10 增加 `passed_vehicles` 记录本次通过车辆数。V11 将事件定义为 5 秒通行聚合，V12 将每条增量调整为 3-6 辆，V13 根据事件序号、到达流量、控制策略和拥堵状态生成稳定伪随机扰动，避免连续事件机械地增加同一个数。`cumulative_traffic` 严格等于初始累计量加截至当前事件的所有 `passed_vehicles`。监测状态由到达流量、排队长度和策略阈值联合生成：FixedTime 更容易形成长队列，MaxPressure 与 Traffic-R1 仅在更高压力下进入缓行或拥堵。
+
+V1-V7、V9-V13 放在 `db/migration/common`。V8 按数据库方言分别位于 `db/migration/postgresql` 和 `db/migration/h2`，两者建立相同业务结构和数据规模；PostgreSQL 使用标准集合生成，H2 使用 `SYSTEM_RANGE`。禁止改写已在共享 PostgreSQL 执行的迁移。
 
 ## 当前后端实际访问表
 
@@ -162,7 +170,7 @@ erDiagram
 | --- | --- |
 | `IntersectionRepository` | `intersections` |
 | `DashboardRepository` | `dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` |
-| `DataAnalysisRepository` | `analytics_overview`、`analytics_metric`、`analytics_status_bucket`、`analytics_daily_point`、`analytics_hourly_point`、`analytics_building_summary`、`analytics_heatmap_cell`、`analytics_composition_item`、`analytics_scatter_point`、`analytics_monitoring_record`、`analytics_toast` |
+| `DataAnalysisRepository` | 数据分析全部 `analytics_*` 快照表，以及 `analytics_metric_trend_point`、`analytics_strategy_metric`、`analytics_stream_metadata`、`analytics_live_update` 顺序事件表 |
 | `AuthUserRepository` | `auth_user` |
 | `DatabaseStatusService` | 标准核心表、`intersections`、`dashboard_intersection`、`analytics_overview` |
 | `RuntimePersistenceService` | 默认主链路写入 `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link`、`simulation_session`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event`；保留显式写入 `simulation_frame` 和各类 snapshot 的能力，并记录决策输入帧，但不再默认持久化全量仿真帧和车辆/道路/路口快照 |

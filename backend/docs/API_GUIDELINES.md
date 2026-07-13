@@ -75,7 +75,10 @@
 | 方法 | 路径 | 请求参数/请求体 | 返回 `data` | 功能说明 |
 |---|---|---|---|---|
 | `GET` | `/api/v1/dashboard/bootstrap` | 无 | `DashboardBootstrapResponse` | 一次性返回交通大屏所需的展示数据，包括路口、道路、车辆、应急车辆、应急路线、告警、统计指标、策略对比指标、拥堵趋势和助手预置回复。当前主要服务现有 dashboard 展示数据。 |
-| `GET` | `/api/v1/data-analysis/bootstrap` | 无 | `DataAnalysisBootstrapResponse` | 一次性返回数据分析页展示数据，包括指标卡、状态分布、日/小时序列、建筑/监控记录、热力图、构成图、散点图和 toast。当前是数据分析展示模块的 bootstrap 数据源。 |
+| `GET` | `/api/v1/data-analysis/bootstrap` | 无 | `DataAnalysisBootstrapResponse` | 从数据库一次性返回数据分析页初始快照，包括指标卡及趋势、状态分布、日/小时序列、路口汇总、热力图、构成图、散点图、策略对比、监测记录、toast、实时游标和轮询间隔。两个预测模块仍使用现有前端预测逻辑。 |
+| `GET` | `/api/v1/data-analysis/updates/next` | 查询参数 `cursor`，默认 `0` | `DataAnalysisLiveUpdateResponse` 或 `null` | 从 `analytics_live_update` 读取 `sequence_no > cursor` 的第一条事件。前端每次只应用一条数据库事件；无后续事件时返回成功响应且 `data=null`。 |
+
+`DataAnalysisLiveUpdateResponse.cursor` 必须作为下一次请求的 `cursor`。事件同时携带完整指标、状态分布、当前时段点、通行构成、单条监测记录和可选 toast，前端不得用随机数补写这些字段。前端按数据库返回的 `livePollIntervalMs=5000` 每 5 秒读取一条事件；数据库事件用 `passed_vehicles` 保存本周期 3-6 辆的通行增量，该增量通过事件序号、到达流量、控制策略和拥堵状态生成稳定伪随机波动，返回的“今日累计通行量”严格按该增量累加。同一事件重复查询时数值不变。监测记录的 `device_status` 已由到达流量、排队长度和控制策略联合判定，前端直接展示该结果。
 
 ### C. 数据库状态接口
 
