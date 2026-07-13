@@ -18,6 +18,8 @@ interface RoadMapping {
   shanghaiRoad: Road
   cityFlowPoints: Array<{ x: number; y: number }>
   totalLength: number
+  shanghaiSegmentLengths: number[]
+  shanghaiTotalLength: number
   /** CityFlow from→to 与上海 from→to 方向相反时需翻转 progress */
   flipped: boolean
 }
@@ -63,6 +65,20 @@ function polylineLength(pts: Array<{ x: number; y: number }>): number {
   return total
 }
 
+function lngLatSegmentLengths(path: [number, number][]): { lengths: number[]; total: number } {
+  const lengths: number[] = []
+  let total = 0
+  for (let index = 1; index < path.length; index += 1) {
+    const length = dist2(
+      { x: path[index - 1]![0], y: path[index - 1]![1] },
+      { x: path[index]![0], y: path[index]![1] },
+    )
+    lengths.push(length)
+    total += length
+  }
+  return { lengths, total: total || 1 }
+}
+
 /** 鐐?(px,py) 鍦ㄦ姌绾夸笂鐨勮繘搴?0~1锛堟姇褰辨渶杩戠偣锛?*/
 function progressOnPolyline(
   px: number, py: number,
@@ -90,25 +106,16 @@ function progressOnPolyline(
 /** 娌?lng/lat 鎶樼嚎鎸?progress 鎻掑€?*/
 function interpolateLngLat(
   path: [number, number][],
+  segmentLengths: number[],
+  totalLength: number,
   progress: number,
 ): [number, number] {
   if (path.length < 2) return path[0] ?? [0, 0]
-  let accum = 0
-  const segLen: number[] = []
-  for (let i = 1; i < path.length; i++) {
-    const d = dist2(
-      { x: path[i - 1]![0], y: path[i - 1]![1] },
-      { x: path[i]![0], y: path[i]![1] },
-    )
-    segLen.push(d)
-    accum += d
-  }
-  const total = accum || 1
-  const target = progress * total
+  const target = progress * totalLength
   let acc = 0
-  for (let i = 0; i < segLen.length; i++) {
-    const seg = segLen[i]!
-    if (target <= acc + seg || i === segLen.length - 1) {
+  for (let i = 0; i < segmentLengths.length; i++) {
+    const seg = segmentLengths[i]!
+    if (target <= acc + seg || i === segmentLengths.length - 1) {
       const local = seg > 0 ? (target - acc) / seg : 0
       const t = Math.max(0, Math.min(1, local))
       const a = path[i]!
@@ -153,16 +160,21 @@ export function createVehicleLayer(
     const shA = shIdToKey.get(shRoad.from) // 上海 from 的转置键
     const flipped = (a === shA) ? false : true // a 对应 from 则同向，否则反向
     const cfPts = sr.points && sr.points.length >= 2 ? sr.points : [{ x: 0, y: 0 }, { x: 0, y: 0 }]
+    const shanghaiLengths = lngLatSegmentLengths(shRoad.path)
     roadMapping.set(sr.id, {
       shanghaiRoad: shRoad,
       cityFlowPoints: cfPts,
       flipped,
       totalLength: Math.max(1, polylineLength(cfPts)),
+      shanghaiSegmentLengths: shanghaiLengths.lengths,
+      shanghaiTotalLength: shanghaiLengths.total,
     })
   }
 
   // ---- CircleMarker 瀵硅薄姹?----
   const pool: AMap.CircleMarker[] = []
+  const lastFillColors: string[] = []
+  let visibleCount = 0
   function ensurePool(n: number): void {
     while (pool.length < n && pool.length < MAX_MARKERS) {
       const cm = new AMap.CircleMarker({
@@ -178,6 +190,7 @@ export function createVehicleLayer(
       cm.setMap(map)
       cm.hide()
       pool.push(cm)
+      lastFillColors.push(NORMAL_FILL)
     }
   }
 
@@ -195,19 +208,27 @@ export function createVehicleLayer(
         // 如果 CityFlow 道路与上海道路方向相反，翻转 progress
         if (mapping.flipped) prog = 1 - prog
         // 映射到上海弯曲路径
-        const [lng, lat] = interpolateLngLat(mapping.shanghaiRoad.path!, prog)
+        const [lng, lat] = interpolateLngLat(
+          mapping.shanghaiRoad.path!,
+          mapping.shanghaiSegmentLengths,
+          mapping.shanghaiTotalLength,
+          prog,
+        )
         if (vi < pool.length) {
           pool[vi]!.setCenter([lng, lat] as unknown as AMap.LngLat)
-          pool[vi]!.setOptions({
-            fillColor: evIds?.has(v.id) ? EMERGENCY_FILL : (v.speed < 0.5 ? STOPPED_FILL : NORMAL_FILL),
-          })
-          pool[vi]!.show()
+          const fillColor = evIds?.has(v.id) ? EMERGENCY_FILL : (v.speed < 0.5 ? STOPPED_FILL : NORMAL_FILL)
+          if (lastFillColors[vi] !== fillColor) {
+            lastFillColors[vi] = fillColor
+            pool[vi]!.setOptions({ fillColor })
+          }
+          if (vi >= visibleCount) pool[vi]!.show()
           vi++
         }
       }
 
       // 闅愯棌鍓╀綑 markers
-      for (let i = vi; i < pool.length; i++) pool[i]!.hide()
+      for (let i = vi; i < visibleCount; i++) pool[i]!.hide()
+      visibleCount = vi
     },
 
     dispose(): void {

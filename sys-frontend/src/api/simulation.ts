@@ -82,7 +82,11 @@ export function pauseSimulation(sid: string): Promise<void> {
 
 /** 停止仿真 */
 export function stopSimulation(sid: string): Promise<void> {
-  return request(`/api/v1/simulations/${sid}/stop`, { method: 'POST', body: '{}' })
+  return request(`/api/v1/simulations/${sid}/stop`, {
+    method: 'POST',
+    body: '{}',
+    keepalive: true,
+  })
 }
 
 // ================================================================

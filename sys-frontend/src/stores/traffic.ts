@@ -1,8 +1,9 @@
-﻿// =========================================================
+// =========================================================
 // AI 自适应信号控制与应急绿波数字孪生系统 — Pinia Store
 // =========================================================
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, shallowRef } from 'vue'
+import { signalRemainingSec, toSignalPhase } from '@/simulation/signalState'
 import type {
   SystemMode,
   SignalPhase,
@@ -138,7 +139,9 @@ export const useTrafficStore = defineStore('traffic', () => {
   const simulationSimTime = ref(0)
   const simulationFrameCount = ref(0)
   const simulationLastFrameAt = ref(0)
-  const simulationVehicles = ref<SimVehicleState[]>([])
+  // CityFlow frames replace the complete array. Deep-proxying every vehicle makes
+  // a dense frame expensive before either map or 3D rendering can use it.
+  const simulationVehicles = shallowRef<SimVehicleState[]>([])
   const simulationRoads = ref<SimRoadState[]>([])
   const simulationSignals = ref<SimSignalState[]>([])
   const simulationIntersections = ref<SimIntersectionState[]>([])
@@ -939,24 +942,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
     if (frame.evStatus && frame.evStatus.length > 0) {
       latestEvStatus.value = frame.evStatus
-      const es = frame.evStatus[0]
-      console.log('[EV] evStatus', JSON.stringify(es),
-        'systemMode=', systemMode.value,
-        'routeLen=', emergencyRoute.value.length,
-        'passed=', es.passedCount)
-      if (es && systemMode.value === 'emergency' && emergencyRoute.value.length > 0) {
-        activeGreenWaveIndex.value = Math.min(es.passedCount, emergencyRoute.value.length - 1)
-        // 更新预计到达时间
-        const remaining = es.totalCount - es.passedCount
-        if (remaining > 0) {
-          const perNode = es.elapsedTime / Math.max(es.passedCount, 1)
-          emergencyVehicle.value.eta = +((remaining * perNode) / 60).toFixed(1)
-        }
-        // EV 到达终点 → 自动恢复正常模式
-        if (es.completed && systemMode.value === 'emergency' && es.evId === emergencyVehicle.value.id) {
-          restoreNormalMode()
-        }
-      }
     }
     if (frame.status === 'finished') {
       simulationStatus.value = 'finished'
@@ -965,16 +950,22 @@ export const useTrafficStore = defineStore('traffic', () => {
     // 用仿真数据同步刷新前端路口/道路/车辆状态
     applySimFrameToTrafficData(frame)
 
-    // 检查是否有帧超时（仿真运行中但 3.5s 没收到新帧）
-    if (
-      simulationStatus.value === 'running' &&
-      simulationLastFrameAt.value > 0 &&
-      Date.now() - simulationLastFrameAt.value > 3500
-    ) {
+    // A received frame restores realtime health; a separate watchdog detects silence.
+    simulationErrorMessage.value = null
+  }
+
+  /** Detect frame silence independently from the receive callback. */
+  function checkSimulationFrameTimeout(now = Date.now()): boolean {
+    const timedOut = simulationStatus.value === 'running'
+      && simulationLastFrameAt.value > 0
+      && now - simulationLastFrameAt.value > 3500
+
+    if (timedOut) {
       simulationErrorMessage.value = `等待新帧中… last frame ${simulationFrameCount.value}`
-    } else {
+    } else if (simulationErrorMessage.value?.startsWith('等待新帧中…')) {
       simulationErrorMessage.value = null
     }
+    return timedOut
   }
 
   /** 将仿真帧数据同步到现有的 traffic 数据结构（渐进式替换 mock） */
@@ -992,23 +983,16 @@ export const useTrafficStore = defineStore('traffic', () => {
       return m ? `${m[1]}_${m[2]}` : null
     }
 
-    const phaseMap: Record<string, SignalPhase> = {
-      ETWT: 'eastwest_straight', ew_straight: 'eastwest_straight',
-      NTST: 'northsouth_straight', ns_straight: 'northsouth_straight',
-      ELWL: 'eastwest_left', ew_left: 'eastwest_left',
-      NLSL: 'northsouth_left', ns_left: 'northsouth_left',
-      all_red: 'all_red',
-    }
-
     // ---- 信号灯 → 路口相位（按转置键精确匹配）----
     for (const sig of frame.signals) {
       const key = simKeyOf(sig.intersectionId)
       const it = key ? itBySimKey.get(key) : undefined
       if (!it) continue
-      it.currentPhase = phaseMap[sig.phaseCode] ?? it.currentPhase
+      it.currentPhase = toSignalPhase(sig.phaseCode)
       it.deviceStatus = 'online'
-      // 仿真每 10s 切一次相位，从 simTime 推算倒计时
-      it.greenRemain = 10 - (frame.simTime % 10)
+      const remaining = signalRemainingSec(sig)
+      it.greenRemainKnown = remaining !== null
+      it.greenRemain = remaining ?? 0
     }
 
     // ---- 路口排队/延误（按转置键精确匹配）----
@@ -1082,22 +1066,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
 
     // ---- 车辆：将 SimVehicleState[] 注入到 vehicles[] ----
-    if (frame.vehicles.length > 0) {
-      const newVehicles: Vehicle[] = frame.vehicles.map((sv) => ({
-        id: sv.id,
-        roadId: sv.roadId,
-        progress: 0,
-        speed: sv.speed,
-        type: 'normal' as const,
-        laneIndex: sv.lane,
-        x: sv.x,
-        y: sv.y,
-        angle: sv.angle,
-      }))
-      const specialVehicles = vehicles.value.filter((v) => v.type !== 'normal')
-      vehicles.value = [...newVehicles, ...specialVehicles]
-    }
-
     // ---- 全局统计 ----
     if (frame.metrics) {
       statistics.value.totalFlow = frame.metrics.vehicleCount ?? statistics.value.totalFlow
@@ -1145,6 +1113,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     try {
       await startSimulation(simulationSid.value)
       simulationStatus.value = 'running'
+      simulationLastFrameAt.value = Date.now()
       simulationErrorMessage.value = null
       console.log('[TrafficStore] simulation started')
     } catch (err) {
@@ -1167,14 +1136,19 @@ export const useTrafficStore = defineStore('traffic', () => {
   }
 
   /** 停止仿真 */
-  async function stopSimulationSession(): Promise<void> {
-    if (!simulationSid.value || simulationStatus.value === 'finished') return
+  async function stopSimulationSession(expectedSid: string | null = simulationSid.value): Promise<void> {
+    const sid = expectedSid
+    if (!sid || (simulationSid.value === sid && simulationStatus.value === 'finished')) return
     try {
-      await stopSimulation(simulationSid.value)
-      simulationStatus.value = 'finished'
+      await stopSimulation(sid)
+      if (simulationSid.value === sid) {
+        simulationStatus.value = 'finished'
+      }
       console.log('[TrafficStore] simulation stopped')
     } catch (err) {
-      simulationErrorMessage.value = `停止仿真失败: ${err instanceof Error ? err.message : String(err)}`
+      if (simulationSid.value === sid) {
+        simulationErrorMessage.value = `停止仿真失败: ${err instanceof Error ? err.message : String(err)}`
+      }
       throw err
     }
   }
@@ -1203,7 +1177,15 @@ export const useTrafficStore = defineStore('traffic', () => {
       return null
     }
 
-    console.log('[TrafficStore] recreated with controller:', controllerType, 'sid:', result.sid)
+    // 4. 自动启动新仿真
+    try {
+      await startSimulation(result.sid)
+      simulationStatus.value = 'running'
+      simulationLastFrameAt.value = Date.now()
+      console.log('[TrafficStore] recreated + started with controller:', controllerType, 'sid:', result.sid)
+    } catch (err) {
+      console.warn('[TrafficStore] auto-start failed, simulation left paused', err)
+    }
     return result.sid
   }
 
@@ -1331,6 +1313,7 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     // simulation actions
     handleSimFrame,
+    checkSimulationFrameTimeout,
     applySimFrameToTrafficData,
     initSimulationSession,
     resumeSimulation,

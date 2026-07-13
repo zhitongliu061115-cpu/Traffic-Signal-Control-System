@@ -30,6 +30,7 @@ const emit = defineEmits<{
   startSimulation: []
   pauseSimulation: []
   stopSimulation: []
+  simulationRecreated: [sid: string]
 }>()
 
 // ---- 策略切换 ----
@@ -71,7 +72,8 @@ async function confirmSwitch(): Promise<void> {
   simulationControllerType.value = pendingController.value
   showControllerDialog.value = false
   try {
-    await store.recreateSimulation(pendingController.value)
+    const sid = await store.recreateSimulation(pendingController.value)
+    if (sid) emit('simulationRecreated', sid)
   } catch {
     // 错误已在 store 内处理
   } finally {

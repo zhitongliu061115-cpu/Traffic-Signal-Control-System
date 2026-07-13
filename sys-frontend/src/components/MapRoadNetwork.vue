@@ -37,12 +37,64 @@ let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
 let emergencyLine: AMap.Polyline | null = null
 let vehicleLayer: VehicleLayer | null = null
 let vehicleUpdateTimer: ReturnType<typeof setTimeout> | null = null
+let dashboardVideo: HTMLVideoElement | null = null
+let resumeDashboardVideo = false
+let mapInteracting = false
+
+function scheduleVehicleLayerUpdate(delayMs = 500): void {
+  if (vehicleUpdateTimer !== null || viewerOpen.value || mapInteracting) return
+  vehicleUpdateTimer = setTimeout(() => {
+    vehicleUpdateTimer = null
+    if (viewerOpen.value || mapInteracting || simulationStatus.value !== 'running' || !amapInstance || !simRoadnet.value) return
+    if (!vehicleLayer) {
+      vehicleLayer = createVehicleLayer(
+        amapInstance.map,
+        simRoadnet.value as SimRoadnetResponse,
+        roads.value,
+        intersections.value,
+      )
+    }
+    const evSet = emergencyCfVehicleId.value ? new Set([emergencyCfVehicleId.value]) : undefined
+    vehicleLayer.update(simulationVehicles.value as SimVehicleState[], evSet)
+  }, delayMs)
+}
+
+function handleMapMoveStart(): void {
+  mapInteracting = true
+  if (vehicleUpdateTimer) {
+    clearTimeout(vehicleUpdateTimer)
+    vehicleUpdateTimer = null
+  }
+}
+
+function handleMapMoveEnd(): void {
+  mapInteracting = false
+  scheduleVehicleLayerUpdate(0)
+}
+
+watch([viewerOpen, simulationStatus], ([open, status]) => {
+  dashboardVideo ??= document.querySelector<HTMLVideoElement>('.video-bg video')
+  if (open || status === 'running') {
+    if (dashboardVideo && !dashboardVideo.paused) resumeDashboardVideo = true
+    dashboardVideo?.pause()
+    if (open && vehicleUpdateTimer) {
+      clearTimeout(vehicleUpdateTimer)
+      vehicleUpdateTimer = null
+    }
+    return
+  }
+
+  if (resumeDashboardVideo) void dashboardVideo?.play().catch(() => undefined)
+  resumeDashboardVideo = false
+}, { immediate: true })
 
 async function bootstrapMap(): Promise<void> {
   if (!mapBox.value) return
   try {
     amapInstance = await initAMap(mapBox.value, () => { mapFailed.value = true })
     const map = amapInstance!.map
+    map.on('movestart', handleMapMoveStart)
+    map.on('moveend', handleMapMoveEnd)
 
     emergencyLine = new AMap.Polyline({
       path: [], strokeColor: '#00E5FF', strokeWeight: 8, strokeOpacity: 0.9, zIndex: 50,
@@ -207,7 +259,8 @@ watch(selectedIntersectionId, (id) => {
 })
 
 // ---- 仿真车辆图层：路网就绪后按帧刷新 ----
-watch([simulationVehicles, simRoadnet, simulationStatus], () => {
+watch([simulationVehicles, simRoadnet, simulationStatus, viewerOpen], () => {
+  if (viewerOpen.value) return
   if (simulationStatus.value !== 'running' || !amapInstance || !simRoadnet.value) {
     if (vehicleUpdateTimer) {
       clearTimeout(vehicleUpdateTimer)
@@ -217,21 +270,7 @@ watch([simulationVehicles, simRoadnet, simulationStatus], () => {
     vehicleLayer = null
     return
   }
-   if (vehicleUpdateTimer !== null) return
-  vehicleUpdateTimer = setTimeout(() => {
-    vehicleUpdateTimer = null
-    if (simulationStatus.value !== 'running' || !amapInstance || !simRoadnet.value) return
-    if (!vehicleLayer) {
-      vehicleLayer = createVehicleLayer(
-        amapInstance.map,
-        simRoadnet.value as SimRoadnetResponse,
-        roads.value,
-        intersections.value,
-      )
-    }
-    const evSet = emergencyCfVehicleId.value ? new Set([emergencyCfVehicleId.value]) : undefined
-    vehicleLayer.update(simulationVehicles.value as SimVehicleState[], evSet)
-  }, 500)
+  scheduleVehicleLayerUpdate()
 })
 
 function onMapDblClick(): void {
@@ -241,6 +280,7 @@ function onMapDblClick(): void {
 setTimeout(bootstrapMap, 100)
 
 onBeforeUnmount(() => {
+  if (resumeDashboardVideo) void dashboardVideo?.play().catch(() => undefined)
   if (vehicleUpdateTimer) clearTimeout(vehicleUpdateTimer)
   roadLayer?.dispose()
   tlMarkers?.dispose()
@@ -252,7 +292,9 @@ onBeforeUnmount(() => {
 const overview = computed(() => [
   { label: '路口总数', value: String(intersections.value.length), unit: '个' },
   { label: '设备在线率', value: store.statistics.deviceOnlineRate.toFixed(1), unit: '%' },
-  { label: '监测车辆', value: String(vehicles.value.length), unit: '辆' },
+  { label: '监测车辆', value: String(
+    simulationStatus.value === 'running' ? simulationVehicles.value.length : vehicles.value.length,
+  ), unit: '辆' },
   { label: '拥堵路段', value: String(store.statistics.congestedRoadCount), unit: '条' },
 ])
 const selectedName = computed(
@@ -283,7 +325,7 @@ const selectedRoadName = computed(
     </div>
 
     <div class="hud-card__content comp-card__body">
-      <div class="mrn-viewport">
+      <div v-show="!viewerOpen" class="mrn-viewport">
         <RoadNetwork v-if="mapFailed" class="mrn-fallback" />
         <div v-show="!mapFailed" ref="mapBox" class="mrn-map" @dblclick="onMapDblClick" />
 

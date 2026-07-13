@@ -33,6 +33,10 @@ let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
 let dataRetryTimer: ReturnType<typeof setInterval> | null = null
 const simulationOperationPending = ref(false)
+let simulationHealthTimer: ReturnType<typeof setInterval> | null = null
+let dashboardDisposing = false
+let ownedSimulationSid: string | null = null
+let connectedSimulationSid: string | null = null
 
 async function syncDashboardData(): Promise<void> {
   const loaded = await store.loadDashboardData()
@@ -80,12 +84,13 @@ async function startSimulationFromDashboard(): Promise<void> {
     if (!sid || store.simulationStatus === 'finished' || store.simulationStatus === 'booting') {
       const result = await store.initSimulationSession()
       sid = result?.sid ?? null
+      ownedSimulationSid = sid
     }
     if (!sid) {
       return
     }
 
-    wsConnect(sid)
+    connectSimulationWebSocket(sid)
     const connected = await waitForWsConnected()
     if (connected) {
       await store.resumeSimulation()
@@ -115,17 +120,67 @@ async function stopSimulationFromDashboard(): Promise<void> {
   ) {
     return
   }
+  const sid = store.simulationSid
   simulationOperationPending.value = true
   try {
-    await store.stopSimulationSession()
+    await store.stopSimulationSession(sid)
   } finally {
-    wsDisconnect()
+    if (ownedSimulationSid === sid) ownedSimulationSid = null
+    disconnectSimulationWebSocket()
     simulationOperationPending.value = false
   }
 }
 
+function connectSimulationWebSocket(sid: string): void {
+  if (
+    connectedSimulationSid === sid &&
+    (wsStatus.value === 'connected' || wsStatus.value === 'connecting')
+  ) return
+  connectedSimulationSid = sid
+  wsConnect(sid)
+}
+
+function disconnectSimulationWebSocket(): void {
+  connectedSimulationSid = null
+  wsDisconnect()
+}
+
+function handleSimulationRecreated(sid: string): void {
+  if (dashboardDisposing) {
+    void store.stopSimulationSession(sid)
+    return
+  }
+  ownedSimulationSid = sid
+  connectSimulationWebSocket(sid)
+}
+
+function disposeDashboardSimulation(): void {
+  if (dashboardDisposing) return
+  dashboardDisposing = true
+
+  const sid = ownedSimulationSid
+  const ownsCurrentSession = sid !== null && store.simulationSid === sid
+  if (sid && (!ownsCurrentSession || store.simulationStatus !== 'finished')) {
+    void store.stopSimulationSession(sid).catch((error) => {
+      console.warn('[Dashboard] failed to stop simulation during cleanup', error)
+    })
+  }
+  disconnectSimulationWebSocket()
+  if (ownsCurrentSession) store.resetSimulationState()
+  ownedSimulationSid = null
+}
+
+function onPageHide(event: PageTransitionEvent): void {
+  if (!event.persisted) disposeDashboardSimulation()
+}
+
 onMounted(() => {
   void syncDashboardData()
+  window.addEventListener('pagehide', onPageHide)
+
+  simulationHealthTimer = setInterval(() => {
+    store.checkSimulationFrameTimeout()
+  }, 1000)
 
   dataRetryTimer = setInterval(() => {
     if (store.dataSourceStatus === 'database') {
@@ -192,12 +247,13 @@ watch(lastControlDecision, (decision) => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('pagehide', onPageHide)
   if (vehicleTimer) clearInterval(vehicleTimer)
   if (statsTimer) clearInterval(statsTimer)
   if (trendTimer) clearInterval(trendTimer)
   if (dataRetryTimer) clearInterval(dataRetryTimer)
-  wsDisconnect()
-  store.resetSimulationState()
+  if (simulationHealthTimer) clearInterval(simulationHealthTimer)
+  disposeDashboardSimulation()
   console.log('[Dashboard] 定时刷新已停止，WebSocket 已断开')
 })
 </script>
@@ -236,6 +292,7 @@ onUnmounted(() => {
           @start-simulation="void startSimulationFromDashboard()"
           @pause-simulation="void pauseSimulationFromDashboard()"
           @stop-simulation="void stopSimulationFromDashboard()"
+          @simulation-recreated="handleSimulationRecreated"
         />
         <EmergencyPanel />
       </div>

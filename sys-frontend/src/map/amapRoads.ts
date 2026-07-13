@@ -20,6 +20,13 @@ function ciColor(ci: number): string {
 interface RoadEntry {
   id: string
   polyline: AMap.Polyline
+  pathKey: string
+}
+
+function pathKey(path: [number, number][]): string {
+  const first = path[0]
+  const last = path[path.length - 1]
+  return `${path.length}:${first?.[0]},${first?.[1]}:${last?.[0]},${last?.[1]}`
 }
 
 /** 地图点击道路时回调 road id */
@@ -67,9 +74,10 @@ export function addAMapRoadLayer(
       }
     })
 
-    const entry: RoadEntry = { id: r.id, polyline: poly }
+    const entry: RoadEntry = { id: r.id, polyline: poly, pathKey: pathKey(path) }
     entries.push(entry)
     lookup.set(r.id, entry)
+    lastColor.set(r.id, ciColor(r.congestionIndex))
   }
 
   return {
@@ -83,7 +91,11 @@ export function addAMapRoadLayer(
         const path: [number, number][] = r.path?.length >= 2
           ? r.path
           : [[from.lng, from.lat], [to.lng, to.lat]]
-        e.polyline.setPath(path)
+        const nextPathKey = pathKey(path)
+        if (e.pathKey !== nextPathKey) {
+          e.pathKey = nextPathKey
+          e.polyline.setPath(path)
+        }
         // 脏检查：只在颜色实际变化时才调 setOptions
         const newColor = ciColor(r.congestionIndex)
         if (lastColor.get(r.id) !== newColor) {
@@ -97,6 +109,7 @@ export function addAMapRoadLayer(
       entries.forEach((e) => {
         const real = pathMap.get(e.id)
         if (real && real.length >= 2) {
+          e.pathKey = pathKey(real)
           e.polyline.setPath(real)
         }
       })
