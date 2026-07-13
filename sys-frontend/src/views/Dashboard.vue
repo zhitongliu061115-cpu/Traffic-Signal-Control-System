@@ -220,8 +220,8 @@ onUnmounted(() => {
     <main class="ts-body">
       <!-- 左侧列 (22%)：交通统计 + AI 控制效果 -->
       <div class="ts-col ts-col--left">
-        <TrafficStats />
-        <CompareCharts />
+        <TrafficStats class="ts-left-stats" />
+        <CompareCharts class="ts-left-congestion" />
       </div>
 
       <!-- 中央列 (56%)：MapLibre 地图路网（含离线降级到 Three.js 抽象路网） -->
@@ -281,6 +281,15 @@ onUnmounted(() => {
 .ts-col > :deep(*) {
   flex: 1 1 0;
   min-height: 0;
+}
+
+/* 趋势图需要足够的纵向绘图区，避免双轴折线被压成狭长区域。 */
+.ts-col--left > :deep(.ts-left-stats) {
+  flex: 0.66 1 0;
+}
+
+.ts-col--left > :deep(.ts-left-congestion) {
+  flex: 1.34 1 0;
 }
 
 /* 中央列仅一个模块，占满整列 */

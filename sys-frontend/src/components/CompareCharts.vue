@@ -21,9 +21,7 @@ import {
 } from '@/utils/echartsTheme'
 
 const store = useTrafficStore()
-const { compareMetrics, congestionTrend, waitTrend, speedTrend, simulationStatus } = storeToRefs(store)
-
-const simRunning = computed(() => simulationStatus.value === 'running')
+const { compareMetrics, congestionTrend, waitTrend, speedTrend } = storeToRefs(store)
 
 const summaryItems = computed(() => {
   const m = compareMetrics.value
@@ -66,20 +64,25 @@ function buildTrendOption(wt: CongestionTrendPoint[], st: CongestionTrendPoint[]
       textStyle: { color: CHART_COLORS.text, fontSize: 12 },
       itemWidth: 18, itemHeight: 4, itemGap: 14,
     },
-    grid: chartGrid({ top: 34, bottom: 30, left: 28, right: 34 }),
+    grid: chartGrid({ top: 32, bottom: 26, left: 8, right: 8 }),
     xAxis: {
       ...chartXAxis(times),
       axisLabel: { color: CHART_COLORS.muted, fontSize: 11, interval: Math.max(0, Math.floor(times.length / 5) - 1) },
       boundaryGap: false,
     },
     yAxis: [
-      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.cyan, fontSize: 11 }, name: '秒', nameTextStyle: { color: CHART_COLORS.cyan, fontSize: 11 },
+      { ...chartYAxis(), position: 'left', splitNumber: 4,
+        axisLine: { show: true, lineStyle: { color: 'rgba(0, 212, 255, 0.38)' } },
+        axisLabel: { color: CHART_COLORS.cyan, fontSize: 11, margin: 9 },
         // @ts-expect-error ECharts supports markLine here at runtime, but the axis type omits it.
-        markLine: baselineWait > 0 ? { silent: true, symbol: 'none', lineStyle: { color: '#ff4d6d', type: 'dashed' as const, width: 1 }, label: { formatter: `基线 ${baselineWait}s`, fontSize: 10, color: '#ff4d6d' }, data: [{ yAxis: baselineWait }] } : undefined,
+        markLine: baselineWait > 0 ? { silent: true, symbol: 'none', lineStyle: { color: CHART_COLORS.cyan, type: 'dashed' as const, width: 1, opacity: 0.55 }, label: { show: false }, data: [{ yAxis: baselineWait }] } : undefined,
       },
-      { ...chartYAxis(), axisLabel: { color: CHART_COLORS.amber, fontSize: 11 }, name: 'km/h', nameTextStyle: { color: CHART_COLORS.amber, fontSize: 11 },
+      { ...chartYAxis(), position: 'right', splitNumber: 4, alignTicks: true,
+        splitLine: { show: false },
+        axisLine: { show: true, lineStyle: { color: 'rgba(255, 184, 0, 0.42)' } },
+        axisLabel: { color: CHART_COLORS.amber, fontSize: 11, margin: 9 },
         // @ts-expect-error ECharts supports markLine here at runtime, but the axis type omits it.
-        markLine: baselineSpeed > 0 ? { silent: true, symbol: 'none', lineStyle: { color: '#ff4d6d', type: 'dashed' as const, width: 1 }, label: { formatter: `基线 ${baselineSpeed}km/h`, fontSize: 10, color: '#ff4d6d' }, data: [{ yAxis: baselineSpeed }] } : undefined,
+        markLine: baselineSpeed > 0 ? { silent: true, symbol: 'none', lineStyle: { color: CHART_COLORS.amber, type: 'dotted' as const, width: 1, opacity: 0.6 }, label: { show: false }, data: [{ yAxis: baselineSpeed }] } : undefined,
       },
     ],
     series: [
@@ -89,7 +92,7 @@ function buildTrendOption(wt: CongestionTrendPoint[], st: CongestionTrendPoint[]
       },
       {
         name: '均速(km/h)', type: 'line', data: speedVals, smooth: true, symbol: 'none', yAxisIndex: 1,
-        lineStyle: { color: CHART_COLORS.amber, width: 3 }, itemStyle: { color: CHART_COLORS.amber },
+        lineStyle: { color: CHART_COLORS.amber, width: 2.6 }, itemStyle: { color: CHART_COLORS.amber },
       },
     ],
   }
@@ -342,27 +345,34 @@ onBeforeUnmount(() => {
   }
 
   .comp-card__body {
-    gap: 8px;
+    gap: 6px;
   }
 
   .cc-summary {
-    grid-template-columns: 1fr;
-    gap: 5px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
   }
 
   .cc-summary-item {
-    padding: 2px 7px;
-    font-size: 10px;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0;
+    padding: 3px 5px;
+    font-size: 9px;
+  }
+
+  .cc-summary-item span {
+    width: 100%;
   }
 
   .cc-summary-item b {
-    font-size: 15px;
+    font-size: 13px;
   }
 
   .cc-charts {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 11px;
+    grid-template-rows: minmax(0, 1.4fr) minmax(0, 0.9fr);
+    gap: 8px;
   }
 
   .cc-chart-panel__label {
