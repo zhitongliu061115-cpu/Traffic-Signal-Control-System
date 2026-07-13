@@ -98,11 +98,17 @@ traffic:
       enabled: ${AGENT_LANGCHAIN4J_ENABLED:true}
       base-url: ${LLM_BASE_URL:${DASHSCOPE_COMPATIBLE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
       api-key: ${LLM_API_KEY:${DASHSCOPE_API_KEY:sk-ws-H.EMEIXEP.1XNE.MEUCIHWhOCZ_oD7oSqIrYymkRZZpq8DQrhiIi4P6gasppFI9AiEA2dYvsYJmR4nIkWjpZNJxfzc0R9WTiFzf4qITCUUWknA}}
-      model-name: ${LLM_MODEL:${DASHSCOPE_MODEL:qwen3-8b-5e18191e0066}}
-      temperature: ${AGENT_MODEL_TEMPERATURE:0.2}
-      max-tokens: ${AGENT_MODEL_MAX_TOKENS:1200}
       timeout-seconds: ${AGENT_MODEL_TIMEOUT_SECONDS:60}
-      enable-thinking: ${AGENT_MODEL_ENABLE_THINKING:false}
+      planner:
+        model-name: ${AGENT_PLANNER_MODEL:${LLM_MODEL:${DASHSCOPE_MODEL:qwen3-8b-94fcdbcebc29}}}
+        temperature: ${AGENT_PLANNER_TEMPERATURE:${AGENT_MODEL_TEMPERATURE:0.0}}
+        max-tokens: ${AGENT_PLANNER_MAX_TOKENS:${AGENT_MODEL_MAX_TOKENS:1200}}
+        enable-thinking: ${AGENT_PLANNER_ENABLE_THINKING:${AGENT_MODEL_ENABLE_THINKING:false}}
+      answer:
+        model-name: ${AGENT_ANSWER_MODEL:${LLM_MODEL:${DASHSCOPE_MODEL:qwen3-8b-8d64792424b9}}}
+        temperature: ${AGENT_ANSWER_TEMPERATURE:${AGENT_MODEL_TEMPERATURE:0.2}}
+        max-tokens: ${AGENT_ANSWER_MAX_TOKENS:${AGENT_MODEL_MAX_TOKENS:1200}}
+        enable-thinking: ${AGENT_ANSWER_ENABLE_THINKING:${AGENT_MODEL_ENABLE_THINKING:false}}
 
 ---
 
