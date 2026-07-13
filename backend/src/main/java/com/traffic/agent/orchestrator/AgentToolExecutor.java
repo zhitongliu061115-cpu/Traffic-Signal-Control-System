@@ -45,6 +45,47 @@ public class AgentToolExecutor {
             "draft_emergency_dispatch",
             "audit_configuration_consistency"
     );
+    private static final List<String> SID_AWARE_TOOLS = List.of(
+            "get_current_simulation_state",
+            "get_intersection_detail",
+            "get_road_detail",
+            "get_latest_control_decisions",
+            "get_model_inference_log",
+            "diagnose_congestion",
+            "detect_signal_anomaly",
+            "detect_spillback_risk",
+            "get_safety_constraint_log",
+            "get_fallback_log",
+            "get_region_metrics",
+            "get_fallback_events",
+            "get_safety_events",
+            "get_alert_events",
+            "get_emergency_events",
+            "get_emergency_vehicle_status",
+            "draft_emergency_dispatch",
+            "audit_configuration_consistency"
+    );
+    private static final List<String> PLACEHOLDER_VALUES = List.of(
+            "待用户提供",
+            "用户提供",
+            "未提供",
+            "未知",
+            "unknown",
+            "undefined",
+            "null",
+            "none",
+            "todo",
+            "tbd",
+            "起点",
+            "终点",
+            "示例",
+            "example",
+            "xxx",
+            "路口A",
+            "路口B",
+            "A",
+            "B"
+    );
 
     private final AgentDataService agentDataService;
     private final TrafficRuntimeAgentTools runtimeTools;
@@ -102,8 +143,12 @@ public class AgentToolExecutor {
     }
 
     public AgentToolExecution execute(String messageId, AgentPlan.PlannedToolCall plannedCall) {
+        return execute(messageId, plannedCall, null);
+    }
+
+    public AgentToolExecution execute(String messageId, AgentPlan.PlannedToolCall plannedCall, String contextSid) {
         String toolName = normalizeToolName(plannedCall.toolName());
-        Map<String, Object> arguments = normalizeArguments(plannedCall.arguments());
+        Map<String, Object> arguments = normalizeArguments(plannedCall.arguments(), toolName, contextSid);
         long startNanos = System.nanoTime();
         debugLogService.info("agent.tool.start", Map.of(
                 "messageId", messageId,
@@ -157,6 +202,7 @@ public class AgentToolExecutor {
     }
 
     private AgentToolResult callTool(String toolName, Map<String, Object> arguments) {
+        validateToolArguments(toolName, arguments);
         return switch (toolName) {
             case "get_current_simulation_state" ->
                     runtimeTools.getCurrentSimulationState(stringArg(arguments, "sid", false));
@@ -282,17 +328,65 @@ public class AgentToolExecutor {
         return normalized;
     }
 
-    private Map<String, Object> normalizeArguments(Map<String, Object> arguments) {
-        if (arguments == null || arguments.isEmpty()) {
-            return Map.of();
-        }
+    private Map<String, Object> normalizeArguments(Map<String, Object> arguments, String toolName, String contextSid) {
         Map<String, Object> normalized = new LinkedHashMap<>();
+        if (arguments == null || arguments.isEmpty()) {
+            if (hasText(contextSid) && SID_AWARE_TOOLS.contains(toolName)) {
+                normalized.put("sid", contextSid.trim());
+            }
+            return normalized;
+        }
         arguments.forEach((key, value) -> {
             if (key != null && value != null) {
                 normalized.put(key, value);
             }
         });
+        if (hasText(contextSid)
+                && SID_AWARE_TOOLS.contains(toolName)
+                && !hasText(String.valueOf(normalized.getOrDefault("sid", "")))) {
+            normalized.put("sid", contextSid.trim());
+        }
         return normalized;
+    }
+
+    private void validateToolArguments(String toolName, Map<String, Object> arguments) {
+        switch (toolName) {
+            case "get_intersection_detail" -> requireRealArg(arguments, "intersectionId");
+            case "get_road_detail" -> requireRealArg(arguments, "roadId");
+            case "get_decision_trace" -> requireRealArg(arguments, "decisionId");
+            case "search_knowledge_base" -> requireRealArg(arguments, "query");
+            case "draft_emergency_dispatch" -> {
+                requireRealArg(arguments, "startIntersection");
+                requireRealArg(arguments, "endIntersection");
+            }
+            default -> {
+                // Most tools can run with optional filters. Required fields are checked above.
+            }
+        }
+        arguments.forEach((name, value) -> {
+            if (value instanceof String stringValue && isPlaceholderValue(stringValue)) {
+                throw new BusinessException("工具参数不是有效业务 ID：" + name + "=" + stringValue);
+            }
+        });
+    }
+
+    private void requireRealArg(Map<String, Object> arguments, String name) {
+        Object value = arguments.get(name);
+        if (value == null || !hasText(String.valueOf(value))) {
+            throw new BusinessException("工具参数缺失：" + name);
+        }
+        String text = String.valueOf(value).trim();
+        if (isPlaceholderValue(text)) {
+            throw new BusinessException("工具参数不是有效业务 ID：" + name + "=" + text);
+        }
+    }
+
+    private boolean isPlaceholderValue(String value) {
+        if (!hasText(value)) {
+            return true;
+        }
+        String normalized = value.trim();
+        return PLACEHOLDER_VALUES.stream().anyMatch(placeholder -> placeholder.equalsIgnoreCase(normalized));
     }
 
     private String stringArg(Map<String, Object> arguments, String name, boolean required) {
@@ -324,5 +418,9 @@ public class AgentToolExecutor {
 
     private int elapsedMs(long startNanos) {
         return (int) Math.max(0, (System.nanoTime() - startNanos) / 1_000_000);
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

@@ -52,7 +52,7 @@ class StrategyDispatchServiceSafetyTest {
                 List.of(),
                 Map.of(),
                 List.of(),
-                List.of(new SignalStateDto("intersection_1_1", 2, "ETWT")),
+                List.of(new SignalStateDto("intersection_1_1", 2, "ETWT", null, null, null)),
                 null,
                 List.of(),
                 List.of()

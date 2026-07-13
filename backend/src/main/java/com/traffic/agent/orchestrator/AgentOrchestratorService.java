@@ -107,7 +107,7 @@ public class AgentOrchestratorService {
             List<AgentToolExecution> executions = new ArrayList<>();
             if (plan.needsTools()) {
                 for (AgentPlan.PlannedToolCall plannedCall : plan.toolCalls()) {
-                    executions.add(toolExecutor.execute(userMessage.id(), plannedCall));
+                    executions.add(toolExecutor.execute(userMessage.id(), plannedCall, context.sid()));
                 }
             }
 
