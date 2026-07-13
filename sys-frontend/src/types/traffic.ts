@@ -59,6 +59,8 @@ export interface Intersection {
   currentPhase: SignalPhase
   /** 当前相位剩余绿灯时长 (秒) */
   greenRemain: number
+  /** false means the realtime source did not provide a trustworthy countdown. */
+  greenRemainKnown?: boolean
   /** 当前排队车辆数 */
   queueLength: number
   /** 平均延误 (秒) */
@@ -337,6 +339,11 @@ export interface SimVehicleState {
   y: number
   angle: number
   speed: number
+  drivableId?: string
+  drivableType?: 'lane' | 'lane_link'
+  distance?: number
+  nextRoadId?: string
+  nextLane?: number
 }
 
 /** 单帧道路状态（后端 RoadStateDto） */
@@ -361,6 +368,11 @@ export interface SimSignalState {
   intersectionId: string
   phaseIndex: number
   phaseCode: string
+  /** Backend-supplied phase countdown; the frontend must not invent this value. */
+  remainingSec?: number
+  phaseStartedAt?: number
+  appliedDurationSec?: number
+  transition?: 'green' | 'yellow' | 'all_red' | 'unknown'
 }
 
 /** 单帧聚合指标（后端 SimulationMetricsDto） */
@@ -479,12 +491,25 @@ export interface SimRoadnetIntersection {
   virtual: boolean
 }
 
+export interface SimRoadnetLane {
+  index: number
+  width: number
+}
+
+export interface SimLaneLink {
+  id: string
+  startLaneIndex: number
+  endLaneIndex: number
+  points: Array<{ x: number; y: number }>
+}
+
 export interface SimRoadnetRoad {
   id: string
   from: string
   to: string
   points: Array<{ x: number; y: number }>
   laneCount: number
+  lanes?: SimRoadnetLane[]
 }
 
 export interface SimRoadLink {
@@ -493,6 +518,7 @@ export interface SimRoadLink {
   fromRoadId: string
   toRoadId: string
   type: 'go_straight' | 'turn_left' | 'turn_right'
+  laneLinks?: SimLaneLink[]
 }
 
 export interface SimPhase {
