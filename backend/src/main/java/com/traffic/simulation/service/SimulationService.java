@@ -63,7 +63,7 @@ public class SimulationService {
     }
 
     public CreateSimulationResponse createSimulation(CreateSimulationRequest request) {
-        String controllerType = TrafficSignalControllerType.fromCode(request.controllerType()).code();
+        String controllerType = TrafficSignalControllerType.fromCode(request.controllerType()).canonicalCode();
         controllerRegistry.get(controllerType);
         var cityFlowResponse = cityFlowClient.createSimulation(
                 new CityFlowCreateSimulationRequest(request.sceneId(), request.speed(), request.warmupSeconds())

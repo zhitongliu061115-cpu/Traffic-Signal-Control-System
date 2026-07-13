@@ -272,6 +272,12 @@ class EVPriorityService:
             ev_session.seen_in_engine = True
             ev_session.missing_since = None
 
+            # If EV has passed all intersections on its route, mark as completed
+            # (CityFlow may not always remove the vehicle from the engine at route end)
+            if len(ev_session.passed_intersections) >= len(ev_session.route):
+                self._complete_ev(sid, ev_session, sim_time)
+                continue
+
             current_road = str(vehicle_info.get("road", ""))
             distance = float(vehicle_info.get("distance", 0))
             speed = float(vehicle_info.get("speed", 0))

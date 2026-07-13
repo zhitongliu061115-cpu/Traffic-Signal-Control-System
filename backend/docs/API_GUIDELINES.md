@@ -1,4 +1,4 @@
-﻿# 接口协作规范
+# 接口协作规范
 
 ## 基本原则
 
@@ -180,7 +180,7 @@
 | `GET` | `/api/v1/runtime/system-health` | Query：`limit=20` | `SystemHealthResponse` | 查询数据库视角健康摘要：关键表行数、session 状态分布、最近 `service_health_snapshot`。当前不主动探测 Python CityFlow 或 Traffic-R。 |
 | `GET` | `/api/v1/runtime/model-inferences` | Query：`sid?`、`intersectionId?`、`limit=20` | `List<ModelInferenceLogSummary>` | 查询 Traffic-R 推理日志和逐路口推理结果。 |
 | `GET` | `/api/v1/runtime/fallback-events` | Query：`sid?`、`intersectionId?`、`limit=20` | `List<FallbackEventSummary>` | 查询策略 fallback 事件，例如 Traffic-R 降级到 MaxPressure。 |
-| `GET` | `/api/v1/runtime/safety-events` | Query：`sid?`、`intersectionId?`、`decisionId?`、`limit=20` | `List<SafetyEventSummary>` | 查询安全约束事件。当前取决于安全层是否真实写入 `safety_constraint_event`。 |
+| `GET` | `/api/v1/runtime/safety-events` | Query：`sid?`、`intersectionId?`、`decisionId?`、`limit=20` | `List<SafetyEventSummary>` | 查询安全约束事件。`SafetyLayerService` 拦截非法相位、相位映射错误、持续时间越界或最小保持时间不足时会写入 `safety_constraint_event`。 |
 | `GET` | `/api/v1/runtime/alerts` | Query：`sid?`、`level?`、`status?`、`limit=20` | `List<AlertEventSummary>` | 查询系统告警事件。 |
 | `GET` | `/api/v1/runtime/emergency-events` | Query：`sid?`、`status?`、`limit=20` | `List<EmergencyEventSummary>` | 查询应急事件主记录。 |
 
@@ -218,11 +218,11 @@
 }
 ```
 
-`AgentChatResponse`：`reply`、`sessionId`、`source`、`fallback`、`conversationId`、`messageId`、`toolCalls[]`、`evidence[]`、`planTrace`。
+`AgentChatResponse`：`reply`、`sessionId`、`source`、`fallback`、`conversationId`、`messageId`、`toolCalls[]`、`evidence[]`、`planTrace`。其中 `reply` 是前端面向用户展示的最终文本，后端会清洗模型误输出的 JSON/过程字段；`toolCalls[]`、`evidence[]`、`planTrace` 仅供调试、审计和开发面板使用，普通用户界面不应直接展示。
 
 ### I. Agent 工具 HTTP 兼容接口
 
-这些接口用于 MCP/外部工具调用或前端调试，路径与 Agent 工具名保持一致。所有接口都支持可选 Query：`messageId`；传入后会把工具名、参数、结果、状态、耗时和错误写入 `agent_tool_call`。
+这些接口用于 MCP/外部工具调用或前端调试，路径与 Agent 工具名保持一致。旧版基础查询接口支持可选 Query：`messageId`；传入后会把工具名、参数、结果、状态、耗时和错误写入 `agent_tool_call`。新增的增强工具 HTTP 入口主要用于调试验收，正式 Agent 对话中的工具审计由 `/api/v1/agent/chat` 编排层统一记录。
 
 实时状态类工具读取 `LiveSimulationStateService` 内存最近帧，不查询数据库快照：
 
@@ -241,15 +241,26 @@
 | `GET` | `/api/v1/agent/tools/get_system_health` | Query：`limit=20`、`messageId?` | `SystemHealthResponse` | 查询数据库视角系统健康摘要和服务健康快照。 |
 | `GET` | `/api/v1/agent/tools/get_model_inference_log` | Query：`sid?`、`intersectionId?`、`limit=20`、`messageId?` | `List<ModelInferenceLogSummary>` | 查询 Traffic-R 模型推理日志、原始输出和解析结果。 |
 | `GET` | `/api/v1/agent/tools/get_fallback_events` | Query：`sid?`、`intersectionId?`、`limit=20`、`messageId?` | `List<FallbackEventSummary>` | 查询策略 fallback 事件。 |
-| `GET` | `/api/v1/agent/tools/get_safety_events` | Query：`sid?`、`intersectionId?`、`decisionId?`、`limit=20`、`messageId?` | `List<SafetyEventSummary>` | 查询安全约束事件。 |
+| `GET` | `/api/v1/agent/tools/get_safety_events` | Query：`sid?`、`intersectionId?`、`decisionId?`、`limit=20`、`messageId?` | `List<SafetyEventSummary>` | 查询安全约束事件，可用于 Agent 解释某个策略建议为何被安全层 fallback 或拒绝。 |
 | `GET` | `/api/v1/agent/tools/get_alert_events` | Query：`sid?`、`level?`、`status?`、`limit=20`、`messageId?` | `List<AlertEventSummary>` | 查询系统告警事件。 |
 | `GET` | `/api/v1/agent/tools/get_emergency_events` | Query：`sid?`、`status?`、`limit=20`、`messageId?` | `List<EmergencyEventSummary>` | 查询应急事件主记录。 |
+
+增强/混合工具调试入口返回统一 `AgentToolResult`，字段为 `success`、`toolName`、`data`、`evidence`、`warnings`、`timestamp`：
+
+| 方法 | 路径 | 请求参数 | 返回 `data` | 功能说明 |
+|---|---|---|---|---|
+| `GET` | `/api/v1/agent/tools/get_system_health/enhanced` | Query：`limit=20` | `AgentToolResult` | 增强版系统健康探测，聚合 Spring Boot 自检、数据库、CityFlow `/health`、Traffic-R `/health`、本地隧道、WebSocket 连接数和实时状态缓存。 |
+| `GET` | `/api/v1/agent/tools/get_decision_trace/{decisionId}/enhanced` | Path：`decisionId` | `AgentToolResult` | 增强版决策追踪，聚合控制决策、Traffic-R 推理结果、安全层校验、fallback 事件、trace 时间线和 CityFlow 下发相关 metadata。 |
+| `GET` | `/api/v1/agent/tools/search_knowledge_base` | Query：`query`、`topK=5`、`scope?` | `AgentToolResult` | 混合知识库检索。本地项目 `.md/.txt` 文档始终可用；百炼知识库通过官方 `bailian20231229` OpenAPI SDK 调用单个 `index-id` 的 `Retrieve` 接口，返回语义切片并作为 Agent 工具证据转给 LLM。未配置或调用失败时返回 warning 并回退本地检索。 |
+| `GET` | `/api/v1/agent/tools/get_emergency_vehicle_status` | Query：`sid?`、`vehicleId?`、`limit=20` | `AgentToolResult` | 查询应急车辆实时状态，优先读取 `LiveSimulationStateService` 最近帧中的应急车辆、路线进度、ETA 和绿波状态，同时附带数据库应急事件摘要。 |
+| `GET` | `/api/v1/agent/tools/draft_emergency_dispatch` | Query：`sid?`、`startIntersection`、`endIntersection`、`evId?`、`evType?`、`priority=1` | `AgentToolResult` | 生成应急调度和绿波草案，只返回路线、经过路口、建议动作和人工确认项，不调用应急执行接口，不下发 CityFlow。 |
+| `GET` | `/api/v1/agent/tools/audit_configuration_consistency` | Query：`sid?`、`sceneCode?` | `AgentToolResult` | 检查 CityFlow roadnet、实时信号、Traffic-R phaseCode、数据库 signal phase 和 live frame 的配置一致性，用于排查 Traffic-R 被安全层阻断、相位映射异常等问题。 |
 
 ### J. WebSocket 实时推送接口
 
 | 协议 | 路径 | 参数 | 推送内容 | 功能说明 |
 |---|---|---|---|---|
-| `WS` / `WSS` | `/ws/v1/simulations/{sid}` | Path：`sid` | `WsMessage<SimFrameData>`、`WsMessage<List<ControlDecision>>` | 前端订阅指定仿真会话的实时消息。后端会推送 `sim.frame` 实时仿真帧和 `control.decision` 控制决策事件。真实信号灯状态必须以后续 `sim.frame.data.signals` 为准，`control.decision` 只表示决策已生成/提交。 |
+| `WS` / `WSS` | `/ws/v1/simulations/{sid}` | Path：`sid` | `WsMessage<SimFrameData>`、`WsMessage<List<ControlDecision>>` | 前端订阅指定仿真会话的实时消息。后端会推送 `sim.frame` 实时仿真帧和 `control.decision` 控制决策事件。真实信号灯状态必须以后续 `sim.frame.data.signals` 为准，`control.decision` 可能包含安全层审计决策；只有 `metadata.safetyAllowed=true` 且进入 CityFlow 下发流程的决策才代表提交动作，被标记 `metadata.safetyRejected=true` 的决策不会下发。 |
 
 连接示例：
 
@@ -286,10 +297,11 @@ ws://localhost:8080/ws/v1/simulations/{sid}
 | `get_intersection_detail` | `TrafficRuntimeAgentTools` | `intersectionId`、`sid?`、`sceneCode?` | 内存实时缓存 + roadnet | 查询路口实时相位、movement/lane 状态、相位候选和 roadLink。 |
 | `get_road_detail` | `TrafficRuntimeAgentTools` | `roadId`、`sid?`、`sceneCode?` | 内存实时缓存 + roadnet | 查询道路实时车辆、排队、速度、拥堵等级和车道信息。 |
 | `get_latest_control_decisions` | `TrafficDecisionAgentTools` | `sid?`、`intersectionId?`、`limit?` | 数据库 | 查询最近控制决策，用于解释策略来源、最终相位和执行原因。 |
-| `get_decision_trace` | `TrafficDecisionAgentTools` | `decisionId` | 数据库 | 查询单条控制决策链路和 trace 阶段。 |
+| `get_decision_trace` | `TrafficDecisionAgentTools` | `decisionId` | 数据库 | 增强版决策链路聚合，查询控制决策、trace 阶段、Traffic-R 推理、安全层校验、fallback 和 CityFlow 下发相关 metadata。 |
 | `get_model_inference_log` | `TrafficDecisionAgentTools` | `sid?`、`intersectionId?`、`limit?` | 数据库 | 查询 Traffic-R 推理请求、模型输出、解析结果和耗时。 |
-| `get_system_health` | `TrafficHealthAgentTools` | `limit?` | 数据库 | 查询数据库视角的系统健康摘要和服务健康快照。 |
-| `search_knowledge_base` | `TrafficKnowledgeAgentTools` | `query`、`topK?`、`scope?` | 本地项目文档 | 查询项目文档、接口规范、部署资料、Agent 设计和算法说明。当前不是百炼知识库 API。 |
+| `get_system_health` | `TrafficHealthAgentTools` | `limit?` | 主动探测 + 数据库 | 探测 Spring Boot、CityFlow、Traffic-R、WebSocket、数据库、本地隧道和实时状态缓存。 |
+| `audit_configuration_consistency` | `TrafficHealthAgentTools` | `sid?`、`sceneCode?` | 内存 roadnet + 数据库 + 配置 | 检查 roadnet、实时信号、Traffic-R phaseCode、CityFlow phaseIndex 和数据库相位配置一致性。 |
+| `search_knowledge_base` | `TrafficKnowledgeAgentTools` | `query`、`topK?`、`scope?` | 本地项目文档 + 百炼 Retrieve | 查询项目文档、接口规范、部署资料、Agent 设计和算法说明；百炼侧只使用当前配置的单个知识库 `index-id`，`Retrieve` 返回的 `Data.Nodes[].Text` 会写入 `hits[].snippet`，作为 LLM 生成最终回答的证据切片。 |
 | `diagnose_congestion` | `TrafficDiagnosisAgentTools` | `targetType`、`targetId?`、`sid?`、`sceneCode?` | 内存实时缓存为主 | 基于实时排队、等待、低速 movement/road 证据诊断拥堵原因，只输出建议不执行控制。 |
 | `detect_signal_anomaly` | `TrafficDiagnosisAgentTools` | `sid?`、`intersectionId?`、`limit?` | 数据库 + 内存实时缓存 | 检测相位长时间不变、安全事件、异常决策和相位映射疑似问题。 |
 | `detect_spillback_risk` | `TrafficDiagnosisAgentTools` | `sid?`、`roadId?`、`intersectionId?`、`sceneCode?` | 内存实时缓存 | 检测道路或路口下游溢出风险，输出证据、影响范围和人工确认项。 |
@@ -299,6 +311,8 @@ ws://localhost:8080/ws/v1/simulations/{sid}
 | `get_safety_events` / `get_safety_constraint_log` | `TrafficDiagnosisAgentTools` | `sid?`、`intersectionId?`、`decisionId?`、`limit?` | 数据库 | 查询安全约束事件；`get_safety_constraint_log` 是语义化日志工具。 |
 | `get_alert_events` | `TrafficDiagnosisAgentTools` | `sid?`、`level?`、`status?`、`limit?` | 数据库 | 查询告警事件，用于异常诊断和运行风险分析。 |
 | `get_emergency_events` | `EmergencyAgentTools` | `sid?`、`status?`、`limit?` | 数据库 | 查询应急事件主记录，只读，不生成或执行绿波控制。 |
+| `get_emergency_vehicle_status` | `EmergencyAgentTools` | `sid?`、`vehicleId?`、`limit?` | 内存实时缓存 + 数据库 | 查询应急车辆当前位置、路线进度、ETA、绿波状态和关联应急事件。 |
+| `draft_emergency_dispatch` | `EmergencyAgentTools` | `sid?`、`startIntersection`、`endIntersection`、`evId?`、`evType?`、`priority?` | 内存 roadnet | 根据起终点生成应急路线和绿波调度草案，只生成建议，不执行控制动作。 |
 
 所有 Agent 内部工具统一返回 `AgentToolResult`：`success`、`toolName`、`data`、`evidence`、`warnings`、`timestamp`。工具失败时应返回 `success=false` 的结构化结果，不能让 Agent 整体崩溃；所有工具均为只读工具。
 
@@ -591,6 +605,7 @@ GET /api/v1/agent/tools/get_latest_control_decisions?sid={sid}&intersectionId={i
 ```http
 GET /api/v1/runtime/control-decisions/{decisionId}/trace
 GET /api/v1/agent/tools/get_decision_trace/{decisionId}
+GET /api/v1/agent/tools/get_decision_trace/{decisionId}/enhanced
 ```
 
 `decisionId` 必须是 `control_decision.id`。返回内容包括：
@@ -598,6 +613,7 @@ GET /api/v1/agent/tools/get_decision_trace/{decisionId}
 - 决策摘要与 `strategy_input -> candidate_scoring -> strategy_selected -> cityflow_applied/failed -> effect_evaluated` 阶段记录。
 - MaxPressure 决策的全部候选相位评分、movement 分解、排名和选中标记。
 - 达到评估窗口后生成的 `control_decision_effect`，包含排队、等待、速度和通行量的 before/after/delta 及效果标签。
+- 增强 Agent 工具会额外聚合 Traffic-R 推理结果、安全层事件、fallback 事件、trace 时间线和 CityFlow 下发 metadata，适合回答“为什么模型选了 A，最后执行 B”。
 
 效果默认在决策后 30 秒生成，因此刚创建的决策允许 `effect=null`。接口只读，不会触发补算或控制动作。
 
@@ -606,9 +622,10 @@ GET /api/v1/agent/tools/get_decision_trace/{decisionId}
 ```http
 GET /api/v1/runtime/system-health?limit=20
 GET /api/v1/agent/tools/get_system_health?limit=20
+GET /api/v1/agent/tools/get_system_health/enhanced?limit=20
 ```
 
-返回数据库可访问状态、关键运行表行数、仿真会话状态分布和最近 `service_health_snapshot`。当前是数据库视角的健康摘要，不会主动探测 Python CityFlow 或 Traffic-R。
+基础接口返回数据库可访问状态、关键运行表行数、仿真会话状态分布和最近 `service_health_snapshot`。增强接口返回 `AgentToolResult`，会主动探测 Spring Boot、Python CityFlow、Traffic-R、WebSocket、数据库、本地 Traffic-R 隧道和实时状态缓存；排查 Traffic-R 无法调用、隧道断开或 CityFlow 不可达时优先使用增强接口。
 
 #### Traffic-R 推理日志 / `get_model_inference_log`
 
@@ -633,6 +650,8 @@ GET /api/v1/agent/tools/get_alert_events?sid={sid}&level={level}&status={status}
 
 GET /api/v1/runtime/emergency-events?sid={sid}&status={status}&limit=20
 GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&messageId={messageId}
+GET /api/v1/agent/tools/get_emergency_vehicle_status?sid={sid}&vehicleId={vehicleId}&limit=20
+GET /api/v1/agent/tools/draft_emergency_dispatch?sid={sid}&startIntersection={from}&endIntersection={to}&evId={evId}&evType=ambulance&priority=1
 ```
 
 用途：
@@ -641,6 +660,18 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 - `get_safety_events`：查询安全约束修改、拒绝或回退决策的事件。
 - `get_alert_events`：查询系统告警。
 - `get_emergency_events`：查询应急车辆/绿波任务主事件。
+- `get_emergency_vehicle_status`：查询实时应急车辆、路线进度、ETA 和绿波状态；优先读内存最新帧，数据库应急事件只作为补充。
+- `draft_emergency_dispatch`：生成起终点应急路线与绿波建议草案，只提供人工确认前的方案，不执行 CityFlow 控制。
+
+#### 知识库与配置一致性调试
+
+```http
+GET /api/v1/agent/tools/search_knowledge_base?query={query}&topK=5&scope={scope}
+GET /api/v1/agent/tools/audit_configuration_consistency?sid={sid}&sceneCode={sceneCode}
+```
+
+- `search_knowledge_base`：本地项目文档检索始终启用；百炼知识库需要配置 `bailian.knowledge.enabled=true`、`endpoint`、`access-key-id`、`access-key-secret`、`workspace-id` 和 `index-id` 后才会通过官方 SDK 调用 `Retrieve`。当前项目只使用一个百炼知识库，其他知识库内容应先合并到该知识库。未配置或调用失败时返回 warning 并继续提供本地文档结果。
+- `audit_configuration_consistency`：检查 CityFlow roadnet、Traffic-R phaseCode、数据库 `signal_phase`、实时 signal frame 和 roadnet 相位映射是否一致，优先用于排查安全层频繁阻断 Traffic-R 相位、相位 code 不匹配和 roadnet/数据库不同步问题。
 
 #### Agent 内部 LangChain4j 工具层
 
@@ -652,10 +683,10 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 |---|---|
 | `TrafficRuntimeAgentTools` | `get_current_simulation_state`、`get_intersection_detail`、`get_road_detail` |
 | `TrafficDecisionAgentTools` | `get_latest_control_decisions`、`get_decision_trace`、`get_model_inference_log` |
-| `TrafficHealthAgentTools` | `get_system_health` |
+| `TrafficHealthAgentTools` | `get_system_health`、`audit_configuration_consistency` |
 | `TrafficKnowledgeAgentTools` | `search_knowledge_base` |
 | `TrafficDiagnosisAgentTools` | `diagnose_congestion`、`detect_signal_anomaly`、`detect_spillback_risk`、`get_safety_constraint_log`、`get_fallback_log`、`get_region_metrics`、`compare_strategy_metrics`、`get_fallback_events`、`get_safety_events`、`get_alert_events` |
-| `EmergencyAgentTools` | `get_emergency_events` |
+| `EmergencyAgentTools` | `get_emergency_events`、`get_emergency_vehicle_status`、`draft_emergency_dispatch` |
 
 工具实现规则：
 
@@ -663,8 +694,9 @@ GET /api/v1/agent/tools/get_emergency_events?sid={sid}&status={status}&limit=20&
 - 实时状态类工具调用 `LiveSimulationStateService`，读取内存最近帧；历史复盘类工具调用 `RuntimeQueryService`，读取数据库记录。
 - 工具统一返回 `AgentToolResult`：`success`、`toolName`、`data`、`evidence`、`warnings`、`timestamp`。
 - 工具异常会被包装为 `success=false` 的结构化结果，并记录为 `agent_tool_call.status=FAILED`，不应导致整个 Agent 对话崩溃。
-- 当前工具全部只读，不推进仿真、不下发相位、不切换策略、不执行应急绿波。
-- `search_knowledge_base` 当前是本地项目文档检索基础版，检索 `.md/.txt` 文件；尚不是百炼知识库 API。
+- 当前工具全部只读或草案生成，不推进仿真、不下发相位、不切换策略、不执行应急绿波。
+- `draft_emergency_dispatch` 只能输出路线和绿波建议草案；真正执行必须走应急业务接口、统一仲裁层和安全层。
+- `search_knowledge_base` 是“本地文档 + 百炼 Retrieve 语义切片”的混合检索。百炼配置缺失或调用失败时必须明确返回 warning，不能伪造远端检索结果。百炼返回的语义切片只作为工具证据交给 LLM，总结后的自然语言回答由 `/api/v1/agent/chat` 返回给前端，前端不应直接展示工具 JSON。
 
 诊断类工具返回的 `data` 不是自然语言散文，而是结构化诊断报告，至少包含：
 
@@ -710,7 +742,7 @@ Content-Type: application/json
   "message": "当前仿真状态怎么样？",
   "sid": "run_001",
   "conversationId": "可选，继续已有 Agent 会话",
-  "sessionId": "可选，兼容百炼外部 session_id",
+  "sessionId": "可选，外部客户端会话标识",
   "context": {
     "currentPage": "dashboard",
     "intersectionId": "intersection_1_1"
@@ -725,7 +757,7 @@ Content-Type: application/json
 | `message` | 是 | 用户问题，最大 4000 字符 |
 | `sid` | 否 | 本项目仿真会话 ID，用于关联 `simulation_session` 和实时工具查询 |
 | `conversationId` | 否 | 已有 `agent_conversation.id`；不传时后端自动创建新会话 |
-| `sessionId` | 否 | 兼容百炼外部会话 ID，不等同于仿真 `sid` |
+| `sessionId` | 否 | 外部客户端会话 ID，不等同于仿真 `sid`；当前不再表示百炼平台 Agent 会话 |
 | `context` | 否 | 前端页面上下文，如当前页面、路口 ID、道路 ID 等 |
 
 响应：
@@ -734,7 +766,7 @@ Content-Type: application/json
 {
   "reply": "当前仿真运行正常……",
   "sessionId": null,
-  "source": "langchain4j | bailian | config",
+  "source": "llm-api | config",
   "fallback": false,
   "conversationId": "agent_conversation UUID",
   "messageId": "assistant agent_message UUID",
@@ -761,7 +793,7 @@ Content-Type: application/json
     "rationale": "需要查询真实仿真状态",
     "needsTools": true,
     "rawPlan": "{...LLM 输出的 JSON 规划...}",
-    "plannerSource": "langchain4j | bailian | config"
+    "plannerSource": "llm-api | config"
   }
 }
 ```
@@ -787,7 +819,7 @@ Content-Type: application/json
 {
   "userId": "可选 UUID",
   "sid": "可选仿真会话 sid",
-  "externalSessionId": "可选百炼 session_id",
+  "externalSessionId": "可选外部客户端会话 ID",
   "title": "本轮诊断会话"
 }
 ```

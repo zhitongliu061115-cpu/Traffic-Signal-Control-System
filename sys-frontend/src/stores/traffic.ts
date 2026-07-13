@@ -1,4 +1,4 @@
-// =========================================================
+﻿// =========================================================
 // AI 自适应信号控制与应急绿波数字孪生系统 — Pinia Store
 // =========================================================
 import { defineStore } from 'pinia'
@@ -939,6 +939,24 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
     if (frame.evStatus && frame.evStatus.length > 0) {
       latestEvStatus.value = frame.evStatus
+      const es = frame.evStatus[0]
+      console.log('[EV] evStatus', JSON.stringify(es),
+        'systemMode=', systemMode.value,
+        'routeLen=', emergencyRoute.value.length,
+        'passed=', es.passedCount)
+      if (es && systemMode.value === 'emergency' && emergencyRoute.value.length > 0) {
+        activeGreenWaveIndex.value = Math.min(es.passedCount, emergencyRoute.value.length - 1)
+        // 更新预计到达时间
+        const remaining = es.totalCount - es.passedCount
+        if (remaining > 0) {
+          const perNode = es.elapsedTime / Math.max(es.passedCount, 1)
+          emergencyVehicle.value.eta = +((remaining * perNode) / 60).toFixed(1)
+        }
+        // EV 到达终点 → 自动恢复正常模式
+        if (es.completed && systemMode.value === 'emergency' && es.evId === emergencyVehicle.value.id) {
+          restoreNormalMode()
+        }
+      }
     }
     if (frame.status === 'finished') {
       simulationStatus.value = 'finished'
@@ -1161,7 +1179,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
   }
 
-  /** 切换控制策略：停旧仿真 → 换 controllerType → 建新仿真 → 返回新 sid */
+  /** 切换控制策略：停旧仿真 → 换 controllerType → 建新仿真并保持暂停 → 返回新 sid */
   async function recreateSimulation(controllerType: string): Promise<string | null> {
     simulationErrorMessage.value = null
 
@@ -1185,15 +1203,7 @@ export const useTrafficStore = defineStore('traffic', () => {
       return null
     }
 
-    // 4. 自动启动新仿真
-    try {
-      await startSimulation(result.sid)
-      simulationStatus.value = 'running'
-      console.log('[TrafficStore] recreated + started with controller:', controllerType, 'sid:', result.sid)
-    } catch (err) {
-      console.warn('[TrafficStore] auto-start failed, simulation left paused', err)
-    }
-
+    console.log('[TrafficStore] recreated with controller:', controllerType, 'sid:', result.sid)
     return result.sid
   }
 

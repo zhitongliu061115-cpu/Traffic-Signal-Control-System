@@ -236,7 +236,8 @@ SimulationFrameScheduler
   -> CityFlowClient.nextFrame
   -> Python CityFlow 返回最新缓存快照
   -> StrategyDispatchService 低频生成策略决策
-  -> CityFlowClient.applyControlActions 异步下发 actions
+  -> SafetyLayerService 校验相位合法性、持续时间和最小保持时间
+  -> 仅安全通过的 ControlDecision 进入 CityFlowClient.applyControlActions 异步下发 actions
   -> SimulationWebSocketHandler
   -> 前端 WebSocket 接收 sim.frame
 ```
@@ -261,7 +262,7 @@ SimulationFrameScheduler
 4. 能定时获取仿真帧。
 5. 能通过 WebSocket 推送 `sim.frame`。
 6. FixedTime、MaxPressure、Traffic-R 都能生成统一 `ControlDecision`。
-7. `ControlDecision` 能通过 Python `/cityflow/simulations/{sid}/actions` 下发到 CityFlow。
+7. `ControlDecision` 必须先经过 `SafetyLayerService`；安全通过后才能通过 Python `/cityflow/simulations/{sid}/actions` 下发到 CityFlow，被安全层拦截的决策只能进入审计和 Agent 查询。
 8. 前端车辆和信号灯只能根据 `sim.frame` 渲染，不能根据模型响应伪造真实状态。
 9. 前端能渲染路网、车辆动画、道路状态和信号灯。
 

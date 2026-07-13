@@ -337,6 +337,20 @@ function buildFallback(): void {
       gltf.scene.position.set(0, 0, 0)
       rootGroup!.add(gltf.scene)
       console.log("[3D] scene.glb loaded")
+      // ---- remove ALL baked-in lane dashes from scene.glb ----
+      const toRemove: any[] = []
+      gltf.scene.traverse((child) => {
+        const name: string = (child as any).name || ""
+        // Exact: mesh_5 / mesh_5_instance_*  (NOT mesh_50-59)
+        if (name === "mesh_5" || name.startsWith("mesh_5_instance")) toRemove.push(child)
+        // Exact: mesh_7 / mesh_7_instance_*  (NOT mesh_70-75)
+        if (name === "mesh_7" || name.startsWith("mesh_7_instance")) toRemove.push(child)
+        // Yellow center lines baked in model
+        if (name === "mesh_6" || name === "mesh_8") toRemove.push(child)
+      })
+      toRemove.forEach((c) => { c.parent.remove(c) })
+      console.log("[3D] removed", toRemove.length, "baked-in lane dashes")
+      // ---- end ----
       loading.value = false
 
       // 在 Blender 标记的 tl_label_* 空物体上挂倒计时 Sprite
@@ -385,13 +399,21 @@ function buildFallback(): void {
       }
       updateTLSprite()
       tlSpriteUpdaters.push(updateTLSprite)
+      // ---- ??????????????? ----
       const dashMat = new MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222, emissiveIntensity: 0.3 })
       const m4 = new Matrix4()
+      const STOP_AT = 46  // ?????????
       for (const dir of ["H", "V"] as const) {
         const isH = dir === "H"
         const dGeom = isH ? new BoxGeometry(12, 1.15, 0.4) : new BoxGeometry(0.4, 1.15, 12)
         const dPos: Array<[number, number, number]> = []
-        for (let pos = -70; pos <= 70; pos += 18) {
+        for (let pos = -70; pos <= -(STOP_AT + 8); pos += 18) {
+          for (const offset of [-12, -6, 6, 12]) {
+            if (isH) dPos.push([pos, 0.5, offset])
+            else     dPos.push([offset, 0.5, pos])
+          }
+        }
+        for (let pos = STOP_AT + 8; pos <= 70; pos += 18) {
           for (const offset of [-12, -6, 6, 12]) {
             if (isH) dPos.push([pos, 0.5, offset])
             else     dPos.push([offset, 0.5, pos])
@@ -401,7 +423,124 @@ function buildFallback(): void {
         dPos.forEach(([x, y, z], i) => { m4.identity().setPosition(x, y, z); dIM.setMatrixAt(i, m4) })
         dIM.instanceMatrix.needsUpdate = true
         rootGroup!.add(dIM)
+        // Extra shorter dashes between stop line (22) and main dashes (52/54)
+        const shortGeom = isH ? new BoxGeometry(8, 1.15, 0.4) : new BoxGeometry(0.4, 1.15, 8)
+        const extraPos: Array<[number, number, number]> = []
+        for (const pos of [-40, -28, 28, 40]) {
+          for (const offset of [-12, -6, 6, 12]) {
+            if (isH) extraPos.push([pos, 0.5, offset])
+            else     extraPos.push([offset, 0.5, pos])
+          }
+        }
+        const extraIM = new InstancedMesh(shortGeom, dashMat, extraPos.length)
+        extraPos.forEach(([x, y, z], i) => { m4.identity().setPosition(x, y, z); extraIM.setMatrixAt(i, m4) })
+        extraIM.instanceMatrix.needsUpdate = true
+        rootGroup!.add(extraIM)
       }
+
+      // ---- ?????????????? ----
+      // ??????????????????????
+      const stopLineMat = new MeshStandardMaterial({ color: 0xffffff, emissive: 0x333333, emissiveIntensity: 0.4, roughness: 0.4 })
+      const STOP_LINE = 22
+      const HALF_W = 20
+      // [x, z, ??????, ???? z ????????]
+      // ????????????? x=-22???? z<0????
+      //               ???? x=+22???? z>0????
+      // ????????????? z=-22???? x>0????
+      //               ???? z=+22???? x<0????
+      const stopPos: Array<[number, number, number, number, number]> = [
+        [-STOP_LINE, 0.4, 0, 1, HALF_W],       // ?????????z=+1 ~ +20   // ????z ? -20 ? -1??????
+        [STOP_LINE, 0.4, 0, -HALF_W, -1],      // ?????????z=-20 ~ -1       // ????z ? 1 ? 20??????
+        [0, 0.4, -STOP_LINE, -HALF_W, -1],     // ?????????x=-20 ~ -1      // ????x ? 1 ? 20??????
+        [0, 0.4, STOP_LINE, 1, HALF_W],        // ?????????x=+1 ~ +20     // ????x ? -20 ? -1??????
+      ]
+      for (const [sx, sy, sz, zStart, zEnd] of stopPos) {
+        const isH = sz === 0
+        const span = Math.abs(zEnd - zStart)
+        const mid = (zStart + zEnd) / 2
+        const geom = isH ? new BoxGeometry(0.6, 1.2, span) : new BoxGeometry(span, 1.2, 0.6)
+        const sl = new Mesh(geom, stopLineMat)
+        if (isH) sl.position.set(sx, sy, mid)
+        else sl.position.set(mid, sy, sz)
+        rootGroup!.add(sl)
+      }
+
+      // ---- ???????????????????----
+      const yellowMat = new MeshStandardMaterial({ color: 0xf5c842, emissive: 0x8a6d00, emissiveIntensity: 0.2, roughness: 0.5 })
+      const Y_LEN = 48      // ????(22)??????(70)
+      const Y_FROM = 47     // ?????????? 23 ~ 71
+      for (const xSign of [1, -1]) {
+        const yl = new Mesh(new BoxGeometry(Y_LEN, 1.2, 0.7), yellowMat)
+        yl.position.set(xSign * Y_FROM, 0.4, 0)
+        rootGroup!.add(yl)
+      }
+      for (const zSign of [1, -1]) {
+        const yl = new Mesh(new BoxGeometry(0.7, 1.2, Y_LEN), yellowMat)
+        yl.position.set(0, 0.4, zSign * Y_FROM)
+        rootGroup!.add(yl)
+      }
+      // ---- lane direction arrows (on exit side of each approach) ----
+      function drawArrow(type: string): CanvasTexture {
+        const c = document.createElement("canvas")
+        c.width = 128; c.height = 192
+        const ctx = c.getContext("2d")!
+        ctx.fillStyle = "#ffffff"
+        // Canvas 128x192, shaft centered at x=64
+        const sx = 52, sw = 24        // shaft: x=52..76, width 24
+        const sh_y = 96, sh_h = 88    // shaft: y=96..184
+        if (type === "straight") {
+          // shaft (shifted right 6px)
+          ctx.fillRect(sx + 34, sh_y, sw, sh_h)
+          // triangle head: base at y=96, tip at top
+          ctx.beginPath(); ctx.moveTo(68, 96); ctx.lineTo(128, 96); ctx.lineTo(98, 30); ctx.fill()
+        } else if (type === "left") {
+          // shaft
+          ctx.fillRect(sx, sh_y, sw, sh_h)
+          // horizontal arm extending LEFT from shaft top
+          ctx.fillRect(10, 66, 66, 30)
+          // triangle pointing left
+          ctx.beginPath(); ctx.moveTo(4, 81); ctx.lineTo(28, 48); ctx.lineTo(28, 114); ctx.fill()
+        } else {
+          // shaft
+          ctx.fillRect(sx, sh_y, sw, sh_h)
+          // horizontal arm extending RIGHT from shaft top
+          ctx.fillRect(52, 66, 66, 30)
+          // triangle pointing right
+          ctx.beginPath(); ctx.moveTo(124, 81); ctx.lineTo(100, 48); ctx.lineTo(100, 114); ctx.fill()
+        }
+        const tex = new CanvasTexture(c)
+        tex.flipY = false
+        tex.minFilter = LinearFilter
+        tex.magFilter = LinearFilter
+        tex.needsUpdate = true
+        return tex
+      }
+      
+      const arrowDefs: Array<{x: number, z: number, rot: number, type: string}> = []
+      const AD = 28
+      const LC = [4, 11, 17]
+      const getType = (lc: number) => lc === 4 ? "right" : lc === 17 ? "left" : "straight"
+      // West->East: arrows on EAST exit side, south half of road (z negative)
+      for (const lc of LC) arrowDefs.push({x: AD, z: -lc, rot: -Math.PI/2, type: getType(lc)})
+      // East->West: arrows on WEST exit side, north half (z positive)
+      for (const lc of LC) arrowDefs.push({x: -AD, z: lc, rot: Math.PI/2, type: getType(lc)})
+      // South->North: arrows on NORTH exit side, east half (x positive)
+      for (const lc of LC) arrowDefs.push({x: lc, z: AD, rot: Math.PI, type: getType(lc)})
+      // North->South: arrows on SOUTH exit side, west half (x negative)
+      for (const lc of LC) arrowDefs.push({x: -lc, z: -AD, rot: 0, type: getType(lc)})
+      
+      for (const ad of arrowDefs) {
+        const tex = drawArrow(ad.type)
+        const ap = new Mesh(
+          new PlaneGeometry(4, 6),
+          new MeshStandardMaterial({ map: tex, transparent: true, depthWrite: false, roughness: 0.5 })
+        )
+        ap.rotation.x = -Math.PI / 2
+        ap.rotation.z = ad.rot
+        ap.position.set(ad.x, 0.55, ad.z)
+        rootGroup!.add(ap)
+      }
+      // ---- end arrows ----
     },
     undefined,
     (err) => { console.error('[3D] scene.glb load error:', err); modelFound!.value = false },

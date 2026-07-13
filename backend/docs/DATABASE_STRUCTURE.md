@@ -233,7 +233,7 @@ Agent 自身数据接口已由 `AgentDataService` 接入：
 
 | 接口能力 | 主要读取/写入表 | 说明 |
 | --- | --- | --- |
-| 创建/查询 Agent 会话 | `agent_conversation`、`simulation_session` | 支持关联业务 `sid` 和百炼 `external_session_id`。 |
+| 创建/查询 Agent 会话 | `agent_conversation`、`simulation_session` | 支持关联业务 `sid` 和外部客户端会话标识 `external_session_id`；当前不再表示百炼平台 Agent 会话。 |
 | 创建/查询 Agent 消息 | `agent_message`、`agent_conversation` | 保存 `user`、`assistant`、`tool` 等角色消息。 |
 | 写入/查询工具调用审计 | `agent_tool_call`、`agent_message` | 保存工具名、参数、结果摘要、状态、耗时和错误。 |
 

@@ -1,14 +1,22 @@
 package com.traffic.agent.tool;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.traffic.agent.service.BailianKnowledgeRetrieveService;
 import dev.langchain4j.agent.tool.Tool;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 @Component
 public class TrafficKnowledgeAgentTools {
@@ -16,35 +24,115 @@ public class TrafficKnowledgeAgentTools {
     private static final int MAX_TOP_K = 8;
     private static final int MAX_FILE_CHARS = 120_000;
 
-    @Tool(name = "search_knowledge_base", value = "查询项目文档、接口规范、部署资料、Agent 设计和交通算法说明。只读。")
+    private final BailianKnowledgeRetrieveService bailianRetrieveService;
+
+    public TrafficKnowledgeAgentTools() {
+        this(new ObjectMapper(), null);
+    }
+
+    @Autowired
+    public TrafficKnowledgeAgentTools(
+            ObjectMapper objectMapper,
+            BailianKnowledgeRetrieveService bailianRetrieveService
+    ) {
+        this.bailianRetrieveService = bailianRetrieveService;
+    }
+
+    @Tool(name = "search_knowledge_base", value = "Search project docs and, when configured, Bailian Retrieve semantic slices. Read-only.")
     public AgentToolResult searchKnowledgeBase(String query, Integer topK, String scope) {
-        if (query == null || query.isBlank()) {
+        if (!StringUtils.hasText(query)) {
             return new AgentToolResult(
                     false,
                     "search_knowledge_base",
                     null,
                     List.of(),
-                    List.of("query 不能为空"),
-                    java.time.Instant.now()
+                    List.of("query cannot be empty"),
+                    Instant.now()
             );
         }
         return AgentToolSupport.run(
                 "search_knowledge_base",
-                () -> search(query, normalizeTopK(topK), scope),
-                "来自本地项目文档的知识检索结果"
+                () -> search(query.trim(), normalizeTopK(topK), scope),
+                "Hybrid retrieval from local project documents and Bailian Retrieve semantic slices"
         );
     }
 
     private KnowledgeSearchResponse search(String query, int topK, String scope) {
+        List<KnowledgeHit> localHits = searchLocal(query, topK, scope);
+        RemoteKnowledgeResult remote = searchBailian(query, topK);
+        List<String> warnings = new ArrayList<>(remote.warnings());
+        List<KnowledgeHit> merged = new ArrayList<>();
+        merged.addAll(remote.hits());
+        merged.addAll(localHits);
+        List<KnowledgeHit> ranked = merged.stream()
+                .sorted(Comparator.comparingInt(KnowledgeHit::score).reversed())
+                .limit(topK)
+                .toList();
+        Map<String, Object> route = new LinkedHashMap<>();
+        route.put("mode", "single_bailian_index_plus_local_docs");
+        route.put("scope", scope);
+        route.put("remoteStatus", remote.providerStatus().status());
+        route.put("note", "Bailian Retrieve returns semantic slices; these snippets are passed to the LLM as tool evidence.");
+        return new KnowledgeSearchResponse(
+                query,
+                scope,
+                new ProviderStatus(
+                        "local",
+                        "available",
+                        Map.of("hitCount", localHits.size())
+                ),
+                remote.providerStatus(),
+                ranked,
+                warnings,
+                route
+        );
+    }
+
+    private List<KnowledgeHit> searchLocal(String query, int topK, String scope) {
         Path root = resolveRepoRoot();
         List<String> terms = splitTerms(query);
-        List<KnowledgeHit> hits = documentCandidates(root, scope).stream()
+        return documentCandidates(root, scope).stream()
                 .map(path -> scoreDocument(root, path, query, terms))
                 .filter(hit -> hit.score() > 0)
                 .sorted(Comparator.comparingInt(KnowledgeHit::score).reversed())
                 .limit(topK)
                 .toList();
-        return new KnowledgeSearchResponse(query, scope, hits);
+    }
+
+    private RemoteKnowledgeResult searchBailian(String query, int topK) {
+        if (bailianRetrieveService == null) {
+            return new RemoteKnowledgeResult(
+                    new ProviderStatus("bailian", "disabled", Map.of()),
+                    List.of(),
+                    List.of("Bailian Retrieve service is not available; using local documents only.")
+            );
+        }
+        BailianKnowledgeRetrieveService.RetrieveResult result = bailianRetrieveService.retrieve(query, topK);
+        List<KnowledgeHit> hits = result.slices().stream()
+                .map(slice -> new KnowledgeHit(
+                        slice.source(),
+                        scoreToInt(slice.score()),
+                        truncate(slice.text(), 1_200),
+                        List.of(),
+                        slice.metadata()
+                ))
+                .toList();
+        ProviderStatus providerStatus = new ProviderStatus(
+                result.providerStatus().provider(),
+                result.providerStatus().status(),
+                result.providerStatus().details()
+        );
+        return new RemoteKnowledgeResult(providerStatus, hits, result.warnings());
+    }
+
+    private int scoreToInt(double score) {
+        if (Double.isNaN(score) || Double.isInfinite(score)) {
+            return 0;
+        }
+        if (score <= 1.0) {
+            return (int) Math.round(score * 100);
+        }
+        return (int) Math.round(Math.min(score, 100.0));
     }
 
     private List<Path> documentCandidates(Path root, String scope) {
@@ -74,7 +162,7 @@ public class TrafficKnowledgeAgentTools {
         try {
             content = Files.readString(path, StandardCharsets.UTF_8);
         } catch (IOException ex) {
-            return new KnowledgeHit(root.relativize(path).toString(), 0, "", List.of("读取失败：" + ex.getMessage()));
+            return new KnowledgeHit(root.relativize(path).toString(), 0, "", List.of("read failed: " + ex.getMessage()));
         }
         if (content.length() > MAX_FILE_CHARS) {
             content = content.substring(0, MAX_FILE_CHARS);
@@ -85,7 +173,13 @@ public class TrafficKnowledgeAgentTools {
         for (String term : terms) {
             score += countOccurrences(lowerContent, term.toLowerCase(Locale.ROOT));
         }
-        return new KnowledgeHit(root.relativize(path).toString(), score, snippet(content, lowerContent, lowerQuery, terms), List.of());
+        return new KnowledgeHit(
+                root.relativize(path).toString(),
+                score,
+                snippet(content, lowerContent, lowerQuery, terms),
+                List.of(),
+                Map.of("provider", "local")
+        );
     }
 
     private String snippet(String content, String lowerContent, String lowerQuery, List<String> terms) {
@@ -107,7 +201,7 @@ public class TrafficKnowledgeAgentTools {
     }
 
     private int countOccurrences(String content, String term) {
-        if (term == null || term.isBlank()) {
+        if (!StringUtils.hasText(term)) {
             return 0;
         }
         int count = 0;
@@ -120,7 +214,7 @@ public class TrafficKnowledgeAgentTools {
     }
 
     private List<String> splitTerms(String query) {
-        return java.util.Arrays.stream(query.split("[\\s,，。；;:：/\\\\|]+"))
+        return java.util.Arrays.stream(query.split("[\\s,，。；;:：、/\\\\|]+"))
                 .map(String::trim)
                 .filter(term -> term.length() >= 2)
                 .limit(8)
@@ -142,10 +236,28 @@ public class TrafficKnowledgeAgentTools {
         return cwd;
     }
 
+    private String truncate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+    }
+
     public record KnowledgeSearchResponse(
             String query,
             String scope,
-            List<KnowledgeHit> hits
+            ProviderStatus localProvider,
+            ProviderStatus bailianProvider,
+            List<KnowledgeHit> hits,
+            List<String> warnings,
+            Map<String, Object> route
+    ) {
+    }
+
+    public record ProviderStatus(
+            String provider,
+            String status,
+            Map<String, Object> details
     ) {
     }
 
@@ -153,6 +265,17 @@ public class TrafficKnowledgeAgentTools {
             String source,
             int score,
             String snippet,
+            List<String> warnings,
+            Map<String, Object> metadata
+    ) {
+        public KnowledgeHit(String source, int score, String snippet, List<String> warnings) {
+            this(source, score, snippet, warnings, Map.of());
+        }
+    }
+
+    private record RemoteKnowledgeResult(
+            ProviderStatus providerStatus,
+            List<KnowledgeHit> hits,
             List<String> warnings
     ) {
     }

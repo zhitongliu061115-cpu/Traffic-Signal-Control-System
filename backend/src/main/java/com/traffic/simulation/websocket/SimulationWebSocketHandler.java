@@ -53,6 +53,24 @@ public class SimulationWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    public Map<String, Integer> snapshotStats() {
+        int totalSessions = 0;
+        int openSessions = 0;
+        for (Set<WebSocketSession> sessions : sessionsBySid.values()) {
+            totalSessions += sessions.size();
+            for (WebSocketSession session : sessions) {
+                if (session.isOpen()) {
+                    openSessions++;
+                }
+            }
+        }
+        return Map.of(
+                "sidCount", sessionsBySid.size(),
+                "totalConnections", totalSessions,
+                "openConnections", openSessions
+        );
+    }
+
     private String resolveSid(WebSocketSession session) {
         String path = session.getUri() == null ? "" : session.getUri().getPath();
         return SID_TEMPLATE.match(path).get("sid");

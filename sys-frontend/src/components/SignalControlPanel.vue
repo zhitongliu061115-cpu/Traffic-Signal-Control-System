@@ -11,16 +11,26 @@ import type { SignalPhase, Alert } from '@/types/traffic'
 
 const store = useTrafficStore()
 const {
-  aiEnabled,
   intersections,
   selectedIntersectionId,
   selectedIntersection,
-  systemMode,
   alerts,
   simulationControllerType,
   simulationStatus,
+  simulationSid,
+  simulationSpeed,
   latestControlDecision,
 } = storeToRefs(store)
+
+const props = defineProps<{
+  busy?: boolean
+}>()
+
+const emit = defineEmits<{
+  startSimulation: []
+  pauseSimulation: []
+  stopSimulation: []
+}>()
 
 // ---- 策略切换 ----
 const showControllerDialog = ref(false)
@@ -28,6 +38,7 @@ const pendingController = ref('')
 const switching = ref(false)
 const dialogX = ref(0)
 const dialogY = ref(0)
+const showSpeedMenu = ref(false)
 
 const controllerOptions = [
   { value: 'fixed-time', label: 'Fixed-Time', desc: '固定配时，按预设周期循环' },
@@ -67,6 +78,61 @@ async function confirmSwitch(): Promise<void> {
     switching.value = false
   }
 }
+
+// ---- 仿真控制 ----
+const speedOptions = [1, 3, 5, 8]
+
+const operationBusy = computed(() => props.busy || switching.value)
+const hasSimulationSession = computed(() => Boolean(simulationSid.value))
+const canStartSimulation = computed(() => !operationBusy.value && simulationStatus.value !== 'running')
+const canPauseSimulation = computed(() => !operationBusy.value && simulationStatus.value === 'running')
+const canStopSimulation = computed(
+  () => !operationBusy.value && hasSimulationSession.value && simulationStatus.value !== 'finished',
+)
+const canSetSpeed = computed(
+  () => !operationBusy.value && (!hasSimulationSession.value || simulationStatus.value === 'finished'),
+)
+
+const simulationStatusText = computed(() => {
+  if (operationBusy.value) return '处理中'
+  if (simulationStatus.value === 'running') return '仿真运行中'
+  if (simulationStatus.value === 'paused') return '仿真已暂停'
+  if (simulationStatus.value === 'booting') return '等待启动'
+  return '仿真未启动'
+})
+
+const statusBadgeClass = computed(() => {
+  if (operationBusy.value) return 'sc-status-badge--pending'
+  if (simulationStatus.value === 'running') return 'sc-status-badge--live'
+  if (simulationStatus.value === 'paused') return 'sc-status-badge--paused'
+  return 'sc-status-badge--idle'
+})
+
+function handleStartSimulation(): void {
+  if (!canStartSimulation.value) return
+  emit('startSimulation')
+}
+
+function handlePauseSimulation(): void {
+  if (!canPauseSimulation.value) return
+  emit('pauseSimulation')
+}
+
+function handleStopSimulation(): void {
+  if (!canStopSimulation.value) return
+  emit('stopSimulation')
+}
+
+function toggleSpeedMenu(): void {
+  if (!canSetSpeed.value) return
+  showSpeedMenu.value = !showSpeedMenu.value
+}
+
+function selectSpeed(speed: number): void {
+  if (!canSetSpeed.value) return
+  simulationSpeed.value = speed
+  showSpeedMenu.value = false
+}
 // 点击外部关闭
 function onOverlayClick(e: MouseEvent): void {
   if ((e.target as HTMLElement).classList.contains('sc-dialog-overlay')) {
@@ -94,8 +160,6 @@ const PHASE_DURATION: Record<SignalPhase, number> = {
 const activeIntersection = computed(() =>
   selectedIntersection.value ?? intersections.value[0] ?? null,
 )
-
-const activeId = computed(() => activeIntersection.value?.id ?? null)
 
 const phaseName = computed(() => {
   if (!activeIntersection.value) return '—'
@@ -157,8 +221,8 @@ const aiSuggestion = computed(() => {
     }
     // 仿真在跑但还没收到 AI 决策（fixed-time 或等待第一个决策周期）
     return {
-      title: '⏳ 等待 AI 模型决策…',
-      body: `仿真运行中，${simulationControllerType.value === 'fixed-time' ? '当前为 Fixed-Time 固定配时模式，不产生 AI 决策。切换至 Max-Pressure 或 Traffic-R 可看到 AI 决策。' : 'AI 决策周期为 10s，等待第一个决策推送中…'}`,
+      title: '等待模型决策',
+      body: `仿真运行中，${simulationControllerType.value === 'fixed-time' ? '当前为 Fixed-Time 固定配时模式，不产生 AI 决策。切换至 Max-Pressure 或 Traffic-R 可看到策略决策。' : '决策周期为 10s，正在等待第一个决策推送。'}`,
       tone: 'default' as const,
       source: 'waiting' as const,
     }
@@ -167,10 +231,10 @@ const aiSuggestion = computed(() => {
   // ---- 仿真未运行：本地启发式规则（降级方案）----
   // 故障/离线
   if (it.deviceStatus === 'fault') {
-    return { title: '⚠️ 设备故障 — 需人工介入', body: '当前路口信号控制器故障，倒计时已停止，AI 控制自动降级。建议：① 立即派单巡检；② 周边路口已自动扩大放行窗口以疏导积压车辆；③ 在维修完成前考虑启用临时移动信号灯。', tone: 'rose' as const, source: 'local' as const }
+    return { title: '设备故障 — 需人工介入', body: '当前路口信号控制器故障，倒计时已停止，控制策略自动降级。建议：立即派单巡检，周边路口扩大放行窗口以疏导积压车辆，维修完成前考虑启用临时移动信号灯。', tone: 'rose' as const, source: 'local' as const }
   }
   if (it.deviceStatus === 'offline') {
-    return { title: '🔌 设备离线', body: '信号控制器离线，无法获取实时车流数据。AI 决策已暂停对该路口的控制，请在设备恢复后重新启用 AI 自适应。', tone: 'amber' as const, source: 'local' as const }
+    return { title: '设备离线', body: '信号控制器离线，无法获取实时车流数据。策略决策已暂停对该路口的控制，请在设备恢复后重新启动仿真验证。', tone: 'amber' as const, source: 'local' as const }
   }
   if (it.congestionIndex >= 80) {
     return { title: `严重拥堵 — 建议延长 ${phaseName.value} 至 ${suggestDuration.value}s`, body: `当前${phaseName.value}相位，路口拥堵指数 ${Math.round(it.congestionIndex)}，排队 ${it.queueLength} 辆，平均延误 ${Math.round(it.averageDelay)}s。`, tone: 'rose' as const, source: 'local' as const }
@@ -181,43 +245,8 @@ const aiSuggestion = computed(() => {
   if (it.congestionIndex >= 30) {
     return { title: `轻度拥堵 — 标准配时运行`, body: `当前${phaseName.value}相位，路口整体畅通。按标准配时方案运行。`, tone: 'emerald' as const, source: 'local' as const }
   }
-  return { title: `✅ 路口畅通 — 标准配时运行`, body: `当前${phaseName.value}相位，路口车流顺畅，拥堵指数仅 ${Math.round(it.congestionIndex)}。`, tone: 'emerald' as const, source: 'local' as const }
+  return { title: `路口畅通 — 标准配时运行`, body: `当前${phaseName.value}相位，路口车流顺畅，拥堵指数仅 ${Math.round(it.congestionIndex)}。`, tone: 'emerald' as const, source: 'local' as const }
 })
-
-// ---- 控制操作 ----
-function handleStartAi(): void {
-  store.startAiControl()
-  store.generateMockAlert(
-    'ai_control_start',
-    'info',
-    `AI 自适应控制已启用 — ${activeIntersection.value?.name ?? '全局'}`,
-    '系统操作 · 信号控制面板',
-    activeId.value ?? undefined,
-  )
-}
-
-function handlePauseAi(): void {
-  store.pauseAiControl()
-  store.generateMockAlert(
-    'ai_control_pause',
-    'info',
-    `AI 自适应控制已暂停 — ${activeIntersection.value?.name ?? '全局'}`,
-    '系统操作 · 信号控制面板',
-    activeId.value ?? undefined,
-  )
-}
-
-function handleManualSwitch(): void {
-  if (!activeId.value) return
-  store.switchPhase(activeId.value)
-  store.generateMockAlert(
-    'control_failure',
-    'info',
-    `手动切换相位 — ${activeIntersection.value?.name} → ${phaseName.value}`,
-    '系统操作 · 信号控制面板',
-    activeId.value,
-  )
-}
 
 // ---- 操作日志（最近 6 条 info 级别告警） ----
 const operationLog = computed<Pick<Alert, 'id' | 'title' | 'time'>[]>(() =>
@@ -254,10 +283,10 @@ const phaseProgressColor = computed(() => {
         <span class="titlebar-text">AI 信号控制</span>
         <span
           class="sc-ai-badge"
-          :class="aiEnabled ? 'sc-ai-badge--on' : 'sc-ai-badge--off'"
+          :class="statusBadgeClass"
         >
-          <span class="status-dot" :class="aiEnabled ? 'status-dot--live' : 'status-dot--warning'" />
-          {{ aiEnabled ? 'AI 已启用' : 'AI 已暂停' }}
+          <span class="status-dot" :class="simulationStatus === 'running' ? 'status-dot--live' : ''" />
+          {{ simulationStatusText }}
         </span>
       </div>
     </div>
@@ -275,7 +304,7 @@ const phaseProgressColor = computed(() => {
         <div class="sc-controller-row">
           <span class="sc-current-strategy">{{ controllerOptions.find(o => o.value === simulationControllerType)?.label ?? simulationControllerType }}</span>
           <button class="cyber-btn sc-controller-trigger" :disabled="switching" @click="openControllerDialog">
-            {{ switching ? '⏳ 切换中…' : '切换策略' }}
+            {{ switching ? '切换中' : '切换策略' }}
           </button>
         </div>
       </div>
@@ -309,7 +338,7 @@ const phaseProgressColor = computed(() => {
             <div class="sc-dialog-footer">
               <button class="cyber-btn sc-dialog-btn sc-dialog-btn--cancel" @click="showControllerDialog = false">取消</button>
               <button class="cyber-btn sc-dialog-btn sc-dialog-btn--confirm" :disabled="switching" @click="confirmSwitch">
-                {{ switching ? '⏳ 切换中…' : '确认切换' }}
+                {{ switching ? '切换中' : '确认切换' }}
               </button>
             </div>
           </aside>
@@ -318,7 +347,7 @@ const phaseProgressColor = computed(() => {
 
       <!-- ===== 故障/离线醒目提示 ===== -->
       <div v-if="!deviceOk" class="sc-fault-banner" :class="activeIntersection?.deviceStatus === 'fault' ? 'sc-fault-banner--fault' : 'sc-fault-banner--offline'">
-        <span class="sc-fault-banner__icon">{{ activeIntersection?.deviceStatus === 'fault' ? '⚠️' : '🔌' }}</span>
+        <span class="sc-fault-banner__icon" aria-hidden="true" />
         <div class="sc-fault-banner__text">
           <div class="sc-fault-banner__title">
             {{ activeIntersection?.deviceStatus === 'fault' ? '设备故障' : '设备离线' }}
@@ -394,7 +423,6 @@ const phaseProgressColor = computed(() => {
       <!-- ===== AI 决策建议（突出区域） ===== -->
       <div class="sc-ai-section" :class="`sc-ai-section--${aiSuggestion.tone}`">
         <div class="sc-ai-section__head">
-          <span class="sc-ai-section__icon">{{ aiSuggestion.source === 'ai' ? '🤖' : aiSuggestion.source === 'waiting' ? '⏳' : '🧠' }}</span>
           <span class="sc-ai-section__label">{{ aiSuggestion.source === 'ai' ? 'AI 模型决策' : aiSuggestion.source === 'waiting' ? '等待 AI 决策' : '本地规则建议' }}</span>
           <span class="sc-ai-section__pulse" :class="{ 'sc-ai-section__pulse--live': aiSuggestion.source === 'ai', 'sc-ai-section__pulse--waiting': aiSuggestion.source === 'waiting' }" />
         </div>
@@ -407,27 +435,55 @@ const phaseProgressColor = computed(() => {
       <!-- ===== 控制按钮 ===== -->
       <div class="sc-actions">
         <button
-          class="cyber-btn sc-action-btn sc-action-btn--start"
-          :class="{ 'sc-action-btn--disabled': aiEnabled }"
-          :disabled="aiEnabled"
-          @click="handleStartAi"
+          class="sc-action-btn sc-action-btn--start"
+          :disabled="!canStartSimulation"
+          type="button"
+          @click="handleStartSimulation"
         >
-          <span>🟢</span> 启动 AI 自适应控制
+          <span class="sc-action-btn__mark" aria-hidden="true" />
+          <span>{{ operationBusy ? '处理中' : simulationStatus === 'paused' ? '继续仿真' : '启动仿真' }}</span>
         </button>
         <button
-          class="cyber-btn sc-action-btn sc-action-btn--pause"
-          :class="{ 'sc-action-btn--disabled': !aiEnabled }"
-          :disabled="!aiEnabled"
-          @click="handlePauseAi"
+          class="sc-action-btn sc-action-btn--pause"
+          :disabled="!canPauseSimulation"
+          type="button"
+          @click="handlePauseSimulation"
         >
-          <span>⏸️</span> 暂停 AI 控制
+          <span class="sc-action-btn__mark" aria-hidden="true" />
+          <span>暂停仿真</span>
         </button>
         <button
-          class="cyber-btn sc-action-btn sc-action-btn--manual"
-          @click="handleManualSwitch"
+          class="sc-action-btn sc-action-btn--stop"
+          :disabled="!canStopSimulation"
+          type="button"
+          @click="handleStopSimulation"
         >
-          <span>🔧</span> 手动切换相位
+          <span class="sc-action-btn__mark" aria-hidden="true" />
+          <span>停止仿真</span>
         </button>
+        <div class="sc-speed">
+          <button
+            class="sc-action-btn sc-action-btn--speed"
+            :disabled="!canSetSpeed"
+            type="button"
+            @click="toggleSpeedMenu"
+          >
+            <span class="sc-action-btn__mark" aria-hidden="true" />
+            <span>仿真倍速 {{ simulationSpeed }}x</span>
+          </button>
+          <div v-if="showSpeedMenu" class="sc-speed-menu">
+            <button
+              v-for="speed in speedOptions"
+              :key="speed"
+              type="button"
+              class="sc-speed-menu__item"
+              :class="{ 'sc-speed-menu__item--active': simulationSpeed === speed }"
+              @click="selectSpeed(speed)"
+            >
+              {{ speed }}x
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- ===== 操作日志 ===== -->
@@ -435,7 +491,7 @@ const phaseProgressColor = computed(() => {
         <div class="sc-log__title">操作日志</div>
         <div class="sc-log__list">
           <div v-for="log in operationLog" :key="log.id" class="sc-log__item">
-            <span class="sc-log__item-icon">📋</span>
+            <span class="sc-log__item-icon" aria-hidden="true" />
             <span class="sc-log__item-text">{{ log.title }}</span>
             <span class="sc-log__item-time">{{ log.time }}</span>
           </div>
@@ -476,16 +532,23 @@ const phaseProgressColor = computed(() => {
   clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
 }
 
-.sc-ai-badge--on {
+.sc-status-badge--live {
   border: 1px solid rgba(34, 211, 160, 0.5);
   color: #22d3a0;
   background: rgba(34, 211, 160, 0.08);
 }
 
-.sc-ai-badge--off {
+.sc-status-badge--paused,
+.sc-status-badge--pending {
   border: 1px solid rgba(255, 184, 0, 0.5);
   color: #ffb800;
   background: rgba(255, 184, 0, 0.08);
+}
+
+.sc-status-badge--idle {
+  border: 1px solid rgba(90, 117, 149, 0.45);
+  color: #8da8c5;
+  background: rgba(90, 117, 149, 0.08);
 }
 
 /* 故障/离线横幅 */
@@ -511,8 +574,12 @@ const phaseProgressColor = computed(() => {
 }
 
 .sc-fault-banner__icon {
-  font-size: 20px;
   flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
 }
 
 .sc-fault-banner__title {
@@ -684,10 +751,6 @@ const phaseProgressColor = computed(() => {
   margin-bottom: 8px;
 }
 
-.sc-ai-section__icon {
-  font-size: 16px;
-}
-
 .sc-ai-section__label {
   font-size: 13px;
   font-weight: 700;
@@ -741,20 +804,54 @@ const phaseProgressColor = computed(() => {
 .sc-actions {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   flex: 0 0 auto;
 }
 
 .sc-action-btn {
   width: 100%;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   justify-content: flex-start;
-  text-transform: none;
-  letter-spacing: 0.04em;
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  color: #dff9ff;
+  background:
+    linear-gradient(90deg, rgba(0, 212, 255, 0.1), rgba(2, 18, 33, 0.28)),
+    rgba(4, 21, 39, 0.58);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  cursor: pointer;
+  font-family: 'AlimamaShuHeiTi', 'Microsoft YaHei', sans-serif;
   font-size: 13px;
-  padding: 10px 14px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.2;
+  padding: 0 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease;
+}
+
+.sc-action-btn span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sc-action-btn__mark {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 12px currentColor;
 }
 
 .sc-action-btn--start {
@@ -777,9 +874,67 @@ const phaseProgressColor = computed(() => {
   box-shadow: 0 0 16px rgba(255, 184, 0, 0.35);
 }
 
-.sc-action-btn--manual {
-  border-color: rgba(0, 212, 255, 0.5);
-  color: #00d4ff;
+.sc-action-btn--stop {
+  border-color: rgba(255, 77, 109, 0.5);
+  color: #ff6b86;
+}
+
+.sc-action-btn--stop:hover:not(:disabled) {
+  background: rgba(255, 77, 109, 0.12);
+  box-shadow: 0 0 16px rgba(255, 77, 109, 0.32);
+}
+
+.sc-action-btn--speed {
+  border-color: rgba(0, 212, 255, 0.48);
+  color: #7af7ff;
+}
+
+.sc-action-btn--speed:hover:not(:disabled) {
+  background: rgba(0, 212, 255, 0.12);
+  box-shadow: 0 0 16px rgba(0, 212, 255, 0.28);
+}
+
+.sc-action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+  box-shadow: none;
+}
+
+.sc-speed {
+  position: relative;
+}
+
+.sc-speed-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(44px, 1fr));
+  gap: 6px;
+  width: min(100%, 260px);
+  padding: 8px;
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  background: rgba(5, 19, 35, 0.96);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.32), 0 0 18px rgba(0, 212, 255, 0.14);
+}
+
+.sc-speed-menu__item {
+  min-height: 30px;
+  border: 1px solid rgba(0, 212, 255, 0.24);
+  color: #8da8c5;
+  background: rgba(4, 21, 39, 0.66);
+  cursor: pointer;
+  font-family: 'Rajdhani', 'DINPro', sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.sc-speed-menu__item:hover,
+.sc-speed-menu__item--active {
+  border-color: rgba(122, 247, 255, 0.72);
+  color: #7af7ff;
+  background: rgba(0, 212, 255, 0.12);
 }
 
 /* 策略选择 */
@@ -808,15 +963,6 @@ const phaseProgressColor = computed(() => {
   gap: 4px;
   font-size: 10px;
   padding: 2px 8px;
-}
-.sc-status-badge--live {
-  color: #22d3a0;
-  border: 1px solid rgba(34, 211, 160, 0.4);
-  background: rgba(34, 211, 160, 0.08);
-}
-.sc-status-badge--idle {
-  color: #5a7595;
-  border: 1px solid rgba(90, 117, 149, 0.3);
 }
 
 /* 策略选择弹窗 */
@@ -861,17 +1007,6 @@ const phaseProgressColor = computed(() => {
 .sc-dialog-btn { padding: 6px 18px; font-size: 11px; }
 .sc-dialog-btn--cancel { border-color: rgba(90,117,149,0.45); color: #8da8c5; }
 .sc-dialog-btn--confirm { border-color: #00d4ff; color: #00d4ff; }
-
-.sc-action-btn--manual:hover {
-  background: rgba(0, 212, 255, 0.12);
-  box-shadow: 0 0 16px rgba(0, 212, 255, 0.35);
-}
-
-.sc-action-btn--disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  filter: none;
-}
 
 /* 操作日志 */
 .sc-log {

@@ -32,8 +32,7 @@ let vehicleTimer: ReturnType<typeof setInterval> | null = null
 let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
 let dataRetryTimer: ReturnType<typeof setInterval> | null = null
-const simulationStarting = ref(false)
-let dashboardStartingSimulation = false
+const simulationOperationPending = ref(false)
 
 async function syncDashboardData(): Promise<void> {
   const loaded = await store.loadDashboardData()
@@ -43,37 +42,90 @@ async function syncDashboardData(): Promise<void> {
   }
 }
 
-async function startSimulationFromDashboard(): Promise<void> {
-  if (simulationStarting.value || store.simulationStatus === 'running') return
-  simulationStarting.value = true
-  dashboardStartingSimulation = true
-  try {
-    const result = await store.initSimulationSession()
-    if (!result?.sid) {
-      simulationStarting.value = false
-      return
+function waitForWsConnected(): Promise<boolean> {
+  if (wsStatus.value === 'connected') {
+    return Promise.resolve(true)
+  }
+
+  return new Promise((resolve) => {
+    let stopWatch: (() => void) | null = null
+    const cleanup = (): void => {
+      stopWatch?.()
+      stopWatch = null
     }
-    wsConnect(result.sid)
-    const stopWatch = watch(wsStatus, (s) => {
+    const timeout = window.setTimeout(() => {
+      cleanup()
+      resolve(false)
+    }, 5000)
+
+    stopWatch = watch(wsStatus, (s) => {
       if (s === 'connected') {
-        stopWatch()
-        void store.resumeSimulation()
-        simulationStarting.value = false
-      } else if (s === 'error' || s === 'disconnected') {
-        stopWatch()
-        simulationStarting.value = false
+        window.clearTimeout(timeout)
+        cleanup()
+        resolve(true)
+      } else if (s === 'error') {
+        window.clearTimeout(timeout)
+        cleanup()
+        resolve(false)
       }
     })
+  })
+}
+
+async function startSimulationFromDashboard(): Promise<void> {
+  if (simulationOperationPending.value || store.simulationStatus === 'running') return
+  simulationOperationPending.value = true
+  try {
+    let sid = store.simulationSid
+    if (!sid || store.simulationStatus === 'finished' || store.simulationStatus === 'booting') {
+      const result = await store.initSimulationSession()
+      sid = result?.sid ?? null
+    }
+    if (!sid) {
+      return
+    }
+
+    wsConnect(sid)
+    const connected = await waitForWsConnected()
+    if (connected) {
+      await store.resumeSimulation()
+    }
   } catch {
-    simulationStarting.value = false
+    // 具体错误已由 store 记录到 simulationErrorMessage
   } finally {
-    dashboardStartingSimulation = false
+    simulationOperationPending.value = false
+  }
+}
+
+async function pauseSimulationFromDashboard(): Promise<void> {
+  if (simulationOperationPending.value || store.simulationStatus !== 'running') return
+  simulationOperationPending.value = true
+  try {
+    await store.pauseSimulationSession()
+  } finally {
+    simulationOperationPending.value = false
+  }
+}
+
+async function stopSimulationFromDashboard(): Promise<void> {
+  if (
+    simulationOperationPending.value ||
+    !store.simulationSid ||
+    store.simulationStatus === 'finished'
+  ) {
+    return
+  }
+  simulationOperationPending.value = true
+  try {
+    await store.stopSimulationSession()
+  } finally {
+    wsDisconnect()
+    simulationOperationPending.value = false
   }
 }
 
 onMounted(() => {
   void syncDashboardData()
-  void startSimulationFromDashboard()
 
   dataRetryTimer = setInterval(() => {
     if (store.dataSourceStatus === 'database') {
@@ -122,20 +174,6 @@ onMounted(() => {
     },
   )
 
-  // ---- 策略切换：监听 simulationSid 变化自动重连 WebSocket ----
-  watch(
-    () => store.simulationSid,
-    (newSid) => {
-      if (dashboardStartingSimulation) return // Dashboard 首次启动流程会自行连接，避免重复连接
-      if (!newSid) return // resetSimulationState 置空，跳过
-      // recreate 触发的 sid 变化 → 断开旧连接 + 接新连接
-      wsDisconnect()
-      wsConnect(newSid)
-      const stop = watch(wsStatus, (s) => {
-        if (s === 'connected') { stop(); store.resumeSimulation() }
-      })
-    },
-  )
 })
 
 // ---- 仿真帧数据 → Store ----
@@ -178,15 +216,6 @@ onUnmounted(() => {
     <!-- ============ 顶部：宿主导航栏 (8%) ============ -->
     <SystemWorkbenchHeader active-page="network" class="ts-topbar" />
 
-    <button
-      class="ts-sim-start"
-      type="button"
-      :disabled="simulationStarting || store.simulationStatus === 'running'"
-      @click="void startSimulationFromDashboard()"
-    >
-      {{ store.simulationStatus === 'running' ? '仿真运行中' : simulationStarting ? '启动中' : '启动仿真' }}
-    </button>
-
     <!-- ============ 主体：左-中-右三栏 (65%) ============ -->
     <main class="ts-body">
       <!-- 左侧列 (22%)：交通统计 + AI 控制效果 -->
@@ -202,7 +231,12 @@ onUnmounted(() => {
 
       <!-- 右侧列 (22%)：AI 信号控制 + 应急绿波控制 -->
       <div class="ts-col ts-col--right">
-        <SignalControlPanel />
+        <SignalControlPanel
+          :busy="simulationOperationPending"
+          @start-simulation="void startSimulationFromDashboard()"
+          @pause-simulation="void pauseSimulationFromDashboard()"
+          @stop-simulation="void stopSimulationFromDashboard()"
+        />
         <EmergencyPanel />
       </div>
     </main>
@@ -226,27 +260,6 @@ onUnmounted(() => {
   flex: 5 1 0;
   min-height: 44px;
   max-height: 68px;
-}
-
-/* 主体三栏区：占满顶部栏之外的全部空间 */
-.ts-sim-start {
-  position: absolute;
-  top: 18px;
-  right: 24px;
-  z-index: 20;
-  min-width: 96px;
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid rgba(0, 212, 255, 0.45);
-  background: rgba(4, 21, 39, 0.82);
-  color: #7af7ff;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.ts-sim-start:disabled {
-  cursor: default;
-  opacity: 0.62;
 }
 
 .ts-body {

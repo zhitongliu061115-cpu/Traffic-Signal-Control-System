@@ -265,7 +265,7 @@ AGENT_MODEL_ENABLE_THINKING=false
 
 - `LLM_API_KEY` 优先级高于 `DASHSCOPE_API_KEY`；`LLM_BASE_URL` / `LLM_MODEL` 优先级高于 `DASHSCOPE_COMPATIBLE_BASE_URL` / `DASHSCOPE_MODEL`。
 - 百炼 Qwen3 非流式调用要求 `enable_thinking=false`，当前通过 `AGENT_MODEL_ENABLE_THINKING=false` 传入 OpenAI-compatible 自定义参数；如果后续改为流式或更换模型，再按模型要求调整。
-- 旧 `bailian.*` 与 `BailianAgentService` 代码仍保留，但 `/api/v1/agent/chat` 当前不会因为 LangChain4j 未配置而自动调用百炼 Agent 应用代理。
+- 旧百炼 Agent 应用代理代码已删除；`/api/v1/agent/chat` 只走后端自建 Agent 编排层。百炼仅作为模型 OpenAI-compatible 调用方和知识库 `Retrieve` 数据源使用。
 - 如果未配置 key，接口会返回 `Agent LLM is not configured...`；如果 key、base-url 或模型名错误，会返回 `Agent LLM call failed...`，并在后端 `AGENT_DEBUG` 日志中记录异常。
 - 临时调试日志 logger 为 `AGENT_DEBUG`，会记录 `agent.chat.start/end/error`、`agent.llm.request/response/error`、`agent.tool.start/result/error`。日志会截断长文本并脱敏 key/token/password/authorization 字段，但仍可能包含用户问题、工具参数、工具结果和模型返回，联调结束后应降低日志级别。
 - 后端日志默认写入 `logs/traffic-signal-backend.log`，也可以通过 `BACKEND_LOG_FILE` 覆盖。默认从 `backend` 目录启动 Spring Boot 时，可用 `Get-Content .\logs\traffic-signal-backend.log -Wait -Tail 200` 实时查看；日志目录已在 `.gitignore` 中忽略，不应提交。
@@ -289,7 +289,7 @@ traffic:
 
 部署注意：
 
-- 当前仍保留原有 `bailian.*` 配置和 `BailianAgentService`，用于旧测试和兼容代码；`/api/v1/agent/chat` 当前不会自动 fallback 到该服务。
+- 当前不再保留旧 `BailianAgentService`，也不会自动 fallback 到百炼平台 Agent 应用。`bailian.knowledge.*` 仅用于百炼知识库 `Retrieve`，LLM 模型调用统一使用 `traffic.agent.langchain4j.*`。
 - `AGENT_LANGCHAIN4J_ENABLED` 默认是 `true`。需要确保 `LLM_API_KEY` 或 `DASHSCOPE_API_KEY` 已配置；如果临时关闭该开关，`/api/v1/agent/chat` 会返回模型未配置错误。
 - 不引入 `langchain4j-spring-boot-starter`，不要求升级 Spring Boot。
 - `LLM_API_KEY` / `DASHSCOPE_API_KEY` 不应写入文档、日志或 Git；本地联调建议写入 `.env`，稳定后应改为环境变量或部署密钥。

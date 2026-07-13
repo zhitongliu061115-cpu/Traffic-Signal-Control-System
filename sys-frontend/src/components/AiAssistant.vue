@@ -4,12 +4,10 @@
 // 通过 Spring Boot 后端自建 Agent 编排层调用模型和工具
 // ================================================================
 import { computed, nextTick, ref } from 'vue'
-import { storeToRefs } from 'pinia'
 import { ChatDotRound, Close, Promotion, Refresh } from '@element-plus/icons-vue'
 import { useTrafficStore } from '@/stores/traffic'
 
 const store = useTrafficStore()
-const { intersections, roads, statistics, emergencyVehicle } = storeToRefs(store)
 
 interface ChatMessage {
   id: number
@@ -96,26 +94,9 @@ function startNewConversation(): void {
 }
 
 function buildTrafficContext(): Record<string, unknown> {
-  const topIntersections = [...intersections.value]
-    .sort((a, b) => b.congestionIndex - a.congestionIndex)
-    .slice(0, 5)
-    .map((it) => ({
-      id: it.id,
-      name: it.name,
-      congestionIndex: Math.round(it.congestionIndex),
-      queueLength: it.queueLength,
-      averageDelay: Math.round(it.averageDelay),
-      currentPhase: it.currentPhase,
-      deviceStatus: it.deviceStatus,
-    }))
-
   return {
-    statistics: statistics.value,
-    topIntersections,
-    roadCount: roads.value.length,
-    emergencyVehicle: emergencyVehicle.value,
-    emergencyRoute: store.emergencyRoute,
-    compareMetrics: store.compareMetrics,
+    source: 'sys-frontend-ai-assistant',
+    dataPolicy: '实时交通状态必须由后端 Agent 工具读取，前端不传递看板统计作为证据。',
   }
 }
 
@@ -150,7 +131,56 @@ async function requestBackendAgent(userInput: string): Promise<string> {
   sessionId.value = payload.data.sessionId ?? sessionId.value
   conversationId.value = payload.data.conversationId ?? conversationId.value
   assistantStatusText.value = payload.data.fallback ? 'Agent 兜底响应' : '后端 Agent 在线'
-  return payload.data.reply
+  return normalizeAssistantReply(payload.data.reply)
+}
+
+function normalizeAssistantReply(reply: string): string {
+  const text = reply.trim()
+  if (!text.startsWith('{') && !text.startsWith('```')) {
+    return reply
+  }
+  const jsonText = stripJsonFence(text)
+  try {
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>
+    const content = isRecord(parsed.content) ? parsed.content : undefined
+    const finalText =
+      textField(parsed, 'finalDecision') ||
+      textField(parsed, 'decision') ||
+      textField(parsed, 'recommendation') ||
+      textField(parsed, 'conclusion') ||
+      textField(parsed, 'summary') ||
+      textField(parsed, 'answer') ||
+      textField(parsed, 'reply') ||
+      (content
+        ? textField(content, 'finalDecision') ||
+          textField(content, 'decision') ||
+          textField(content, 'recommendation') ||
+          textField(content, 'conclusion') ||
+          textField(content, 'summary') ||
+          textField(content, 'answer')
+        : '')
+
+    return finalText || 'Agent 已完成分析，但返回了结构化过程数据。请重新提问获取最终建议。'
+  } catch {
+    return reply
+  }
+}
+
+function stripJsonFence(text: string): string {
+  if (!text.startsWith('```')) return text
+  return text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function textField(record: Record<string, unknown>, key: string): string {
+  const value = record[key]
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 function formatAssistantError(error: unknown): string {
@@ -214,8 +244,20 @@ function escapeHtml(text: string): string {
 }
 
 function renderText(text: string): string {
-  return escapeHtml(text)
+  const normalized = text
+    .replace(/\\n/g, '\n')
+    .replace(/[\u00a0\u3000]/g, ' ')
+    .replace(/([：:])\s+(?=\d+[.、]\s*)/g, '$1\n')
+    .replace(/([^\n])\s+(?=\d+[.、]\s*\S)/g, '$1\n')
+    .replace(/([^\n])\s+(?=[-•]\s+\S)/g, '$1\n')
+
+  return escapeHtml(normalized)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(
+      /(GB\/T\s*\d+(?:-\d+)?|GA\/T\s*\d+(?:\.\d+)?(?:-\d+)?|Traffic-R|MaxPressure|Fixed-Time|Hybrid|CityFlow|LangChain4j|百炼|绿波|安全层)/g,
+      '<span class="ai-highlight">$1</span>',
+    )
+    .replace(/\n{2,}/g, '<br><br>')
     .replace(/\n/g, '<br>')
 }
 </script>
@@ -617,7 +659,8 @@ function renderText(text: string): string {
   text-wrap: pretty;
 }
 
-.ai-chat-bubble__text :deep(strong) {
+.ai-chat-bubble__text :deep(strong),
+.ai-chat-bubble__text :deep(.ai-highlight) {
   color: #7af7ff;
   font-weight: 800;
 }

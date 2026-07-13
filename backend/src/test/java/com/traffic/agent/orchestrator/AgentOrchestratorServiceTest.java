@@ -114,7 +114,7 @@ class AgentOrchestratorServiceTest {
                 12,
                 null
         );
-        when(toolExecutor.execute(userMessage.id(), plannedToolCall)).thenReturn(execution);
+        when(toolExecutor.execute(userMessage.id(), plannedToolCall, "run_001")).thenReturn(execution);
         when(assembler.assemble(any(), any(), eq(plan), eq(List.of(execution)))).thenReturn(
                 new AgentResponseAssembler.AgentAnswer(
                         "当前仿真运行正常。",
@@ -147,6 +147,6 @@ class AgentOrchestratorServiceTest {
         assertFalse(response.fallback());
         verify(dataService).createConversation(any(CreateConversationRequest.class));
         verify(dataService).recordToolCall(eq(userMessage.id()), eq("llm_tool_plan"), any(), any(), eq("SUCCESS"), eq(0), org.mockito.ArgumentMatchers.isNull());
-        verify(toolExecutor).execute(userMessage.id(), plannedToolCall);
+        verify(toolExecutor).execute(userMessage.id(), plannedToolCall, "run_001");
     }
 }
