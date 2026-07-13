@@ -82,6 +82,16 @@ traffic-r:
   timeout-sec: ${TRAFFIC_R_TIMEOUT_SEC:60}
   fallback-controller: ${TRAFFIC_R_FALLBACK_CONTROLLER:max-pressure}
 
+traffic-forecast:
+  enabled: ${TRAFFIC_FORECAST_ENABLED:true}
+  base-url: ${TRAFFIC_FORECAST_BASE_URL:http://127.0.0.1:17008}
+  predict-path: ${TRAFFIC_FORECAST_PREDICT_PATH:/predict}
+  timeout-sec: ${TRAFFIC_FORECAST_TIMEOUT_SEC:10}
+  recent-lookback-minutes: ${TRAFFIC_FORECAST_RECENT_LOOKBACK_MINUTES:30}
+  history-days: ${TRAFFIC_FORECAST_HISTORY_DAYS:14}
+  expected-intersections: ${TRAFFIC_FORECAST_EXPECTED_INTERSECTIONS:12}
+  cache-ttl-seconds: ${TRAFFIC_FORECAST_CACHE_TTL_SECONDS:30}
+
 bailian:
   knowledge:
     enabled: true

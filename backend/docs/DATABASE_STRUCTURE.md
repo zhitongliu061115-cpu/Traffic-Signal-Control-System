@@ -29,6 +29,7 @@
 | 信号相位与安全约束 | `signal_phase`、`signal_phase_road_link`、`signal_timing_plan`、`signal_timing_plan_phase`、`safety_constraint`、`phase_transition_rule` |
 | 仿真会话与状态快照 | `simulation_session`、`simulation_frame`、`road_state_snapshot`、`lane_state_snapshot`、`intersection_state_snapshot`、`vehicle_state_snapshot` |
 | 策略调度与模型审计 | `control_decision`、`control_decision_trace`、`control_decision_effect`、`traffic_r_inference_log`、`max_pressure_score`、`strategy_fallback_event`、`safety_constraint_event` |
+| 短时交通预测 | `traffic_forecast_observation`、`traffic_forecast_model_registry` |
 | 区域、应急、Agent 与运维 | `control_region`、`control_region_intersection`、`emergency_event`、`emergency_route_node`、`emergency_signal_event`、`agent_conversation`、`agent_message`、`agent_tool_call`、`operation_audit_log`、`alert_event`、`service_health_snapshot` |
 | 认证与账号 | `auth_user` |
 | 当前保留的兼容/演示表 | `intersections`、`dashboard_*`、`analytics_*` |
@@ -162,6 +163,13 @@ erDiagram
 - `analytics_stream_metadata` 保存数据集起始时间和前端轮询间隔。
 - `analytics_live_update` 以 `sequence_no` 为游标保存逐条更新事件。每条事件包含 KPI、健康评分、状态分布、小时流量/排队、六类通行构成、路口监测记录及可选 toast；V8 初始化 10,000 条事件，V10 增加 `passed_vehicles` 记录本次通过车辆数。V11 将事件定义为 5 秒通行聚合，V12 将每条增量调整为 3-6 辆，V13 根据事件序号、到达流量、控制策略和拥堵状态生成稳定伪随机扰动，避免连续事件机械地增加同一个数。`cumulative_traffic` 严格等于初始累计量加截至当前事件的所有 `passed_vehicles`。监测状态由到达流量、排队长度和策略阈值联合生成：FixedTime 更容易形成长队列，MaxPressure 与 Traffic-R1 仅在更高压力下进入缓行或拥堵。
 
+### 短时交通预测表
+
+- `traffic_forecast_observation` 保存每个路口、每分钟的规范化训练观测：流入量、排队长度、平均等待、平均速度、饱和度、相位、控制策略和设备状态。主键包含 `observation_source`，允许同一分钟同时保留真实与合成记录；读取时按 `REAL`、`IMPORTED`、`SYNTHETIC` 顺序选择。
+- `observation_source='SYNTHETIC'` 的数据只用于模型链路开发和回测，不得宣称为真实道路精度；真实采集统一写入 `REAL`，并通过 `quality_status` 标记质量。
+- `traffic_forecast_model_registry` 保存训练数据范围、样本量、来源摘要、测试指标、模型制品位置和当前激活版本。模型权重不写入数据库或 Git。
+- V14 只建立结构。合成训练集由 `cloud/traffic-forecast/seed_training_data.py` 显式生成，不在 Flyway 中批量写入，避免迁移被百万级数据拖慢。
+
 V1-V7、V9-V13 放在 `db/migration/common`。V8 按数据库方言分别位于 `db/migration/postgresql` 和 `db/migration/h2`，两者建立相同业务结构和数据规模；PostgreSQL 使用标准集合生成，H2 使用 `SYSTEM_RANGE`。禁止改写已在共享 PostgreSQL 执行的迁移。
 
 ## 当前后端实际访问表
@@ -171,6 +179,7 @@ V1-V7、V9-V13 放在 `db/migration/common`。V8 按数据库方言分别位于 
 | `IntersectionRepository` | `intersections` |
 | `DashboardRepository` | `dashboard_intersection`、`dashboard_road`、`dashboard_vehicle`、`dashboard_emergency_vehicle`、`dashboard_emergency_route`、`dashboard_alert`、`dashboard_statistics`、`dashboard_compare_metric`、`dashboard_congestion_trend`、`dashboard_assistant_reply` |
 | `DataAnalysisRepository` | 数据分析全部 `analytics_*` 快照表，以及 `analytics_metric_trend_point`、`analytics_strategy_metric`、`analytics_stream_metadata`、`analytics_live_update` 顺序事件表 |
+| `TrafficForecastRepository` | 读取 `traffic_forecast_observation` 最近连续 30 分钟，真实记录优先于同时间合成记录 |
 | `AuthUserRepository` | `auth_user` |
 | `DatabaseStatusService` | 标准核心表、`intersections`、`dashboard_intersection`、`analytics_overview` |
 | `RuntimePersistenceService` | 默认主链路写入 `scene`、`intersection`、`road`、`lane`、`road_link`、`signal_phase`、`signal_phase_road_link`、`simulation_session`、`control_decision`、`control_decision_trace`、`traffic_r_inference_log`、`traffic_r_inference_result`、`strategy_fallback_event`；保留显式写入 `simulation_frame` 和各类 snapshot 的能力，并记录决策输入帧，但不再默认持久化全量仿真帧和车辆/道路/路口快照 |

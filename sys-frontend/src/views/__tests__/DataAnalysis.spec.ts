@@ -8,14 +8,45 @@ import { createPinia } from 'pinia'
 import DataAnalysis from '../DataAnalysis.vue'
 import {
   fetchDataAnalysisBootstrap,
+  fetchDataAnalysisForecast,
   fetchNextDataAnalysisUpdate,
   type DataAnalysisBootstrapData,
+  type DataAnalysisForecastData,
 } from '@/api/dataAnalysis'
 
 vi.mock('@/api/dataAnalysis', () => ({
   fetchDataAnalysisBootstrap: vi.fn(),
+  fetchDataAnalysisForecast: vi.fn(),
   fetchNextDataAnalysisUpdate: vi.fn(),
 }))
+
+const forecastData: DataAnalysisForecastData = {
+  available: true,
+  dataUntil: '2026-07-13T09:59:00',
+  generatedAt: '2026-07-13T10:00:00Z',
+  message: 'ok',
+  modelType: 'LightGBM direct multi-horizon regression',
+  modelVersion: 'lgbm-test',
+  trainedSource: 'SYNTHETIC:10000',
+  intersections: Array.from({ length: 12 }, (_, index) => ({
+    flow: 600 + index * 20,
+    id: `intersection_${Math.floor(index / 4) + 1}_${(index % 4) + 1}`,
+    label: `路口 ${Math.floor(index / 4) + 1}-${(index % 4) + 1}`,
+    queue: 5 + index / 2,
+    risk: index > 9 ? '缓行' : '畅通',
+    riskLevel: index > 9 ? 'slow' : 'free',
+    wait: 24 + index,
+  })),
+  timeline: [2, 4, 6, 8, 10].map((horizon) => ({
+    flow: 700 + horizon * 10,
+    horizonMinutes: horizon,
+    minute: `+${horizon}分钟`,
+    queue: 6 + horizon / 5,
+    risk: '畅通',
+    riskLevel: 'free',
+    wait: 28 + horizon,
+  })),
+}
 
 const bootstrapData: DataAnalysisBootstrapData = {
   sampleCount: 34752,
@@ -115,6 +146,7 @@ const bootstrapData: DataAnalysisBootstrapData = {
 describe('DataAnalysis', () => {
   beforeEach(() => {
     vi.mocked(fetchDataAnalysisBootstrap).mockResolvedValue(bootstrapData)
+    vi.mocked(fetchDataAnalysisForecast).mockResolvedValue(forecastData)
     vi.mocked(fetchNextDataAnalysisUpdate).mockResolvedValue(null)
   })
 
@@ -136,10 +168,12 @@ describe('DataAnalysis', () => {
     expect(wrapper.text()).toContain('每日通行量与延误走势')
     expect(wrapper.text()).toContain('AI 控制前后效果对比')
     expect(wrapper.text()).toContain('近期路口监测明细')
+    expect(wrapper.text()).toContain('lgbm-test')
     expect(wrapper.findAll('thead th')).toHaveLength(9)
     expect(wrapper.findAll('.heatmap-cell')).toHaveLength(28)
     expect(wrapper.findAll('.scatter-point-group')).toHaveLength(48)
     expect(wrapper.findAll('.composition-status-card')).toHaveLength(4)
+    expect(wrapper.findAll('.forecast-intersection-card')).toHaveLength(12)
     expect(wrapper.text()).toContain('今日累计通行量')
     expect(wrapper.text()).toContain('昨日累计')
     expect(wrapper.text()).toContain('排队改善46%')

@@ -148,6 +148,40 @@ export interface DataAnalysisLiveUpdateData {
   toast: DashboardToast | null
 }
 
+export type ForecastRiskLevel = 'free' | 'jammed' | 'slow'
+
+export interface ForecastIntersection {
+  flow: number
+  id: string
+  label: string
+  queue: number
+  risk: string
+  riskLevel: ForecastRiskLevel
+  wait: number
+}
+
+export interface ForecastTimelinePoint {
+  flow: number
+  horizonMinutes: number
+  minute: string
+  queue: number
+  risk: string
+  riskLevel: ForecastRiskLevel
+  wait: number
+}
+
+export interface DataAnalysisForecastData {
+  available: boolean
+  dataUntil: string | null
+  generatedAt: string | null
+  intersections: ForecastIntersection[]
+  message: string
+  modelType: string | null
+  modelVersion: string | null
+  timeline: ForecastTimelinePoint[]
+  trainedSource: string | null
+}
+
 export async function fetchDataAnalysisBootstrap(): Promise<DataAnalysisBootstrapData> {
   const response = await fetch(`${API_BASE_URL}/api/v1/data-analysis/bootstrap`)
   if (!response.ok) {
@@ -171,6 +205,20 @@ export async function fetchNextDataAnalysisUpdate(cursor: number): Promise<DataA
   const body = (await response.json()) as ApiResponse<DataAnalysisLiveUpdateData | null>
   if (!body.success) {
     throw new Error(body.message || 'data analysis update failed')
+  }
+
+  return body.data
+}
+
+export async function fetchDataAnalysisForecast(): Promise<DataAnalysisForecastData> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/data-analysis/forecast`)
+  if (!response.ok) {
+    throw new Error(`data analysis forecast failed: ${response.status}`)
+  }
+
+  const body = (await response.json()) as ApiResponse<DataAnalysisForecastData>
+  if (!body.success) {
+    throw new Error(body.message || 'data analysis forecast failed')
   }
 
   return body.data

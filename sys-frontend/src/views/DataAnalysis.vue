@@ -3,8 +3,10 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 
 import {
   fetchDataAnalysisBootstrap,
+  fetchDataAnalysisForecast,
   fetchNextDataAnalysisUpdate,
   type DataAnalysisBootstrapData,
+  type DataAnalysisForecastData,
   type DataAnalysisLiveUpdateData,
   type StrategyMetric,
 } from '@/api/dataAnalysis'
@@ -187,7 +189,9 @@ const hoveredScatterTone = ref<Tone | null>(null)
 const hoveredScatterRiskChart = ref<string | null>(null)
 const hoveredScatterTrendChart = ref<string | null>(null)
 const hiddenTones = ref<Set<Tone>>(new Set())
-const forecastTick = ref(0)
+const forecastData = ref<DataAnalysisForecastData | null>(null)
+const forecastLoading = ref(true)
+const forecastError = ref('')
 const liveCursor = ref(0)
 const livePollIntervalMs = ref(2000)
 const scatterCorrelation = ref(0)
@@ -833,95 +837,104 @@ const strategySeries = [
   { color: colors.cyan, key: 'trafficR1', label: 'Traffic-R1' },
 ] as const
 
-const forecastTimelineBase = [
-  { flow: 1180, minute: '当前', queue: 8.2, wait: 34 },
-  { flow: 1235, minute: '+2分钟', queue: 8.9, wait: 37 },
-  { flow: 1290, minute: '+4分钟', queue: 9.7, wait: 41 },
-  { flow: 1368, minute: '+6分钟', queue: 10.8, wait: 46 },
-  { flow: 1446, minute: '+8分钟', queue: 11.8, wait: 51 },
-  { flow: 1512, minute: '+10分钟', queue: 12.6, wait: 56 },
-]
-
-const forecastIntersectionBase = [
-  { flow: 820, id: 'intersection_1_1', label: '路口 1-1', queue: 5.4, trend: 0.8, wait: 22 },
-  { flow: 910, id: 'intersection_1_2', label: '路口 1-2', queue: 6.1, trend: 1.0, wait: 25 },
-  { flow: 980, id: 'intersection_1_3', label: '路口 1-3', queue: 6.8, trend: 1.1, wait: 28 },
-  { flow: 1120, id: 'intersection_1_4', label: '路口 1-4', queue: 8.2, trend: 1.4, wait: 34 },
-  { flow: 900, id: 'intersection_2_1', label: '路口 2-1', queue: 6.4, trend: 0.9, wait: 27 },
-  { flow: 1040, id: 'intersection_2_2', label: '路口 2-2', queue: 7.6, trend: 1.2, wait: 32 },
-  { flow: 1160, id: 'intersection_2_3', label: '路口 2-3', queue: 8.7, trend: 1.5, wait: 36 },
-  { flow: 1280, id: 'intersection_2_4', label: '路口 2-4', queue: 9.8, trend: 1.7, wait: 42 },
-  { flow: 1080, id: 'intersection_3_1', label: '路口 3-1', queue: 8.4, trend: 1.3, wait: 35 },
-  { flow: 1260, id: 'intersection_3_2', label: '路口 3-2', queue: 10.2, trend: 1.8, wait: 44 },
-  { flow: 1340, id: 'intersection_3_3', label: '路口 3-3', queue: 11.1, trend: 2.0, wait: 49 },
-  { flow: 1460, id: 'intersection_3_4', label: '路口 3-4', queue: 12.0, trend: 2.2, wait: 54 },
-]
-
-function forecastWave(index: number, scale: number) {
-  return (
-    Math.sin(forecastTick.value * 0.72 + index * 0.67) * scale +
-    Math.cos(forecastTick.value * 0.34 + index * 0.41) * scale * 0.36
-  )
-}
-
-function forecastRisk(queue: number): Pick<ForecastPoint, 'risk' | 'tone'> {
-  if (queue >= 11.6) return { risk: '拥堵', tone: 'rose' }
-  if (queue >= 8.2) return { risk: '缓行', tone: 'amber' }
-  return { risk: '畅通', tone: 'emerald' }
+function forecastTone(riskLevel: 'free' | 'jammed' | 'slow'): ForecastPoint['tone'] {
+  if (riskLevel === 'jammed') return 'rose'
+  if (riskLevel === 'slow') return 'amber'
+  return 'emerald'
 }
 
 const intersectionForecasts = computed<IntersectionForecastPoint[]>(() =>
-  forecastIntersectionBase.map((item, index) => {
-    const queue = clamp(item.queue + forecastWave(index, 0.72) + item.trend * 0.18, 3.5, 15.8)
-    const wait = Math.round(clamp(item.wait + (queue - item.queue) * 3.4 + forecastWave(index + 3, 3.4), 16, 72))
-    const flow = Math.round(clamp(item.flow + forecastWave(index + 5, 46) + item.trend * 18, 720, 1680))
-    const risk = forecastRisk(queue)
-
-    return {
-      flow,
-      id: item.id,
-      label: item.label,
-      queue,
-      risk: risk.risk,
-      tone: risk.tone,
-      wait,
-    }
-  }),
+  (forecastData.value?.intersections ?? []).map((item) => ({
+    flow: item.flow,
+    id: item.id,
+    label: item.label,
+    queue: item.queue,
+    risk: item.risk,
+    tone: forecastTone(item.riskLevel),
+    wait: item.wait,
+  })),
 )
 
-const shortTermForecast = computed<ForecastPoint[]>(() => {
-  const networkQueue =
-    intersectionForecasts.value.reduce((sum, point) => sum + point.queue, 0) / intersectionForecasts.value.length
-  const networkFlow =
-    intersectionForecasts.value.reduce((sum, point) => sum + point.flow, 0) / intersectionForecasts.value.length
+const shortTermForecast = computed<ForecastPoint[]>(() =>
+  (forecastData.value?.timeline ?? []).map((item) => ({
+    flow: item.flow,
+    minute: item.minute,
+    queue: item.queue,
+    risk: item.risk,
+    tone: forecastTone(item.riskLevel),
+    wait: item.wait,
+  })),
+)
 
-  return forecastTimelineBase.map((point, index) => {
-    const queue = clamp(networkQueue + index * 0.62 + forecastWave(index + 7, 0.28), 4.5, 15.8)
-    const wait = Math.round(clamp(point.wait + (queue - point.queue) * 3.2 + forecastWave(index + 10, 2.8), 20, 72))
-    const flow = Math.round(clamp(networkFlow + index * 64 + forecastWave(index + 14, 32), 800, 1700))
-    const risk = forecastRisk(queue)
+const forecastReady = computed(
+  () =>
+    forecastData.value?.available === true &&
+    intersectionForecasts.value.length > 0 &&
+    shortTermForecast.value.length > 0,
+)
 
-    return {
-      flow,
-      minute: point.minute,
-      queue,
-      risk: risk.risk,
-      tone: risk.tone,
-      wait,
-    }
-  })
+const forecastStatusMessage = computed(() => {
+  if (forecastLoading.value) return '正在读取模型预测'
+  return forecastError.value || forecastData.value?.message || '当前没有可用预测'
 })
 
+const forecastModelLabel = computed(() => forecastData.value?.modelVersion ?? '模型未加载')
+
+const forecastSourceLabel = computed(() => {
+  const source = forecastData.value?.trainedSource ?? ''
+  if (source.includes('REAL') && source.includes('SYNTHETIC')) return '混合训练集'
+  if (source.includes('REAL')) return '真实历史数据'
+  if (source.includes('SYNTHETIC')) return '合成训练集'
+  return '来源未知'
+})
+
+const forecastDataUntilLabel = computed(() => {
+  const value = forecastData.value?.dataUntil
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    month: '2-digit',
+    day: '2-digit',
+    hour12: false,
+  }).format(date)
+})
+
+const emptyForecastPoint: ForecastPoint = {
+  flow: 0,
+  minute: '-',
+  queue: 0,
+  risk: '暂无',
+  tone: 'emerald',
+  wait: 0,
+}
+
+const emptyIntersectionForecast: IntersectionForecastPoint = {
+  ...emptyForecastPoint,
+  id: '',
+  label: '-',
+}
+
 const forecastPeak = computed(() =>
-  shortTermForecast.value.reduce((best, point) => (point.queue > best.queue ? point : best)),
+  shortTermForecast.value.reduce(
+    (best, point) => (point.queue > best.queue ? point : best),
+    emptyForecastPoint,
+  ),
 )
 
 const forecastPeakIntersection = computed(() =>
-  intersectionForecasts.value.reduce((best, point) => (point.queue > best.queue ? point : best)),
+  intersectionForecasts.value.reduce(
+    (best, point) => (point.queue > best.queue ? point : best),
+    emptyIntersectionForecast,
+  ),
 )
 
 const forecastAverageQueue = computed(
-  () => intersectionForecasts.value.reduce((sum, point) => sum + point.queue, 0) / intersectionForecasts.value.length,
+  () =>
+    intersectionForecasts.value.reduce((sum, point) => sum + point.queue, 0) /
+    Math.max(intersectionForecasts.value.length, 1),
 )
 
 const forecastRiskSummary = computed(() => {
@@ -1398,6 +1411,20 @@ function handleTooltipHide(event: PointerEvent) {
   }, 200)
 }
 
+async function refreshTrafficForecast() {
+  try {
+    const data = await fetchDataAnalysisForecast()
+    forecastData.value = data
+    forecastError.value = data.available ? '' : data.message
+  } catch (error) {
+    console.error('Failed to load traffic forecast', error)
+    forecastError.value = '预测接口暂时无法访问'
+    forecastData.value = null
+  } finally {
+    forecastLoading.value = false
+  }
+}
+
 onMounted(() => {
   dataStreamActive = true
   void fetchDataAnalysisBootstrap()
@@ -1417,9 +1444,10 @@ onMounted(() => {
     syncSeconds.value += 1
   }, 1000)
 
+  void refreshTrafficForecast()
   forecastTimer = setInterval(() => {
-    forecastTick.value += 1
-  }, 2600)
+    void refreshTrafficForecast()
+  }, 60000)
   document.addEventListener('pointerover', handleTooltipShow)
   document.addEventListener('pointermove', handleTooltipMove)
   document.addEventListener('pointerout', handleTooltipHide)
@@ -3090,9 +3118,10 @@ function ratio(value: number, total: number) {
           </header>
           <div class="pill-row">
             <span class="hud-pill">未来10分钟</span>
-            <span class="hud-pill hud-pill-emerald">EWMA 趋势预测</span>
-            <span class="hud-pill hud-pill-neutral">覆盖12个路口</span>
+            <span class="hud-pill hud-pill-emerald">{{ forecastModelLabel }}</span>
+            <span class="hud-pill hud-pill-neutral">{{ forecastSourceLabel }}</span>
           </div>
+          <template v-if="forecastReady">
           <div class="forecast-kpi-strip">
             <div
               class="forecast-kpi-card"
@@ -3142,7 +3171,7 @@ function ratio(value: number, total: number) {
             </div>
           </div>
           <div class="forecast-network-toolbar">
-            <span><i class="forecast-live-dot" />预测刷新中</span>
+            <span><i class="forecast-live-dot" />数据截止 {{ forecastDataUntilLabel }}</span>
             <b>{{ forecastRiskSummary.jammed }} 拥堵 · {{ forecastRiskSummary.slow }} 缓行</b>
           </div>
           <div class="forecast-intersection-grid">
@@ -3168,6 +3197,11 @@ function ratio(value: number, total: number) {
               <small>{{ point.queue.toFixed(1) }} 辆 · {{ point.wait }} 秒</small>
             </div>
           </div>
+          </template>
+          <div v-else class="forecast-unavailable" role="status">
+            <span class="forecast-unavailable-mark" />
+            <b>{{ forecastStatusMessage }}</b>
+          </div>
         </article>
 
         <article class="hud-drawn-card data-analysis-card-frame panel-card forecast-chart-panel">
@@ -3181,6 +3215,7 @@ function ratio(value: number, total: number) {
               <span class="titlebar-deco"><i /><i /><i /></span>
             </div>
           </header>
+          <template v-if="forecastReady">
           <div class="forecast-chart-summary">
             <div class="forecast-line-legend">
               <span><i class="legend-cyan" />预测车流指数</span>
@@ -3225,6 +3260,11 @@ function ratio(value: number, total: number) {
                 <text class="axis-text" text-anchor="middle" :x="forecastChart.queuePoints[index]?.x" :y="forecastChart.height - forecastChart.padding + 22">{{ point.minute }}</text>
               </g>
             </svg>
+          </div>
+          </template>
+          <div v-else class="forecast-unavailable" role="status">
+            <span class="forecast-unavailable-mark" />
+            <b>{{ forecastStatusMessage }}</b>
           </div>
         </article>
       </section>
@@ -5259,6 +5299,37 @@ function ratio(value: number, total: number) {
 .forecast-overview-panel,
 .forecast-chart-panel {
   min-height: 392px;
+}
+
+.forecast-unavailable {
+  display: grid;
+  min-height: 280px;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  color: rgba(207, 250, 254, 0.62);
+  text-align: center;
+
+  b {
+    max-width: 420px;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+}
+
+.forecast-unavailable-mark {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(122, 247, 255, 0.28);
+  border-top-color: var(--color-cyan-bright);
+  border-radius: 50%;
+  animation: forecast-loading-spin 900ms linear infinite;
+}
+
+@keyframes forecast-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .forecast-kpi-strip {

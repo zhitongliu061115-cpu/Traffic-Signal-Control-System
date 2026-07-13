@@ -115,6 +115,20 @@ SimulationWebSocketHandler
 
 Traffic-R 只由 Spring Boot 调用。正式仿真调度使用 `/predict-batch`，不再逐路口调用 `/predict`。
 
+### Spring Boot 访问短时预测服务
+
+```text
+Vue DataAnalysis
+  -> GET /api/v1/data-analysis/forecast
+  -> TrafficForecastService
+  -> TrafficForecastRepository 读取 PostgreSQL 最近 30 分钟
+  -> POST traffic-forecast /predict
+  -> LightGBM 15 个直接多步模型
+  -> Spring Boot ApiResponse<ForecastResponse>
+```
+
+短时预测服务位于 `cloud/traffic-forecast`，与负责相位控制的 Traffic-R 隔离。Python 服务只接收 Spring Boot 提供的规范化历史窗口，不直接承担前端协议；前端不得直连 `17008`。模型或数据不可用时后端返回 `available=false`，不制造预测值。
+
 ## 禁止调用方式
 
 以下做法一律禁止：
@@ -128,6 +142,7 @@ Controller -> 直接调用 Python HTTP
 strategy -> 直接推送 WebSocket
 agent -> 绕过后端安全校验下发控制指令
 frontend -> 根据 Traffic-R 响应直接伪造信号灯状态
+frontend -> 直接调用短时预测 Python 服务
 ```
 
 ## 阶段验收标准
