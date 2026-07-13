@@ -51,19 +51,33 @@ const dispatchForm = reactive({
   priority: 3 as number,
 })
 
-const dispatchIntersections = computed(() => {
+const sumoStartIntersectionIds = computed(() =>
+  new Set(simRoadnet.value?.roads.map((road) => road.from) ?? []),
+)
+const sumoEndIntersectionIds = computed(() =>
+  new Set(simRoadnet.value?.roads.map((road) => road.to) ?? []),
+)
+
+function buildDispatchIntersections(allowedIds: Set<string>) {
   const sumoIntersections = simRoadnet.value?.intersections
-    .filter((intersection) => !intersection.virtual)
+    .filter((intersection) => allowedIds.has(intersection.id))
     .map((intersection) => ({
       id: intersection.id,
-      name: `SUMO 路口 ${intersection.id}`,
+      name: `${intersection.virtual ? '道路节点' : '信号路口'} ${intersection.id}`,
     })) ?? []
   if (sumoIntersections.length > 0) return sumoIntersections
   return intersections.value.map((intersection) => ({
     id: intersection.id,
     name: intersection.name,
   }))
-})
+}
+
+const startDispatchIntersections = computed(() =>
+  buildDispatchIntersections(sumoStartIntersectionIds.value),
+)
+const endDispatchIntersections = computed(() =>
+  buildDispatchIntersections(sumoEndIntersectionIds.value),
+)
 
 
 /** 确认按钮是否可用 */
@@ -190,16 +204,18 @@ watch(emergencyPhase, (phase) => {
 
 function openDispatchDialog(e: MouseEvent): void {
   dispatchResult.value = null
-  const options = dispatchIntersections.value
-  const optionIds = new Set(options.map((option) => option.id))
+  const startOptions = startDispatchIntersections.value
+  const endOptions = endDispatchIntersections.value
+  const startOptionIds = new Set(startOptions.map((option) => option.id))
+  const endOptionIds = new Set(endOptions.map((option) => option.id))
   const previousStart = emergencyRoute.value[0]
   const previousEnd = emergencyRoute.value[emergencyRoute.value.length - 1]
-  dispatchForm.startId = previousStart && optionIds.has(previousStart)
+  dispatchForm.startId = previousStart && startOptionIds.has(previousStart)
     ? previousStart
-    : options[0]?.id ?? ''
-  dispatchForm.endId = previousEnd && optionIds.has(previousEnd)
+    : startOptions[0]?.id ?? ''
+  dispatchForm.endId = previousEnd && endOptionIds.has(previousEnd)
     ? previousEnd
-    : options[options.length - 1]?.id ?? ''
+    : endOptions[endOptions.length - 1]?.id ?? ''
   dispatchForm.vehicleType = 'ambulance'
   dispatchForm.priority = 1
   // 边界检测
@@ -500,7 +516,7 @@ const signalDispatchList = computed(() => {
                   class="ep-select"
                 >
                   <el-option
-                    v-for="it in dispatchIntersections"
+                    v-for="it in startDispatchIntersections"
                     :key="it.id"
                     :label="`${it.name} [${it.id}]`"
                     :value="it.id"
@@ -517,7 +533,7 @@ const signalDispatchList = computed(() => {
                   class="ep-select"
                 >
                   <el-option
-                    v-for="it in dispatchIntersections"
+                    v-for="it in endDispatchIntersections"
                     :key="it.id"
                     :label="`${it.name} [${it.id}]`"
                     :value="it.id"

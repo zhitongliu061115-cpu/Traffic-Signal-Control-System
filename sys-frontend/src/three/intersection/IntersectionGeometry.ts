@@ -8,6 +8,16 @@ export interface LocalRoadCenterline {
   points: Vector3[]
 }
 
+export function resolveRoadnetIntersectionId(
+  roadnet: SimRoadnetResponse,
+  requestedId: string | null,
+  legacyId: string,
+): string {
+  return requestedId && roadnet.intersections.some((item) => item.id === requestedId)
+    ? requestedId
+    : legacyId
+}
+
 export function getConnectedRoads(
   roadnet: SimRoadnetResponse,
   intersectionId: string,

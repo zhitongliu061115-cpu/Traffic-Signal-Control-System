@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SimRoadnetResponse, SimVehicleState } from '@/types/traffic'
 import { IntersectionVehicleAnimator, removeBakedVehicleRootMotion } from '../IntersectionVehicleAnimator'
+import { resolveRoadnetIntersectionId } from '../intersection/IntersectionGeometry'
 
 const roadnet: SimRoadnetResponse = {
   sceneId: 'test-scene',
@@ -29,6 +30,11 @@ function vehicle(x: number): SimVehicleState {
 }
 
 describe('IntersectionVehicleAnimator CityFlow mode', () => {
+  it('uses a real SUMO intersection ID instead of the legacy grid mapping', () => {
+    expect(resolveRoadnetIntersectionId(roadnet, 'center', 'intersection_0_0')).toBe('center')
+    expect(resolveRoadnetIntersectionId(roadnet, 'missing', 'intersection_1_1')).toBe('intersection_1_1')
+  })
+
   it('removes baked GLB translation and rotation before runtime placement', () => {
     const scene = new THREE.Group()
     const car = new THREE.Group()

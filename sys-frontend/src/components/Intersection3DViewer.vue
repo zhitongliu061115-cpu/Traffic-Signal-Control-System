@@ -39,7 +39,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { useTrafficStore } from '@/stores/traffic'
 import { IntersectionVehicleAnimator, type IntersectionSimState } from '@/three/IntersectionVehicleAnimator'
-import { createLocalRoadCenterlines } from '@/three/intersection/IntersectionGeometry'
+import { createLocalRoadCenterlines, resolveRoadnetIntersectionId } from '@/three/intersection/IntersectionGeometry'
 import { createLocalLaneLinkPaths, createLocalRoadSurfaceSegments } from '@/three/intersection/RoadSurfaceGeometry'
 import { PHASE_LABELS, DEVICE_STATUS_LABELS } from '@/types/traffic'
 import { signalRemainingSec, toSignalPhase } from '@/simulation/signalState'
@@ -812,11 +812,15 @@ onMounted(async () => {
     if (vehicleAnimator && intersection.value) {
       vehicleAnimator.setIntersection(intersection.value)
       if (simulationStatus.value === 'running' && simRoadnet.value) {
-        const cityFlowIntersectionId = `intersection_${simKeyOf(intersection.value)}`
+        const simulationIntersectionId = resolveRoadnetIntersectionId(
+          simRoadnet.value,
+          props.intersectionId,
+          `intersection_${simKeyOf(intersection.value)}`,
+        )
         vehicleAnimator.updateFromCityFlow(
           simulationVehicles.value,
           simRoadnet.value,
-          cityFlowIntersectionId,
+          simulationIntersectionId,
           now,
         )
       } else if (simState.value) {

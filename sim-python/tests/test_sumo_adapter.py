@@ -11,6 +11,45 @@ R_INTERSECTION = "cluster_1928080334_2687328260_5128988656_5128988685"
 
 
 class TrafficRStateContractTest(unittest.TestCase):
+    def test_sumo_initialization_preserves_native_signal_program(self):
+        set_calls = []
+        trafficlight = SimpleNamespace(
+            getRedYellowGreenState=lambda intersection_id: "GGrr",
+            setRedYellowGreenState=lambda *args: set_calls.append(args),
+        )
+        session = SimpleNamespace(
+            parser=SimpleNamespace(
+                traffic_light_ids=lambda: ["signalized"],
+                phase_for_state=lambda intersection_id, state: (3, "NTST"),
+            ),
+            connection=SimpleNamespace(trafficlight=trafficlight),
+            current_phases={},
+        )
+
+        SumoAdapter._initialize_signals(SumoAdapter.__new__(SumoAdapter), session)
+
+        self.assertEqual({"signalized": 3}, session.current_phases)
+        self.assertEqual([], set_calls)
+
+    def test_best_emergency_route_compares_all_endpoint_edges(self):
+        costs = {
+            ("start_bad", "end_bad"): (["start_bad", "end_bad"], 50.0),
+            ("start_bad", "end_good"): (["start_bad", "end_good"], 30.0),
+            ("start_good", "end_bad"): (["start_good", "end_bad"], 20.0),
+            ("start_good", "end_good"): (["start_good", "end_good"], 5.0),
+        }
+        adapter = SumoAdapter.__new__(SumoAdapter)
+        adapter._congestion_aware_route = lambda session, start, end: costs[(start, end)]
+
+        route, cost = adapter._best_emergency_route(
+            SimpleNamespace(),
+            ["start_bad", "start_good"],
+            ["end_bad", "end_good"],
+        )
+
+        self.assertEqual(["start_good", "end_good"], route)
+        self.assertEqual(5.0, cost)
+
     def test_emergency_route_avoids_live_congestion(self):
         class Edge:
             def __init__(self, edge_id, length):
@@ -114,6 +153,13 @@ class SumoAdapterTest(unittest.TestCase):
         self.assertGreater(roadnet["intersections"][0]["lng"], 108.0)
         self.assertGreater(roadnet["intersections"][0]["lat"], 34.0)
         self.assertIn("lng", roadnet["roads"][0]["points"][0])
+        self.assertTrue(all(road["lanes"] for road in roadnet["roads"]))
+        self.assertTrue(any(link["laneLinks"] for link in roadnet["roadLinks"]))
+        self.assertTrue(any(
+            len(lane_link["points"]) >= 2
+            for link in roadnet["roadLinks"]
+            for lane_link in link["laneLinks"]
+        ))
 
         ev_roadnet = self.adapter.parsers["xian_5x5"].ev_priority_roadnet()
         signalized = next(item for item in ev_roadnet["intersections"] if not item["virtual"])

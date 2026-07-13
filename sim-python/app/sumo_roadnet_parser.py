@@ -22,7 +22,11 @@ class SumoRoadnetParser:
         self.scene_id = scene_id
         self.net_file = net_file
         self.sumolib = sumolib_module
-        self.net = sumolib_module.net.readNet(str(net_file), withPrograms=True)
+        self.net = sumolib_module.net.readNet(
+            str(net_file),
+            withPrograms=True,
+            withInternal=True,
+        )
         self._offset = self.net.getLocationOffset()
         projection = self.net._location.get("projParameter", "")
         self._zone, self._northern = parse_utm_projection(projection)
@@ -172,6 +176,10 @@ class SumoRoadnetParser:
                 "to": edge.getToNode().getID(),
                 "points": points,
                 "laneCount": len(edge.getLanes()),
+                "lanes": [
+                    {"index": lane.getIndex(), "width": float(lane.getWidth())}
+                    for lane in edge.getLanes()
+                ],
             })
 
         road_links = []
@@ -193,12 +201,41 @@ class SumoRoadnetParser:
             right_indexes: list[int] = []
             for index, key in enumerate(sorted(grouped)):
                 from_id, to_id, direction = key
+                lane_links = []
+                for from_lane_index, to_lane_index in grouped[key]:
+                    from_lane = self.net.getEdge(from_id).getLane(from_lane_index)
+                    to_lane = self.net.getEdge(to_id).getLane(to_lane_index)
+                    connection = self._find_connection(from_lane, to_lane)
+                    if connection is None:
+                        continue
+                    via_lane_id = connection.getViaLaneID()
+                    points = []
+                    if via_lane_id:
+                        try:
+                            points = [
+                                {"x": float(x), "y": float(y)}
+                                for x, y in self.net.getLane(via_lane_id).getShape()
+                            ]
+                        except KeyError:
+                            points = []
+                    if len(points) < 2:
+                        points = [
+                            {"x": float(x), "y": float(y)}
+                            for x, y in (from_lane.getShape()[-1], to_lane.getShape()[0])
+                        ]
+                    lane_links.append({
+                        "id": via_lane_id or f"{from_lane.getID()}->{to_lane.getID()}",
+                        "startLaneIndex": from_lane_index,
+                        "endLaneIndex": to_lane_index,
+                        "points": points,
+                    })
                 road_links.append({
                     "intersectionId": intersection_id,
                     "index": index,
                     "fromRoadId": from_id,
                     "toRoadId": to_id,
                     "type": self._road_link_type(direction),
+                    "laneLinks": lane_links,
                 })
                 movement = movement_by_group[key]
                 indexes_by_movement[movement].append(index)

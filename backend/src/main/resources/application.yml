@@ -65,8 +65,8 @@ auth:
     email: ${AUTH_INITIAL_EMAIL:admin@traffic.local}
 
 cityflow:
-  # base-url: ${CITYFLOW_BASE_URL:http://127.0.0.1:9001}
-  base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9001}
+  base-url: ${CITYFLOW_BASE_URL:http://127.0.0.1:9001}
+  # base-url: ${CITYFLOW_BASE_URL:http://39.105.75.87:9001}
   health-path: ${CITYFLOW_HEALTH_PATH:/health}
   api-token: ${CITYFLOW_API_TOKEN:b20dda1757aaabaa43f6abfd897c355ab4cf277fb8084c6825224521e6d001f4}
   client-id: ${CITYFLOW_CLIENT_ID:hcj}

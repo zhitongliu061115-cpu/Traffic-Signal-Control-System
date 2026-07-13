@@ -302,6 +302,12 @@ class SumoAdapter:
                 state = session.parser.business_signal_state(intersection_id, phase_code)
                 try:
                     session.connection.trafficlight.setRedYellowGreenState(intersection_id, state)
+                    duration = decision.get("durationSec")
+                    if duration is not None:
+                        session.connection.trafficlight.setPhaseDuration(
+                            intersection_id,
+                            max(1.0, float(duration)),
+                        )
                 except Exception as ex:
                     raise ApiError(500, "SUMO_SET_PHASE_FAILED", f"{intersection_id}: {ex}", True) from ex
                 session.current_phases[intersection_id] = phase_index
@@ -320,15 +326,16 @@ class SumoAdapter:
         ev_id = str(params.get("evId") or f"EV_{uuid.uuid4().hex[:8]}")
         vehicle_id = f"sumo_{ev_id}"
         with session.engine_lock:
-            from_edge = self._dispatch_edge(session, params, "start", outgoing=True)
-            to_edge = self._dispatch_edge(session, params, "end", outgoing=False)
-            route_edges, estimated_travel_time = self._congestion_aware_route(session, from_edge, to_edge)
+            from_edges = self._dispatch_edges(session, params, "start", outgoing=True)
+            to_edges = self._dispatch_edges(session, params, "end", outgoing=False)
+            route_edges, estimated_travel_time = self._best_emergency_route(session, from_edges, to_edges)
             if not route_edges:
-                route = session.connection.simulation.findRoute(from_edge, to_edge, vType="DEFAULT_VEHTYPE")
-                route_edges = list(route.edges)
-                estimated_travel_time = float(route.travelTime)
-            if not route_edges:
-                raise ApiError(400, "EV_ROUTE_NOT_FOUND", f"no SUMO route from {from_edge} to {to_edge}", False)
+                raise ApiError(
+                    400,
+                    "EV_ROUTE_NOT_FOUND",
+                    "no SUMO route between any legal start and destination approach",
+                    False,
+                )
             route_id = f"route_{vehicle_id}"
             session.connection.route.add(route_id, route_edges)
             session.connection.vehicle.add(vehicle_id, route_id, typeID="DEFAULT_VEHTYPE", depart="now")
@@ -450,7 +457,18 @@ class SumoAdapter:
 
     def _vehicle_state(self, session: "SumoSession", connection: Any, vehicle_id: str) -> JsonDict:
         x, y = connection.vehicle.getPosition(vehicle_id)
-        road_id = connection.vehicle.getRoadID(vehicle_id)
+        raw_road_id = str(connection.vehicle.getRoadID(vehicle_id))
+        lane_id = str(connection.vehicle.getLaneID(vehicle_id))
+        route = list(connection.vehicle.getRoute(vehicle_id))
+        route_index = int(connection.vehicle.getRouteIndex(vehicle_id))
+        road_id = raw_road_id
+        next_road_id = route[route_index + 1] if 0 <= route_index < len(route) - 1 else None
+        drivable_type = "lane"
+        drivable_id = lane_id
+        if raw_road_id.startswith(":"):
+            drivable_type = "lane_link"
+            road_id = route[max(0, min(len(route) - 1, route_index - 1))] if route else raw_road_id
+            next_road_id = route[max(0, min(len(route) - 1, route_index))] if route else None
         longitude, latitude = session.parser.to_geo(x, y)
         return {
             "id": vehicle_id,
@@ -462,6 +480,11 @@ class SumoAdapter:
             "lat": round(latitude, 8),
             "angle": round(float(connection.vehicle.getAngle(vehicle_id)), 3),
             "speed": round(float(connection.vehicle.getSpeed(vehicle_id)), 3),
+            "drivableId": drivable_id,
+            "drivableType": drivable_type,
+            "distance": round(float(connection.vehicle.getLanePosition(vehicle_id)), 3),
+            "nextRoadId": next_road_id,
+            "nextLane": None,
         }
 
     def _road_states(self, session: "SumoSession", connection: Any) -> list[JsonDict]:
@@ -536,15 +559,19 @@ class SumoAdapter:
     def _signal_states(self, session: "SumoSession", connection: Any) -> list[JsonDict]:
         signals = []
         for intersection_id in session.parser.traffic_light_ids():
-            phase_index = session.current_phases.get(intersection_id)
-            phase_code = PHASE_CODES.get(phase_index) if phase_index else None
-            if phase_index is None:
-                state = connection.trafficlight.getRedYellowGreenState(intersection_id)
-                phase_index, phase_code = session.parser.phase_for_state(intersection_id, state)
+            state = connection.trafficlight.getRedYellowGreenState(intersection_id)
+            phase_index, phase_code = session.parser.phase_for_state(intersection_id, state)
+            session.current_phases[intersection_id] = phase_index
+            remaining = max(
+                0.0,
+                float(connection.trafficlight.getNextSwitch(intersection_id))
+                - float(connection.simulation.getTime()),
+            )
             signals.append({
                 "intersectionId": intersection_id,
                 "phaseIndex": phase_index,
                 "phaseCode": phase_code,
+                "remainingSec": round(remaining, 3),
             })
         return signals
 
@@ -563,10 +590,11 @@ class SumoAdapter:
         }
 
     def _initialize_signals(self, session: "SumoSession") -> None:
+        """Observe SUMO's native programs without freezing every junction to one phase."""
         for intersection_id in session.parser.traffic_light_ids():
-            state = session.parser.business_signal_state(intersection_id, "ETWT")
-            session.connection.trafficlight.setRedYellowGreenState(intersection_id, state)
-            session.current_phases[intersection_id] = 2
+            state = session.connection.trafficlight.getRedYellowGreenState(intersection_id)
+            phase_index, _ = session.parser.phase_for_state(intersection_id, state)
+            session.current_phases[intersection_id] = phase_index
 
     def _apply_ev_overrides(self, session: "SumoSession", overrides: dict[str, int]) -> None:
         for intersection_id, phase_index in overrides.items():
@@ -581,7 +609,13 @@ class SumoAdapter:
     def _simulation_complete(self, session: "SumoSession", connection: Any, sim_time: float) -> bool:
         return sim_time >= session.scene.flow_end_time and int(connection.simulation.getMinExpectedNumber()) == 0
 
-    def _dispatch_edge(self, session: "SumoSession", params: JsonDict, prefix: str, outgoing: bool) -> str:
+    def _dispatch_edges(
+            self,
+            session: "SumoSession",
+            params: JsonDict,
+            prefix: str,
+            outgoing: bool,
+    ) -> list[str]:
         intersection_id = params.get(f"{prefix}Intersection")
         if intersection_id:
             try:
@@ -591,10 +625,17 @@ class SumoAdapter:
             edges = node.getOutgoing() if outgoing else node.getIncoming()
             candidates = [edge for edge in edges if not edge.getFunction() and edge.allows("passenger")]
             if candidates:
-                return candidates[0].getID()
+                return sorted({edge.getID() for edge in candidates})
+            direction = "outgoing" if outgoing else "incoming"
+            raise ApiError(
+                400,
+                "INVALID_INTERSECTION_ID",
+                f"intersection {intersection_id} has no passenger {direction} edge",
+                False,
+            )
         coord = params.get(f"{prefix}Coord")
         if isinstance(coord, dict) and "x" in coord and "y" in coord:
-            return self._nearest_edge(session, float(coord["x"]), float(coord["y"]))
+            return [self._nearest_edge(session, float(coord["x"]), float(coord["y"]))]
         raise ApiError(400, "INVALID_REQUEST", f"{prefix}Intersection or {prefix}Coord is required", False)
 
     def _nearest_edge(self, session: "SumoSession", x: float, y: float) -> str:
@@ -633,9 +674,10 @@ class SumoAdapter:
                 vehicles = 0
             return base * (1.0 + max(0, vehicles) * 0.015)
 
-        distances = {start.getID(): 0.0}
+        start_cost = edge_cost(start)
+        distances = {start.getID(): start_cost}
         paths: dict[str, list[str]] = {start.getID(): [start.getID()]}
-        queue: list[tuple[float, str, Any]] = [(0.0, start.getID(), start)]
+        queue: list[tuple[float, str, Any]] = [(start_cost, start.getID(), start)]
         while queue:
             distance, edge_id, edge = heapq.heappop(queue)
             if distance > distances.get(edge_id, math.inf):
@@ -656,6 +698,34 @@ class SumoAdapter:
                 paths[next_id] = [*paths[edge_id], next_id]
                 heapq.heappush(queue, (next_distance, next_id, next_edge))
         return [], 0.0
+
+    def _best_emergency_route(
+            self,
+            session: "SumoSession",
+            from_edge_ids: list[str],
+            to_edge_ids: list[str],
+    ) -> tuple[list[str], float]:
+        best_route: list[str] = []
+        best_cost = math.inf
+        for from_edge_id in from_edge_ids:
+            for to_edge_id in to_edge_ids:
+                route, cost = self._congestion_aware_route(session, from_edge_id, to_edge_id)
+                if route and cost < best_cost:
+                    best_route, best_cost = route, cost
+        if best_route:
+            return best_route, best_cost
+
+        for from_edge_id in from_edge_ids:
+            for to_edge_id in to_edge_ids:
+                fallback = session.connection.simulation.findRoute(
+                    from_edge_id,
+                    to_edge_id,
+                    vType="DEFAULT_VEHTYPE",
+                )
+                if fallback.edges and float(fallback.travelTime) < best_cost:
+                    best_route = list(fallback.edges)
+                    best_cost = float(fallback.travelTime)
+        return (best_route, best_cost) if best_route else ([], 0.0)
 
     def _route_intersections(self, session: "SumoSession", edge_ids: list[str]) -> list[str]:
         if not edge_ids:
