@@ -7,7 +7,11 @@ public record DataAnalysisBootstrapResponse(
         int sampleRate,
         int healthScore,
         String sampledPointId,
+        long liveCursor,
+        int livePollIntervalMs,
+        double scatterCorrelation,
         List<MonitoringMetricDto> metrics,
+        List<MetricTrendDto> metricTrends,
         List<StatusBucketDto> statusDistribution,
         List<DailyPointDto> dailySeries,
         List<HourlyPointDto> hourlySeries,
@@ -15,10 +19,14 @@ public record DataAnalysisBootstrapResponse(
         List<HeatmapCellDto> heatmap,
         List<CompositionItemDto> composition,
         List<ScatterPointDto> scatterPoints,
+        List<StrategyMetricDto> strategyMetrics,
         List<MonitoringRecordDto> records,
         List<DashboardToastDto> toasts
 ) {
     public record MonitoringMetricDto(String detail, String label, String tone, String value) {
+    }
+
+    public record MetricTrendDto(String label, List<Double> values) {
     }
 
     public record StatusBucketDto(int count, String label, String tone) {
@@ -57,6 +65,16 @@ public record DataAnalysisBootstrapResponse(
             double occupancy,
             double temperature,
             String tone
+    ) {
+    }
+
+    public record StrategyMetricDto(
+            double baseline,
+            String label,
+            double maxPressure,
+            double trafficR1,
+            String unit,
+            boolean lowerBetter
     ) {
     }
 

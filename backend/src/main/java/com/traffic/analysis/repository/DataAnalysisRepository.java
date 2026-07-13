@@ -7,16 +7,30 @@ import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.DailyPointDto;
 import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.DashboardToastDto;
 import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.HeatmapCellDto;
 import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.HourlyPointDto;
+import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.MetricTrendDto;
 import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.MonitoringMetricDto;
 import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.MonitoringRecordDto;
 import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.ScatterPointDto;
 import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.StatusBucketDto;
+import com.traffic.analysis.dto.DataAnalysisBootstrapResponse.StrategyMetricDto;
+import com.traffic.analysis.dto.DataAnalysisLiveUpdateResponse;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 @Repository
 public class DataAnalysisRepository {
+
+    private static final DateTimeFormatter MONITOR_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -26,12 +40,17 @@ public class DataAnalysisRepository {
 
     public DataAnalysisBootstrapResponse loadBootstrapData() {
         DataAnalysisOverview overview = findOverview();
+        StreamMetadata streamMetadata = findStreamMetadata();
         return new DataAnalysisBootstrapResponse(
                 overview.sampleCount(),
                 overview.sampleRate(),
                 overview.healthScore(),
                 overview.sampledPointId(),
+                0L,
+                streamMetadata.pollIntervalMs(),
+                overview.scatterCorrelation(),
                 findMetrics(),
+                findMetricTrends(),
                 findStatusDistribution(),
                 findDailySeries(),
                 findHourlySeries(),
@@ -39,6 +58,7 @@ public class DataAnalysisRepository {
                 findHeatmap(),
                 findComposition(),
                 findScatterPoints(),
+                findStrategyMetrics(),
                 findRecords(),
                 findToasts()
         );
@@ -46,14 +66,26 @@ public class DataAnalysisRepository {
 
     private DataAnalysisOverview findOverview() {
         return jdbcTemplate.queryForObject("""
-                select sample_count, sample_rate, health_score, sampled_point_id
+                select sample_count, sample_rate, health_score, sampled_point_id, scatter_correlation
                 from analytics_overview
                 where id = 1
                 """, (rs, rowNum) -> new DataAnalysisOverview(
                 rs.getInt("sample_count"),
                 rs.getInt("sample_rate"),
                 rs.getInt("health_score"),
-                rs.getString("sampled_point_id")
+                rs.getString("sampled_point_id"),
+                rs.getDouble("scatter_correlation")
+        ));
+    }
+
+    private StreamMetadata findStreamMetadata() {
+        return jdbcTemplate.queryForObject("""
+                select dataset_started_at, poll_interval_ms
+                from analytics_stream_metadata
+                where id = 1
+                """, (rs, rowNum) -> new StreamMetadata(
+                rs.getTimestamp("dataset_started_at").toLocalDateTime(),
+                rs.getInt("poll_interval_ms")
         ));
     }
 
@@ -68,6 +100,21 @@ public class DataAnalysisRepository {
                 rs.getString("tone"),
                 rs.getString("metric_value")
         ));
+    }
+
+    private List<MetricTrendDto> findMetricTrends() {
+        Map<String, List<Double>> valuesByLabel = new LinkedHashMap<>();
+        jdbcTemplate.query("""
+                select m.label, p.point_value
+                from analytics_metric_trend_point p
+                join analytics_metric m on m.sequence_no = p.metric_sequence_no
+                order by m.sequence_no, p.point_sequence_no
+                """, (org.springframework.jdbc.core.RowCallbackHandler) rs -> valuesByLabel
+                .computeIfAbsent(rs.getString("label"), ignored -> new ArrayList<>())
+                .add(rs.getDouble("point_value")));
+        return valuesByLabel.entrySet().stream()
+                .map(entry -> new MetricTrendDto(entry.getKey(), List.copyOf(entry.getValue())))
+                .toList();
     }
 
     private List<StatusBucketDto> findStatusDistribution() {
@@ -171,6 +218,21 @@ public class DataAnalysisRepository {
         ));
     }
 
+    private List<StrategyMetricDto> findStrategyMetrics() {
+        return jdbcTemplate.query("""
+                select baseline_value, label, max_pressure_value, traffic_r1_value, unit, lower_better
+                from analytics_strategy_metric
+                order by sequence_no
+                """, (rs, rowNum) -> new StrategyMetricDto(
+                rs.getDouble("baseline_value"),
+                rs.getString("label"),
+                rs.getDouble("max_pressure_value"),
+                rs.getDouble("traffic_r1_value"),
+                rs.getString("unit"),
+                rs.getBoolean("lower_better")
+        ));
+    }
+
     private List<MonitoringRecordDto> findRecords() {
         return jdbcTemplate.query("""
                 select record_id, building_id, building_type, chilled_water_return_temp,
@@ -211,6 +273,222 @@ public class DataAnalysisRepository {
         ));
     }
 
-    private record DataAnalysisOverview(int sampleCount, int sampleRate, int healthScore, String sampledPointId) {
+    public Optional<DataAnalysisLiveUpdateResponse> findNextLiveUpdate(long cursor) {
+        LiveUpdateRow row = jdbcTemplate.query("""
+                select *
+                from analytics_live_update
+                where sequence_no = (
+                    select min(sequence_no)
+                    from analytics_live_update
+                    where sequence_no > ?
+                )
+                """, ps -> ps.setLong(1, Math.max(cursor, 0L)), rs -> rs.next() ? mapLiveUpdateRow(rs) : null);
+        if (row == null) {
+            return Optional.empty();
+        }
+
+        LocalDateTime monitorTime = findStreamMetadata().datasetStartedAt().plusSeconds(row.eventOffsetSeconds());
+        return Optional.of(new DataAnalysisLiveUpdateResponse(
+                row.sequenceNo(),
+                row.sampleCount(),
+                row.healthScore(),
+                row.sampledPointId(),
+                findLiveMetrics(row),
+                findLiveStatusDistribution(row),
+                new HourlyPointDto(
+                        row.hourLabel(),
+                        row.hourlyFlow(),
+                        0,
+                        row.hourlySaturation(),
+                        row.hourlyQueue()
+                ),
+                findLiveComposition(row),
+                new MonitoringRecordDto(
+                        row.recordId(),
+                        row.intersectionLabel(),
+                        row.intersectionId(),
+                        row.queueLength(),
+                        row.saturation(),
+                        row.phaseName(),
+                        row.deviceStatus(),
+                        row.controlStrategy(),
+                        row.inflowCount(),
+                        row.saturation(),
+                        row.averageSpeed(),
+                        row.queueLength(),
+                        monitorTime.format(MONITOR_TIME_FORMAT),
+                        row.saturation(),
+                        row.averageDelay()
+                ),
+                row.toastId() == null ? null : new DashboardToastDto(
+                        row.toastId(),
+                        row.toastBody(),
+                        row.toastTitle(),
+                        row.toastTone()
+                )
+        ));
+    }
+
+    private List<MonitoringMetricDto> findLiveMetrics(LiveUpdateRow row) {
+        return jdbcTemplate.query("""
+                select detail, label, tone
+                from analytics_metric
+                order by sequence_no
+                """, (rs, rowNum) -> new MonitoringMetricDto(
+                rs.getString("detail"),
+                rs.getString("label"),
+                rs.getString("tone"),
+                liveMetricValue(rs.getString("label"), row)
+        ));
+    }
+
+    private String liveMetricValue(String label, LiveUpdateRow row) {
+        return switch (label) {
+            case "今日累计通行量" -> row.cumulativeTraffic() + " 辆";
+            case "当前平均排队长度" -> String.format(Locale.ROOT, "%.1f 辆", row.averageQueue());
+            case "当前平均等待时间" -> String.format(Locale.ROOT, "%.0f 秒", row.averageWait());
+            case "自适应控制覆盖率" -> String.format(Locale.ROOT, "%.1f%%", row.adaptiveCoverage());
+            case "今日拥堵/事件告警" -> row.alertCount() + " 条";
+            default -> "0";
+        };
+    }
+
+    private List<StatusBucketDto> findLiveStatusDistribution(LiveUpdateRow row) {
+        return jdbcTemplate.query("""
+                select label, tone
+                from analytics_status_bucket
+                order by sequence_no
+                """, (rs, rowNum) -> new StatusBucketDto(
+                switch (rs.getString("tone")) {
+                    case "emerald" -> row.normalCount();
+                    case "amber" -> row.slowCount();
+                    case "rose" -> row.congestedCount();
+                    case "slate" -> row.offlineCount();
+                    default -> 0;
+                },
+                rs.getString("label"),
+                rs.getString("tone")
+        ));
+    }
+
+    private List<CompositionItemDto> findLiveComposition(LiveUpdateRow row) {
+        return jdbcTemplate.query("""
+                select sequence_no, color, label
+                from analytics_composition_item
+                order by sequence_no
+                """, (rs, rowNum) -> new CompositionItemDto(
+                rs.getString("color"),
+                rs.getString("label"),
+                switch (rs.getInt("sequence_no")) {
+                    case 1 -> row.eastWestStraight();
+                    case 2 -> row.northSouthStraight();
+                    case 3 -> row.eastWestLeft();
+                    case 4 -> row.northSouthLeft();
+                    case 5 -> row.emergencyPriority();
+                    case 6 -> row.otherDuration();
+                    default -> 0;
+                }
+        ));
+    }
+
+    private LiveUpdateRow mapLiveUpdateRow(ResultSet rs) throws SQLException {
+        long toastId = rs.getLong("toast_id");
+        Long nullableToastId = rs.wasNull() ? null : toastId;
+        return new LiveUpdateRow(
+                rs.getLong("sequence_no"),
+                rs.getInt("event_offset_seconds"),
+                rs.getInt("sample_count"),
+                rs.getInt("health_score"),
+                rs.getString("sampled_point_id"),
+                rs.getInt("cumulative_traffic"),
+                rs.getDouble("average_queue"),
+                rs.getDouble("average_wait"),
+                rs.getDouble("adaptive_coverage"),
+                rs.getInt("alert_count"),
+                rs.getInt("normal_count"),
+                rs.getInt("slow_count"),
+                rs.getInt("congested_count"),
+                rs.getInt("offline_count"),
+                rs.getString("hour_label"),
+                rs.getDouble("hourly_flow"),
+                rs.getDouble("hourly_saturation"),
+                rs.getDouble("hourly_queue"),
+                rs.getDouble("east_west_straight"),
+                rs.getDouble("north_south_straight"),
+                rs.getDouble("east_west_left"),
+                rs.getDouble("north_south_left"),
+                rs.getDouble("emergency_priority"),
+                rs.getDouble("other_duration"),
+                rs.getLong("record_id"),
+                rs.getString("intersection_label"),
+                rs.getString("intersection_id"),
+                rs.getDouble("inflow_count"),
+                rs.getDouble("queue_length"),
+                rs.getDouble("average_delay"),
+                rs.getDouble("average_speed"),
+                rs.getDouble("saturation"),
+                rs.getString("phase_name"),
+                rs.getString("control_strategy"),
+                rs.getString("device_status"),
+                nullableToastId,
+                rs.getString("toast_title"),
+                rs.getString("toast_body"),
+                rs.getString("toast_tone")
+        );
+    }
+
+    private record DataAnalysisOverview(
+            int sampleCount,
+            int sampleRate,
+            int healthScore,
+            String sampledPointId,
+            double scatterCorrelation
+    ) {
+    }
+
+    private record StreamMetadata(LocalDateTime datasetStartedAt, int pollIntervalMs) {
+    }
+
+    private record LiveUpdateRow(
+            long sequenceNo,
+            int eventOffsetSeconds,
+            int sampleCount,
+            int healthScore,
+            String sampledPointId,
+            int cumulativeTraffic,
+            double averageQueue,
+            double averageWait,
+            double adaptiveCoverage,
+            int alertCount,
+            int normalCount,
+            int slowCount,
+            int congestedCount,
+            int offlineCount,
+            String hourLabel,
+            double hourlyFlow,
+            double hourlySaturation,
+            double hourlyQueue,
+            double eastWestStraight,
+            double northSouthStraight,
+            double eastWestLeft,
+            double northSouthLeft,
+            double emergencyPriority,
+            double otherDuration,
+            long recordId,
+            String intersectionLabel,
+            String intersectionId,
+            double inflowCount,
+            double queueLength,
+            double averageDelay,
+            double averageSpeed,
+            double saturation,
+            String phaseName,
+            String controlStrategy,
+            String deviceStatus,
+            Long toastId,
+            String toastTitle,
+            String toastBody,
+            String toastTone
+    ) {
     }
 }
