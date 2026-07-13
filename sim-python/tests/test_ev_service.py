@@ -10,6 +10,11 @@ class MissingVehicleEngine:
         return None
 
 
+class ArrivedVehicleEngine(MissingVehicleEngine):
+    def has_vehicle_arrived(self, vehicle_id):
+        return True
+
+
 class ExternalVehicleEngine:
     def get_vehicle_info(self, vehicle_id):
         return {
@@ -24,6 +29,22 @@ class ExternalVehicleEngine:
 
 
 class EVPriorityServiceTest(unittest.TestCase):
+    @patch("app.ev_service.EVLogger")
+    def test_sumo_arrival_completes_without_missing_vehicle_grace_period(self, logger_type):
+        service = EVPriorityService()
+        sid = "sumo_arrived"
+        ev = EVSession(ev_id="ambulance_arrived", cf_vehicle_id="sumo_ev", seen_in_engine=True)
+        service.ev_sessions[sid] = {ev.ev_id: ev}
+        service.handled[sid] = set()
+        service.road_index[sid] = {}
+        service.phase_counts[sid] = {}
+        service.approach_phases[sid] = {}
+
+        _, _, status = service.step(sid, ArrivedVehicleEngine(), 0.1)
+
+        self.assertTrue(status[0]["completed"])
+        self.assertEqual(0.1, ev.completion_time)
+
     @patch("app.ev_service.EVLogger")
     def test_completed_ev_releases_all_owned_signal_overrides(self, logger_type):
         service = EVPriorityService()

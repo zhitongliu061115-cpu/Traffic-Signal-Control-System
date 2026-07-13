@@ -11,6 +11,40 @@ R_INTERSECTION = "cluster_1928080334_2687328260_5128988656_5128988685"
 
 
 class TrafficRStateContractTest(unittest.TestCase):
+    def test_emergency_route_avoids_live_congestion(self):
+        class Edge:
+            def __init__(self, edge_id, length):
+                self.edge_id = edge_id
+                self.length = length
+                self.outgoing = {}
+
+            def getID(self): return self.edge_id
+            def getLength(self): return self.length
+            def getSpeed(self): return 10.0
+            def getFunction(self): return ""
+            def allows(self, vehicle_class): return vehicle_class == "passenger"
+            def getOutgoing(self): return self.outgoing
+
+        edges = {name: Edge(name, length) for name, length in {
+            "start": 1.0, "short_busy": 10.0, "long_free": 20.0, "end": 1.0,
+        }.items()}
+        edges["start"].outgoing = {edges["short_busy"]: [], edges["long_free"]: []}
+        edges["short_busy"].outgoing = {edges["end"]: []}
+        edges["long_free"].outgoing = {edges["end"]: []}
+        occupancy = {"short_busy": 100, "long_free": 0, "end": 0}
+        session = SimpleNamespace(
+            parser=SimpleNamespace(net=SimpleNamespace(getEdge=lambda edge_id: edges[edge_id])),
+            connection=SimpleNamespace(edge=SimpleNamespace(
+                getLastStepVehicleNumber=lambda edge_id: occupancy.get(edge_id, 0),
+            )),
+        )
+
+        route, _ = SumoAdapter._congestion_aware_route(
+            SumoAdapter.__new__(SumoAdapter), session, "start", "end",
+        )
+
+        self.assertEqual(["start", "long_free", "end"], route)
+
     def test_official_cell_boundaries_are_measured_from_intersection(self):
         self.assertEqual(0, traffic_r_cell_index(100.0, 90.0))
         self.assertEqual(1, traffic_r_cell_index(100.0, 89.999))

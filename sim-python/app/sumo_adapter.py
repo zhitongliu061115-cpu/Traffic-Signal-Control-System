@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import heapq
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -82,6 +83,52 @@ class SumoEVEngineView:
 
     def get_tl_phase(self, intersection_id: str) -> int:
         return max(0, int(self.session.current_phases.get(intersection_id, 2)) - 1)
+
+    def get_lane_vehicle_count(self) -> dict[str, int]:
+        connection = self.session.connection
+        return {
+            str(lane_id): int(connection.lane.getLastStepVehicleNumber(lane_id))
+            for lane_id in connection.lane.getIDList()
+        }
+
+    def has_vehicle_arrived(self, vehicle_id: str) -> bool:
+        return vehicle_id in set(self.session.connection.simulation.getArrivedIDList())
+
+    def remove_vehicle(self, vehicle_id: str) -> bool:
+        try:
+            self.session.connection.vehicle.remove(vehicle_id)
+            return True
+        except Exception:
+            return False
+
+    def get_tl_phase_remaining(self, intersection_id: str) -> float:
+        connection = self.session.connection
+        return max(
+            0.0,
+            float(connection.trafficlight.getNextSwitch(intersection_id))
+            - float(connection.simulation.getTime()),
+        )
+
+    def set_tl_phase_duration(self, intersection_id: str, duration: float) -> None:
+        self.session.connection.trafficlight.setPhaseDuration(intersection_id, max(1.0, float(duration)))
+
+    def build_ev_priority_program(
+            self,
+            intersection_id: str,
+            target_phase: int,
+            min_green: float = 10.0,
+            ev_extend: float = 60.0,
+    ) -> None:
+        """Apply a business phase using this adapter's verified SUMO movement mapping."""
+        phase_code = PHASE_CODES.get(int(target_phase))
+        if phase_code is None:
+            return
+        state = self.session.parser.business_signal_state(intersection_id, phase_code)
+        connection = self.session.connection
+        connection.trafficlight.setRedYellowGreenState(intersection_id, state)
+        connection.trafficlight.setPhaseDuration(intersection_id, max(min_green, ev_extend))
+        self.session.current_phases[intersection_id] = int(target_phase)
+        self.session.external_control_enabled = True
 
 
 class SumoAdapter:
@@ -275,11 +322,15 @@ class SumoAdapter:
         with session.engine_lock:
             from_edge = self._dispatch_edge(session, params, "start", outgoing=True)
             to_edge = self._dispatch_edge(session, params, "end", outgoing=False)
-            route = session.connection.simulation.findRoute(from_edge, to_edge, vType="DEFAULT_VEHTYPE")
-            if not route.edges:
+            route_edges, estimated_travel_time = self._congestion_aware_route(session, from_edge, to_edge)
+            if not route_edges:
+                route = session.connection.simulation.findRoute(from_edge, to_edge, vType="DEFAULT_VEHTYPE")
+                route_edges = list(route.edges)
+                estimated_travel_time = float(route.travelTime)
+            if not route_edges:
                 raise ApiError(400, "EV_ROUTE_NOT_FOUND", f"no SUMO route from {from_edge} to {to_edge}", False)
             route_id = f"route_{vehicle_id}"
-            session.connection.route.add(route_id, list(route.edges))
+            session.connection.route.add(route_id, route_edges)
             session.connection.vehicle.add(vehicle_id, route_id, typeID="DEFAULT_VEHTYPE", depart="now")
             max_speed = float(params.get("maxSpeed", 20.0))
             session.connection.vehicle.setMaxSpeed(vehicle_id, max_speed)
@@ -292,7 +343,7 @@ class SumoAdapter:
                 "evType": ev_type,
                 "priority": priority,
             }
-            route_roads = list(route.edges)
+            route_roads = route_edges
             intersections = self._route_intersections(session, route_roads)
             self.ev_service.register_external_vehicle(
                 sid=sid,
@@ -314,7 +365,7 @@ class SumoAdapter:
             "cfVehicleId": vehicle_id,
             "route": intersections,
             "routeRoads": route_roads,
-            "estimatedTravelTime": round(float(route.travelTime), 3),
+            "estimatedTravelTime": round(estimated_travel_time, 3),
             "totalIntersections": len(intersections),
         }
 
@@ -558,6 +609,53 @@ class SumoAdapter:
         if best is None:
             raise ApiError(400, "EV_ROUTE_NOT_FOUND", "no passenger edge near coordinate", False)
         return best[1]
+
+    def _congestion_aware_route(
+            self,
+            session: "SumoSession",
+            from_edge_id: str,
+            to_edge_id: str,
+    ) -> tuple[list[str], float]:
+        """Dijkstra route using live edge occupancy as a deterministic penalty."""
+        net = session.parser.net
+        try:
+            start = net.getEdge(from_edge_id)
+            destination = net.getEdge(to_edge_id)
+        except KeyError:
+            return [], 0.0
+
+        def edge_cost(edge: Any) -> float:
+            speed = max(0.1, float(edge.getSpeed()))
+            base = float(edge.getLength()) / speed
+            try:
+                vehicles = int(session.connection.edge.getLastStepVehicleNumber(edge.getID()))
+            except Exception:
+                vehicles = 0
+            return base * (1.0 + max(0, vehicles) * 0.015)
+
+        distances = {start.getID(): 0.0}
+        paths: dict[str, list[str]] = {start.getID(): [start.getID()]}
+        queue: list[tuple[float, str, Any]] = [(0.0, start.getID(), start)]
+        while queue:
+            distance, edge_id, edge = heapq.heappop(queue)
+            if distance > distances.get(edge_id, math.inf):
+                continue
+            if edge_id == destination.getID():
+                return paths[edge_id], distance
+            outgoing = edge.getOutgoing()
+            candidates = outgoing.keys() if isinstance(outgoing, dict) else outgoing
+            for candidate in candidates:
+                next_edge = candidate.getTo() if hasattr(candidate, "getTo") else candidate
+                if next_edge.getFunction() or not next_edge.allows("passenger"):
+                    continue
+                next_id = next_edge.getID()
+                next_distance = distance + edge_cost(next_edge)
+                if next_distance >= distances.get(next_id, math.inf):
+                    continue
+                distances[next_id] = next_distance
+                paths[next_id] = [*paths[edge_id], next_id]
+                heapq.heappush(queue, (next_distance, next_id, next_edge))
+        return [], 0.0
 
     def _route_intersections(self, session: "SumoSession", edge_ids: list[str]) -> list[str]:
         if not edge_ids:
