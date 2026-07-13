@@ -10,7 +10,6 @@ export type SignalLight = 'green' | 'yellow' | 'red'
 export function signalStatus(it: Intersection): SignalLight {
   if (it.currentPhase === 'all_red') return 'red'
   if (it.deviceStatus !== 'online') return 'red'
-  if (it.greenRemainKnown === false) return 'green'
   if (it.greenRemain <= 3) return 'red'
   if (it.greenRemain <= 8) return 'yellow'
   return 'green'

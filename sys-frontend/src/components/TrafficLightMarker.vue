@@ -28,7 +28,7 @@ const deviceClass = computed(() =>
   <div class="tl-marker" @click="emit('select')" @dblclick="emit('select')">
     <!-- 信号灯圆 -->
     <div class="tl-light" :style="{ background: color, boxShadow: `0 0 14px ${color}` }">
-      <span class="tl-time">{{ intersection.greenRemainKnown === false ? '?' : Math.round(intersection.greenRemain) }}</span>
+      <span class="tl-time">{{ Math.round(intersection.greenRemain) }}</span>
     </div>
     <!-- 方向指示 -->
     <div class="tl-dir">{{ dir }}</div>

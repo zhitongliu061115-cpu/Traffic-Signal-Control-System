@@ -7,11 +7,6 @@ public record VehicleStateDto(
         double x,
         double y,
         double angle,
-        double speed,
-        String drivableId,
-        String drivableType,
-        double distance,
-        String nextRoadId,
-        Integer nextLane
+        double speed
 ) {
 }

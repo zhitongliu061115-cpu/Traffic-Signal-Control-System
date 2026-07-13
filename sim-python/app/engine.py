@@ -72,7 +72,6 @@ class RealCityFlowEngine(SimulationEngine):
         self.ev_service_lock = RLock()
         self.parsers: dict[str, RoadnetParser] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
-        self.lane_link_index: dict[str, dict[str, JsonDict]] = {}
         self.phase_indexes: dict[str, dict[str, list[int]]] = {}
         self.lane_movement_maps: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
         self.ev_service = EVPriorityService()
@@ -216,13 +215,7 @@ class RealCityFlowEngine(SimulationEngine):
                 cityflow_phase_id = phase_index - 1
                 try:
                     sim_time = float(session.engine.get_current_time())
-                    ok = self._safe_set_tl_phase(
-                        session,
-                        intersection_id,
-                        cityflow_phase_id,
-                        sim_time,
-                        duration_sec=self._control_duration_sec(decision),
-                    )
+                    ok = self._safe_set_tl_phase(session, intersection_id, cityflow_phase_id, sim_time)
                 except Exception as ex:
                     raise ApiError(
                         status=500,
@@ -341,7 +334,7 @@ class RealCityFlowEngine(SimulationEngine):
             lane_states = self._lane_states(session, road_by_id)
             roads = self._road_states(session, vehicles, road_by_id)
             intersections = self._intersection_states(session.scene_id, roads)
-            signals = self._signal_states(session, sim_time)
+            signals = self._signal_states(session.scene_id, session.current_phases)
             metrics = self._metrics(session, vehicles, roads)
             status = "finished" if self._simulation_complete(session, sim_time, metrics) else "running"
 
@@ -408,7 +401,6 @@ class RealCityFlowEngine(SimulationEngine):
         parser = RoadnetParser(scene.roadnet_file)
         self.parsers[scene.scene_id] = parser
         self.road_index[scene.scene_id] = parser.road_by_id()
-        self.lane_link_index[scene.scene_id] = parser.lane_link_by_id()
         self.lane_movement_maps[scene.scene_id] = parser.lane_movement_map()
         phase_indexes: dict[str, list[int]] = {}
         for phase in parser.to_response(scene.scene_id).get("phases", []):
@@ -445,32 +437,13 @@ class RealCityFlowEngine(SimulationEngine):
         speed_by_vehicle = engine.get_vehicle_speed()
         distance_by_vehicle = engine.get_vehicle_distance()
         lane_by_vehicle = self._vehicle_lane_index(engine.get_lane_vehicles())
-        lane_link_by_id = self.lane_link_index.get(session.scene_id, {})
 
         vehicles = []
         for vehicle_id in vehicle_ids[:DEFAULT_VISIBLE_VEHICLE_LIMIT]:
-            info = engine.get_vehicle_info(vehicle_id)
-            drivable_id = str(info.get("drivable") or lane_by_vehicle.get(vehicle_id, ""))
-            distance = float(info.get("distance", distance_by_vehicle.get(vehicle_id, 0.0)))
-            speed = float(info.get("speed", speed_by_vehicle.get(vehicle_id, 0.0)))
-            lane_link = lane_link_by_id.get(drivable_id)
-
-            if lane_link is not None:
-                road_id = str(lane_link["fromRoadId"])
-                lane_index = int(lane_link["startLaneIndex"])
-                next_road_id = str(lane_link["toRoadId"])
-                next_lane_index = int(lane_link["endLaneIndex"])
-                drivable_type = "lane_link"
-                x, y, angle = self._position_on_points(lane_link.get("points", []), distance)
-            else:
-                road_id, lane_index = self._split_lane_id(drivable_id)
-                if not road_id:
-                    road_id = str(info.get("road", ""))
-                next_road_id = None
-                next_lane_index = None
-                drivable_type = "lane"
-                x, y, angle = self._position_on_road(road_by_id.get(road_id), distance)
-
+            lane_id = lane_by_vehicle.get(vehicle_id, "")
+            road_id, lane_index = self._split_lane_id(lane_id)
+            distance = float(distance_by_vehicle.get(vehicle_id, 0.0))
+            x, y, angle = self._position_on_road(road_by_id.get(road_id), distance)
             vehicles.append({
                 "id": vehicle_id,
                 "roadId": road_id,
@@ -478,12 +451,7 @@ class RealCityFlowEngine(SimulationEngine):
                 "x": round(x, 3),
                 "y": round(y, 3),
                 "angle": round(angle, 3),
-                "speed": round(speed, 3),
-                "drivableId": drivable_id,
-                "drivableType": drivable_type,
-                "distance": round(distance, 3),
-                "nextRoadId": next_road_id,
-                "nextLane": next_lane_index,
+                "speed": round(float(speed_by_vehicle.get(vehicle_id, 0.0)), 3),
             })
         return vehicles
 
@@ -506,9 +474,8 @@ class RealCityFlowEngine(SimulationEngine):
     def _position_on_road(self, road: JsonDict | None, distance: float) -> tuple[float, float, float]:
         if road is None:
             return 0.0, 0.0, 0.0
-        return self._position_on_points(road.get("points", []), distance)
 
-    def _position_on_points(self, points: list[JsonDict], distance: float) -> tuple[float, float, float]:
+        points = road.get("points", [])
         if len(points) < 2:
             point = points[0] if points else {"x": 0.0, "y": 0.0}
             return float(point.get("x", 0.0)), float(point.get("y", 0.0)), 0.0
@@ -669,25 +636,16 @@ class RealCityFlowEngine(SimulationEngine):
             })
         return states
 
-    def _signal_states(self, session: "CityFlowEngineSession", sim_time: float) -> list[JsonDict]:
-        parser = self.parsers[session.scene_id]
+    def _signal_states(self, scene_id: str, current_phases: dict[str, int]) -> list[JsonDict]:
+        parser = self.parsers[scene_id]
         signals = []
         for intersection_id in parser.real_intersection_ids():
-            phase_index = session.current_phases.get(intersection_id, FIRST_BUSINESS_PHASE_INDEX)
-            signal = {
+            phase_index = current_phases.get(intersection_id, FIRST_BUSINESS_PHASE_INDEX)
+            signals.append({
                 "intersectionId": intersection_id,
                 "phaseIndex": phase_index,
                 "phaseCode": PHASE_CODES.get(phase_index),
-            }
-            started_at = session.phase_started_at.get(intersection_id)
-            duration_sec = session.phase_duration_sec.get(intersection_id)
-            if started_at is not None and duration_sec is not None:
-                signal.update({
-                    "remainingSec": round(max(0.0, duration_sec - (sim_time - started_at)), 3),
-                    "phaseStartedAt": round(started_at, 3),
-                    "appliedDurationSec": round(duration_sec, 3),
-                })
-            signals.append(signal)
+            })
         return signals
 
     def _advance_signal_phases(self, session: "CityFlowEngineSession", sim_time: float) -> None:
@@ -699,9 +657,7 @@ class RealCityFlowEngine(SimulationEngine):
             cycle_phase_indexes = controllable_phase_indexes or phase_indexes
             phase_index = cycle_phase_indexes[int(sim_time // 10) % len(cycle_phase_indexes)]
             try:
-                self._safe_set_tl_phase(
-                    session, intersection_id, phase_index - 1, sim_time, duration_sec=10.0
-                )
+                self._safe_set_tl_phase(session, intersection_id, phase_index - 1, sim_time)
             except Exception:
                 # CityFlow 0.1 does not expose get_tl_phase; keep returning the
                 # session-recorded phase so visualization remains debuggable.
@@ -714,9 +670,7 @@ class RealCityFlowEngine(SimulationEngine):
                 continue
             controllable_phase_indexes = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
             phase_index = FIRST_BUSINESS_PHASE_INDEX if FIRST_BUSINESS_PHASE_INDEX in phase_indexes else (controllable_phase_indexes[0] if controllable_phase_indexes else phase_indexes[0])
-            self._record_phase_timing(
-                session, intersection_id, phase_index, 0.0, 10.0 if AUTO_SIGNAL_CYCLE else None
-            )
+            session.current_phases[intersection_id] = phase_index
             try:
                 session.engine.set_tl_phase(intersection_id, phase_index - 1)
             except Exception:
@@ -755,35 +709,6 @@ class RealCityFlowEngine(SimulationEngine):
         except Exception:
             return 0
 
-    def _control_duration_sec(self, decision: JsonDict) -> float | None:
-        value = decision.get("durationSec")
-        try:
-            duration = float(value)
-        except (TypeError, ValueError):
-            return None
-        return duration if math.isfinite(duration) and duration > 0 else None
-
-    def _record_phase_timing(
-            self,
-            session: "CityFlowEngineSession",
-            intersection_id: str,
-            phase_index: int,
-            sim_time: float,
-            duration_sec: float | None,
-    ) -> None:
-        phase_changed = session.current_phases.get(intersection_id) != phase_index
-        session.current_phases[intersection_id] = phase_index
-        if phase_changed:
-            if duration_sec is None:
-                session.phase_started_at.pop(intersection_id, None)
-                session.phase_duration_sec.pop(intersection_id, None)
-            else:
-                session.phase_started_at[intersection_id] = sim_time
-                session.phase_duration_sec[intersection_id] = duration_sec
-        elif intersection_id not in session.phase_started_at and duration_sec is not None:
-            session.phase_started_at[intersection_id] = sim_time
-            session.phase_duration_sec[intersection_id] = duration_sec
-
     def _normalize_control_phase(self, decision: JsonDict) -> int:
         phase_code = decision.get("phaseCode")
         if isinstance(phase_code, str) and phase_code in BUSINESS_PHASE_CODE_TO_INDEX:
@@ -807,12 +732,12 @@ class RealCityFlowEngine(SimulationEngine):
         return phase_index
 
     def _safe_set_tl_phase(self, session, intersection_id, cityflow_phase_id,
-                            sim_time, is_emergency=False, duration_sec=None):
+                            sim_time, is_emergency=False):
         phase_index = cityflow_phase_id + 1
         current = session.current_phases.get(intersection_id)
         if current is None:
             session.engine.set_tl_phase(intersection_id, cityflow_phase_id)
-            self._record_phase_timing(session, intersection_id, phase_index, sim_time, duration_sec)
+            session.current_phases[intersection_id] = phase_index
             return True
 
         roadnet_raw = self.road_index.get(session.scene_id, {})
@@ -831,7 +756,7 @@ class RealCityFlowEngine(SimulationEngine):
 
         if ok:
             session.engine.set_tl_phase(intersection_id, cityflow_phase_id)
-            self._record_phase_timing(session, intersection_id, safe_phase, sim_time, duration_sec)
+            session.current_phases[intersection_id] = safe_phase
             return True
         else:
             # Rejected: keep current phase, log warning
@@ -855,8 +780,6 @@ class CityFlowEngineSession:
     config_path: Path
     seq: int = 0
     current_phases: dict[str, int] = field(default_factory=dict)
-    phase_started_at: dict[str, float] = field(default_factory=dict)
-    phase_duration_sec: dict[str, float] = field(default_factory=dict)
     external_control_enabled: bool = False
     running: bool = False
     stopped: bool = False
