@@ -33,6 +33,9 @@ let statsTimer: ReturnType<typeof setInterval> | null = null
 let trendTimer: ReturnType<typeof setInterval> | null = null
 let dataRetryTimer: ReturnType<typeof setInterval> | null = null
 const simulationOperationPending = ref(false)
+let simulationHealthTimer: ReturnType<typeof setInterval> | null = null
+const simulationStarting = ref(false)
+let dashboardStartingSimulation = false
 
 async function syncDashboardData(): Promise<void> {
   const loaded = await store.loadDashboardData()
@@ -127,6 +130,10 @@ async function stopSimulationFromDashboard(): Promise<void> {
 onMounted(() => {
   void syncDashboardData()
 
+  simulationHealthTimer = setInterval(() => {
+    store.checkSimulationFrameTimeout()
+  }, 1000)
+
   dataRetryTimer = setInterval(() => {
     if (store.dataSourceStatus === 'database') {
       if (dataRetryTimer) {
@@ -196,6 +203,7 @@ onUnmounted(() => {
   if (statsTimer) clearInterval(statsTimer)
   if (trendTimer) clearInterval(trendTimer)
   if (dataRetryTimer) clearInterval(dataRetryTimer)
+  if (simulationHealthTimer) clearInterval(simulationHealthTimer)
   wsDisconnect()
   store.resetSimulationState()
   console.log('[Dashboard] 定时刷新已停止，WebSocket 已断开')

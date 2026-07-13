@@ -99,7 +99,11 @@ class CityFlowAdapter:
                 scene_id=scene_id,
                 speed=normalized_speed,
                 engine_mode=self.engine_mode,
+                current_phases=self._initial_signal_phases(scene_id),
             )
+            if AUTO_SIGNAL_CYCLE:
+                for intersection_id, phase_index in session.current_phases.items():
+                    self._record_mock_phase_timing(session, intersection_id, phase_index, 10.0)
             self.sessions[sid] = session
         return {
             "sid": sid,
@@ -120,15 +124,19 @@ class CityFlowAdapter:
 
             flows = self.flows[session.scene_id]
             road_by_id = self.road_index[session.scene_id]
-            active_flows = self._active_flows(flows, session.sim_time)
+            active_flows = self._active_flows(flows, session.sim_time, session.mock_vehicle_delays)
+            if AUTO_SIGNAL_CYCLE:
+                for intersection_id, phase_index in self._cycled_signal_phases(session.scene_id, session.sim_time).items():
+                    self._record_mock_phase_timing(session, intersection_id, phase_index, 10.0)
             vehicles = [
-                self._vehicle_state(index, flow, session.sim_time, road_by_id)
+                self._vehicle_state(index, flow, session, road_by_id)
                 for index, flow in active_flows[:DEFAULT_VISIBLE_VEHICLE_LIMIT]
             ]
+            self._apply_mock_queue_spacing(vehicles, road_by_id)
             roads = self._road_states(vehicles, road_by_id)
             lane_states = self._lane_states(session.scene_id, vehicles, road_by_id)
             intersections = self._intersection_states(session.scene_id, roads)
-            signals = self._signal_states(session.scene_id, session.sim_time)
+            signals = self._signal_states(session)
             metrics = self._metrics(vehicles, roads, flows, session.sim_time)
 
             status = "finished" if self._mock_simulation_complete(session, active_flows) else "running"
@@ -257,11 +265,20 @@ class CityFlowAdapter:
                 message=f"simulation session not found: {sid}",
                 retryable=False,
             )
-        self.sessions[sid].last_access_at = time.time()
-
+        session = self.sessions[sid]
+        applied = [self._applied_action(decision) for decision in decisions]
+        with session.lock:
+            session.last_access_at = time.time()
+            for decision, action in zip(decisions, applied):
+                self._record_mock_phase_timing(
+                    session,
+                    action["intersectionId"],
+                    int(action["phaseIndex"]),
+                    self._control_duration_sec(decision),
+                )
         result = {
             "sid": sid,
-            "applied": [self._applied_action(decision) for decision in decisions],
+            "applied": applied,
         }
         print(
             f"apply_control_actions sid={sid} applied={len(result.get('applied', []))}",
@@ -479,13 +496,18 @@ class CityFlowAdapter:
             "status": "applied",
         }
 
-    def _active_flows(self, flows: list[JsonDict], sim_time: float) -> list[tuple[int, JsonDict]]:
+    def _active_flows(
+            self,
+            flows: list[JsonDict],
+            sim_time: float,
+            delays: dict[str, float] | None = None,
+    ) -> list[tuple[int, JsonDict]]:
         active = []
         for index, flow in enumerate(flows):
             start_time = float(flow.get("startTime", 0.0))
             route = flow.get("route", [])
             # Keep vehicles visible long enough to traverse all roads in the mocked visual engine.
-            duration = max(30.0, len(route) * 18.0)
+            duration = max(30.0, len(route) * 18.0) + (delays or {}).get(f"vehicle_{index}", 0.0)
             if start_time <= sim_time <= start_time + duration:
                 active.append((index, flow))
         return active
@@ -494,15 +516,17 @@ class CityFlowAdapter:
             self,
             index: int,
             flow: JsonDict,
-            sim_time: float,
+            session: SimulationSession,
             road_by_id: dict[str, JsonDict],
     ) -> JsonDict:
         route = flow.get("route", [])
         if not route:
             return self._empty_vehicle(index)
 
+        vehicle_id = f"vehicle_{index}"
         start_time = float(flow.get("startTime", 0.0))
-        elapsed = max(0.0, sim_time - start_time)
+        delay = session.mock_vehicle_delays.get(vehicle_id, 0.0)
+        elapsed = max(0.0, session.sim_time - start_time - delay)
         seconds_per_road = 18.0
         route_position = min(int(elapsed // seconds_per_road), len(route) - 1)
         road_id = route[route_position]
@@ -511,24 +535,130 @@ class CityFlowAdapter:
         if road is None:
             return self._empty_vehicle(index, road_id)
 
-        start, end = self._road_endpoints(road)
-        x = start["x"] + (end["x"] - start["x"]) * progress
-        y = start["y"] + (end["y"] - start["y"]) * progress
-        lane_count = max(1, len(road.get("lanes", [])))
-        lane = index % lane_count
-        angle = math.degrees(math.atan2(end["y"] - start["y"], end["x"] - start["x"]))
+        road_length = self._road_length(road)
+        distance = road_length * progress
+        road_link = self._route_road_link(session.scene_id, road_id, route, route_position)
+        lane = self._movement_lane(road_link, index, road)
+        waiting_for_signal = False
+        if road_link is not None and distance >= max(0.0, road_length - 8.0):
+            intersection_id = str(road.get("endIntersection", ""))
+            phase_index = session.current_phases.get(intersection_id, FIRST_BUSINESS_PHASE_INDEX)
+            if not self._road_link_is_allowed(session.scene_id, intersection_id, phase_index, int(road_link["index"])):
+                session.mock_vehicle_delays[vehicle_id] = delay + DEFAULT_FRAME_STEP_SECONDS * session.speed
+                distance = max(0.0, road_length - 8.0)
+                waiting_for_signal = True
+
+        x, y, angle = self._position_along_road(road, distance)
         max_speed = float(flow.get("vehicle", {}).get("maxSpeed", 11.111))
-        speed = max(0.0, min(max_speed, max_speed * (0.65 + 0.35 * math.sin((sim_time + index) / 12.0))))
+        speed = 0.0 if waiting_for_signal else max(0.0, min(
+            max_speed,
+            max_speed * (0.65 + 0.35 * math.sin((session.sim_time + index) / 12.0)),
+        ))
 
         return {
-            "id": f"vehicle_{index}",
+            "id": vehicle_id,
             "roadId": road_id,
             "lane": lane,
             "x": round(x, 3),
             "y": round(y, 3),
             "angle": round(angle, 3),
             "speed": round(speed, 3),
+            "drivableId": f"{road_id}_{lane}",
+            "drivableType": "lane",
+            "distance": round(distance, 3),
+            "waitingForSignal": waiting_for_signal,
         }
+
+    def _route_road_link(
+            self,
+            scene_id: str,
+            road_id: str,
+            route: list[str],
+            route_position: int,
+    ) -> JsonDict | None:
+        if route_position + 1 >= len(route):
+            return None
+        next_road_id = route[route_position + 1]
+        return next((
+            road_link
+            for road_link in self._parser(scene_id).to_response(scene_id).get("roadLinks", [])
+            if road_link.get("fromRoadId") == road_id and road_link.get("toRoadId") == next_road_id
+        ), None)
+
+    def _movement_lane(self, road_link: JsonDict | None, index: int, road: JsonDict) -> int:
+        lane_links = road_link.get("laneLinks", []) if road_link else []
+        if lane_links:
+            return int(lane_links[0].get("startLaneIndex", 0))
+        return index % max(1, len(road.get("lanes", [])))
+
+    def _road_link_is_allowed(
+            self,
+            scene_id: str,
+            intersection_id: str,
+            phase_index: int,
+            road_link_index: int,
+    ) -> bool:
+        phase = next((
+            item
+            for item in self._parser(scene_id).to_response(scene_id).get("phases", [])
+            if item.get("intersectionId") == intersection_id and int(item.get("phaseIndex", 0)) == phase_index
+        ), None)
+        return phase is not None and road_link_index in phase.get("roadLinkIndexes", [])
+
+    def _position_along_road(self, road: JsonDict, distance: float) -> tuple[float, float, float]:
+        points = road.get("points", [])
+        if len(points) < 2:
+            return 0.0, 0.0, 0.0
+        remaining = max(0.0, distance)
+        for start, end in zip(points, points[1:]):
+            sx, sy = float(start.get("x", 0.0)), float(start.get("y", 0.0))
+            ex, ey = float(end.get("x", 0.0)), float(end.get("y", 0.0))
+            length = math.dist((sx, sy), (ex, ey))
+            if length <= 0:
+                continue
+            if remaining <= length:
+                ratio = remaining / length
+                return (
+                    sx + (ex - sx) * ratio,
+                    sy + (ey - sy) * ratio,
+                    math.degrees(math.atan2(ey - sy, ex - sx)),
+                )
+            remaining -= length
+        start, end = points[-2], points[-1]
+        return (
+            float(end.get("x", 0.0)),
+            float(end.get("y", 0.0)),
+            math.degrees(math.atan2(
+                float(end.get("y", 0.0)) - float(start.get("y", 0.0)),
+                float(end.get("x", 0.0)) - float(start.get("x", 0.0)),
+            )),
+        )
+
+    def _apply_mock_queue_spacing(
+            self,
+            vehicles: list[JsonDict],
+            road_by_id: dict[str, JsonDict],
+    ) -> None:
+        queues: dict[tuple[str, int], list[JsonDict]] = {}
+        for vehicle in vehicles:
+            if vehicle.get("waitingForSignal"):
+                queues.setdefault((vehicle["roadId"], int(vehicle["lane"])), []).append(vehicle)
+        for (road_id, _), queued in queues.items():
+            road = road_by_id.get(road_id)
+            if road is None:
+                continue
+            stop_distance = max(0.0, self._road_length(road) - 8.0)
+            queued.sort(key=lambda item: int(str(item["id"]).rsplit("_", 1)[-1]))
+            for rank, vehicle in enumerate(queued):
+                distance = max(0.0, stop_distance - rank * 8.0)
+                x, y, angle = self._position_along_road(road, distance)
+                vehicle.update({
+                    "x": round(x, 3),
+                    "y": round(y, 3),
+                    "angle": round(angle, 3),
+                    "distance": round(distance, 3),
+                    "speed": 0.0,
+                })
 
     def _empty_vehicle(self, index: int, road_id: str = "") -> JsonDict:
         return {
@@ -675,23 +805,71 @@ class CityFlowAdapter:
             })
         return states
 
-    def _signal_states(self, scene_id: str, sim_time: float) -> list[JsonDict]:
+    def _initial_signal_phases(self, scene_id: str) -> dict[str, int]:
+        return {
+            intersection_id: FIRST_BUSINESS_PHASE_INDEX
+            for intersection_id in self._parser(scene_id).real_intersection_ids()
+        }
+
+    def _cycled_signal_phases(self, scene_id: str, sim_time: float) -> dict[str, int]:
         parser = self._parser(scene_id)
         phases_by_intersection: dict[str, list[int]] = {}
         for phase in parser.to_response(scene_id).get("phases", []):
             phases_by_intersection.setdefault(phase["intersectionId"], []).append(int(phase["phaseIndex"]))
-
-        signals = []
+        result = {}
         for intersection_id in parser.real_intersection_ids():
             phase_indexes = phases_by_intersection.get(intersection_id, [FIRST_BUSINESS_PHASE_INDEX])
-            controllable_phase_indexes = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
-            cycle_phase_indexes = controllable_phase_indexes or phase_indexes
-            phase_index = cycle_phase_indexes[int(sim_time // 10) % len(cycle_phase_indexes)]
-            signals.append({
+            business = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
+            cycle = business or phase_indexes
+            result[intersection_id] = cycle[int(sim_time // 10) % len(cycle)]
+        return result
+
+    def _record_mock_phase_timing(
+            self,
+            session: SimulationSession,
+            intersection_id: str,
+            phase_index: int,
+            duration_sec: float | None,
+    ) -> None:
+        phase_changed = session.current_phases.get(intersection_id) != phase_index
+        session.current_phases[intersection_id] = phase_index
+        if phase_changed:
+            if duration_sec is None:
+                session.phase_started_at.pop(intersection_id, None)
+                session.phase_duration_sec.pop(intersection_id, None)
+            else:
+                session.phase_started_at[intersection_id] = session.sim_time
+                session.phase_duration_sec[intersection_id] = duration_sec
+        elif intersection_id not in session.phase_started_at and duration_sec is not None:
+            session.phase_started_at[intersection_id] = session.sim_time
+            session.phase_duration_sec[intersection_id] = duration_sec
+
+    def _control_duration_sec(self, decision: JsonDict) -> float | None:
+        value = decision.get("durationSec")
+        try:
+            duration = float(value)
+        except (TypeError, ValueError):
+            return None
+        return duration if math.isfinite(duration) and duration > 0 else None
+
+    def _signal_states(self, session: SimulationSession) -> list[JsonDict]:
+        signals = []
+        for intersection_id in self._parser(session.scene_id).real_intersection_ids():
+            phase_index = session.current_phases.get(intersection_id, FIRST_BUSINESS_PHASE_INDEX)
+            signal = {
                 "intersectionId": intersection_id,
                 "phaseIndex": phase_index,
                 "phaseCode": PHASE_CODES.get(phase_index),
-            })
+            }
+            started_at = session.phase_started_at.get(intersection_id)
+            duration_sec = session.phase_duration_sec.get(intersection_id)
+            if started_at is not None and duration_sec is not None:
+                signal.update({
+                    "remainingSec": round(max(0.0, duration_sec - (session.sim_time - started_at)), 3),
+                    "phaseStartedAt": round(started_at, 3),
+                    "appliedDurationSec": round(duration_sec, 3),
+                })
+            signals.append(signal)
         return signals
 
     def _metrics(

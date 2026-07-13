@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 from app.cityflow_adapter import CityFlowAdapter
@@ -17,6 +17,14 @@ class CityFlowAdapterTest(unittest.TestCase):
         self.assertIn("roadLinks", roadnet)
         self.assertIn("phases", roadnet)
         self.assertEqual(1, roadnet["phases"][0]["phaseIndex"])
+        self.assertEqual(4.0, roadnet["roads"][0]["lanes"][0]["width"])
+        lane_links = [
+            lane_link
+            for road_link in roadnet["roadLinks"]
+            for lane_link in road_link["laneLinks"]
+        ]
+        self.assertGreater(len(lane_links), 0)
+        self.assertGreater(len(lane_links[0]["points"]), 1)
 
     def test_create_simulation_and_next_frame(self):
         adapter = CityFlowAdapter(DATA_DIR)
@@ -62,6 +70,73 @@ class CityFlowAdapterTest(unittest.TestCase):
         self.assertEqual(3, result["applied"][0]["phaseIndex"])
         self.assertEqual(2, result["applied"][0]["cityflowPhaseId"])
         self.assertEqual("applied", result["applied"][0]["status"])
+
+    def test_mock_control_action_updates_reported_signal_phase(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        created = adapter.create_simulation("jinan_3x4", 1.0)
+
+        adapter.apply_control_actions(created["sid"], {
+            "decisions": [{
+                "intersectionId": "intersection_1_1",
+                "phaseIndex": 3,
+                "phaseCode": "NTST",
+            }],
+        })
+        frame = adapter.next_frame(created["sid"])
+        signal = next(item for item in frame["signals"] if item["intersectionId"] == "intersection_1_1")
+
+        self.assertEqual(3, signal["phaseIndex"])
+        self.assertEqual("NTST", signal["phaseCode"])
+        self.assertNotIn("remainingSec", signal)
+
+    def test_mock_signal_reports_authoritative_remaining_duration(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        created = adapter.create_simulation("jinan_3x4", 1.0)
+        session = adapter._mock_session(created["sid"])
+        session.sim_time = 4.0
+
+        decision = {
+            "intersectionId": "intersection_1_1",
+            "phaseIndex": 3,
+            "phaseCode": "NTST",
+            "durationSec": 12,
+        }
+        adapter.apply_control_actions(created["sid"], {"decisions": [decision]})
+        first = adapter.next_frame(created["sid"])
+        first_signal = next(item for item in first["signals"] if item["intersectionId"] == "intersection_1_1")
+
+        self.assertEqual(11.0, first_signal["remainingSec"])
+        self.assertEqual(4.0, first_signal["phaseStartedAt"])
+        self.assertEqual(12.0, first_signal["appliedDurationSec"])
+
+        adapter.apply_control_actions(created["sid"], {"decisions": [decision]})
+        second = adapter.next_frame(created["sid"])
+        second_signal = next(item for item in second["signals"] if item["intersectionId"] == "intersection_1_1")
+
+        self.assertEqual(10.0, second_signal["remainingSec"])
+        self.assertEqual(4.0, second_signal["phaseStartedAt"])
+
+    def test_mock_vehicle_uses_route_lane_and_waits_at_red_signal(self):
+        adapter = CityFlowAdapter(DATA_DIR)
+        created = adapter.create_simulation("jinan_3x4", 1.0)
+        session = adapter._mock_session(created["sid"])
+        flow = adapter.flows["jinan_3x4"][5]
+        session.sim_time = 60.9
+
+        stopped = adapter._vehicle_state(5, flow, session, adapter.road_index["jinan_3x4"])
+
+        self.assertEqual("road_1_2_3", stopped["roadId"])
+        self.assertEqual(1, stopped["lane"])
+        self.assertTrue(stopped["waitingForSignal"])
+        self.assertEqual(0.0, stopped["speed"])
+        self.assertAlmostEqual(792.0, stopped["distance"])
+
+        session.current_phases["intersection_1_1"] = 3
+        session.sim_time += 1.0
+        released = adapter._vehicle_state(5, flow, session, adapter.road_index["jinan_3x4"])
+
+        self.assertFalse(released["waitingForSignal"])
+        self.assertGreater(released["speed"], 0.0)
 
     def test_apply_control_actions_rejects_invalid_phase(self):
         adapter = CityFlowAdapter(DATA_DIR)

@@ -1,4 +1,4 @@
-// ================================================================
+﻿// ================================================================
 // amapMarkers.ts — 高德红绿灯标记
 // 地图上显示小 🚥 图标，hover 弹出详情卡片（大屏 cyber 风格）
 // ================================================================
@@ -47,13 +47,14 @@ function buildPopup(it: Intersection): string {
   const phase = it.currentPhase as SignalPhase
   const online = it.deviceStatus === 'online'
   const allRed = phase === 'all_red' || !online
-  const rem = Math.round(it.greenRemain)
+  const remainingKnown = it.greenRemainKnown !== false
+  const rem = remainingKnown ? Math.round(it.greenRemain) : null
 
   // 倒计时颜色
   let cdColor = '#e8f4ff', cdShadow = '0 0 6px rgba(232,244,255,0.2)', cdAnim = ''
   if (!online) { cdColor = '#5a7595'; cdShadow = 'none' }
-  else if (rem <= 3) { cdColor = '#ff4d6d'; cdShadow = '0 0 6px rgba(255,77,109,0.35)'; cdAnim = 'animation:tl-blink .5s step-end infinite alternate' }
-  else if (rem <= 8) { cdColor = '#f5a623'; cdShadow = '0 0 6px rgba(245,166,35,0.35)' }
+  else if (rem !== null && rem <= 3) { cdColor = '#ff4d6d'; cdShadow = '0 0 6px rgba(255,77,109,0.35)'; cdAnim = 'animation:tl-blink .5s step-end infinite alternate' }
+  else if (rem !== null && rem <= 8) { cdColor = '#f5a623'; cdShadow = '0 0 6px rgba(245,166,35,0.35)' }
 
   function dotStyle(active: boolean): string {
     if (!online) return 'background:#2a3540;box-shadow:none;color:rgba(255,255,255,.12)'
@@ -78,7 +79,7 @@ function buildPopup(it: Intersection): string {
       <div style="margin-left:auto;display:flex;gap:3px;padding-right:3px"><i style="display:block;width:4px;height:8px;transform:skewX(-22deg);background:rgba(122,247,255,0.7)"></i><i style="display:block;width:4px;height:8px;transform:skewX(-22deg);background:rgba(0,212,255,0.45)"></i><i style="display:block;width:4px;height:8px;transform:skewX(-22deg);background:rgba(0,136,179,0.25)"></i></div>
     </div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:3px;padding:5px 8px 6px">
-    <span style="font-size:18px;font-weight:700;line-height:1;color:${cdColor};text-shadow:${cdShadow};${cdAnim}">${online ? rem : '--'}</span>
+    <span style="font-size:18px;font-weight:700;line-height:1;color:${cdColor};text-shadow:${cdShadow};${cdAnim}">${online ? (rem ?? '—') : '--'}</span>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px 6px;width:100%">
       ${light(flags.e, '→', flags.sub ? '东' + flags.sub : '东')}
       ${light(flags.w, '←', flags.sub ? '西' + flags.sub : '西')}
@@ -196,3 +197,4 @@ export function createTLMarkers(
     },
   }
 }
+

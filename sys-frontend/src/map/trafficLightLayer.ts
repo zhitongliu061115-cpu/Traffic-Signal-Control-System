@@ -1,4 +1,4 @@
-// ================================================================
+﻿// ================================================================
 // trafficLightLayer.ts — 红绿灯 DOM Markers（LOD2/LOD3 显示）
 // 直接用 HTML 字符串创建 MapLibre Marker，绕过 Vue 异步渲染时序问题
 // ================================================================
@@ -30,7 +30,7 @@ function buildMarkerHTML(it: Intersection): string {
   return `
 <div class="tl-marker" style="display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;user-select:none;">
   <div class="tl-light" style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,0.3);background:${color};box-shadow:0 0 14px ${color};">
-    <span class="tl-time" style="font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;color:#fff;text-shadow:0 0 4px rgba(0,0,0,0.6);">${Math.round(it.greenRemain)}</span>
+    <span class="tl-time" style="font-family:Rajdhani,sans-serif;font-size:13px;font-weight:700;color:#fff;text-shadow:0 0 4px rgba(0,0,0,0.6);">${it.greenRemainKnown === false ? '—' : Math.round(it.greenRemain)}</span>
   </div>
   <div class="tl-dir" style="font-family:Rajdhani,sans-serif;font-size:10px;font-weight:600;color:#e8f4ff;background:rgba(4,21,39,0.75);padding:1px 5px;border-radius:2px;">${dir}</div>
   <div class="tl-device" style="width:7px;height:7px;border-radius:50%;background:${dColor};box-shadow:0 0 5px ${dColor};"></div>
@@ -90,3 +90,4 @@ export function createTrafficLightMarkers(
     },
   }
 }
+
