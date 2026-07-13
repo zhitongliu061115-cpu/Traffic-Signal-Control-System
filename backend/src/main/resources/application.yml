@@ -87,7 +87,7 @@ bailian:
     access-key-id: LTAI5t7cVU95tR95K6DmGS3q
     access-key-secret: ixO8MXBUm453MwiRJdkLrdMT7NomBd
     workspace-id: ws-jpr8zalhgfz2nrmp
-    index-id: 6a65da857i
+    index-id: ez9exox9rx
     dense-top-k: 100
     sparse-top-k: 100
     enable-reranking: true
