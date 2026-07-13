@@ -1,4 +1,4 @@
-// =========================================================
+﻿// =========================================================
 // AI 自适应信号控制与应急绿波数字孪生系统 — Pinia Store
 // =========================================================
 import { defineStore } from 'pinia'
@@ -939,6 +939,24 @@ export const useTrafficStore = defineStore('traffic', () => {
     }
     if (frame.evStatus && frame.evStatus.length > 0) {
       latestEvStatus.value = frame.evStatus
+      const es = frame.evStatus[0]
+      console.log('[EV] evStatus', JSON.stringify(es),
+        'systemMode=', systemMode.value,
+        'routeLen=', emergencyRoute.value.length,
+        'passed=', es.passedCount)
+      if (es && systemMode.value === 'emergency' && emergencyRoute.value.length > 0) {
+        activeGreenWaveIndex.value = Math.min(es.passedCount, emergencyRoute.value.length - 1)
+        // 更新预计到达时间
+        const remaining = es.totalCount - es.passedCount
+        if (remaining > 0) {
+          const perNode = es.elapsedTime / Math.max(es.passedCount, 1)
+          emergencyVehicle.value.eta = +((remaining * perNode) / 60).toFixed(1)
+        }
+        // EV 到达终点 → 自动恢复正常模式
+        if (es.completed && systemMode.value === 'emergency' && es.evId === emergencyVehicle.value.id) {
+          restoreNormalMode()
+        }
+      }
     }
     if (frame.status === 'finished') {
       simulationStatus.value = 'finished'
