@@ -42,6 +42,8 @@ temp-three-frontend/*.log
 
 # Generated test outputs
 cloud/traffic-r/test-results/
+backend/agent-eval/reports/
+output/
 
 # Editors and system files
 .vscode/
