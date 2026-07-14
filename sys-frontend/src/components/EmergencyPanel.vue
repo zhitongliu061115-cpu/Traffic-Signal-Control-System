@@ -107,8 +107,8 @@ const totalRouteNodes = computed(() => emergencyRoute.value.length)
 // ---- 已运行时间（秒）----
 const elapsedRunningTime = computed(() => {
   const status = latestEvStatus.value
-  if (status && status.length > 0) return status[0].elapsedTime ?? 0
-  return 0
+  const firstStatus = status?.[0]
+  return firstStatus?.elapsedTime ?? 0
 })
 
 // ---- 绿波路线节点列表（用于内联展示） ----
@@ -255,6 +255,7 @@ const latestEvDecision = computed(() => {
   const evEvents = events.filter(e => e.evId === evId)
   if (evEvents.length === 0) return null
   const latest = evEvents[evEvents.length - 1]
+  if (!latest) return null
   const label = intersections.value.find((it) => it.id === latest.intersectionId)?.name ?? latest.intersectionId
   return { ...latest, label }
 })

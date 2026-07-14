@@ -289,7 +289,10 @@ class SignalState:
 
     def time_until_next_valid_phase(self, approach_road: str) -> float:
         '''Time until next phase that allows this approach road.'''
-        valid_phases = self.approach_phases.get(approach_road, [])
+        return self.time_until_next_phase(self.approach_phases.get(approach_road, []))
+
+    def time_until_next_phase(self, valid_phases: list[int]) -> float:
+        '''Time until the next explicitly allowed phase.'''
         if not valid_phases:
             return 999.0
         if self.current_phase in valid_phases:
@@ -297,11 +300,16 @@ class SignalState:
         remaining = self.get_phase_total_time(self.current_phase) - self.phase_elapsed
         total = remaining
         pc = max(self.phase_count, len(self.phase_durations))
-        p = (self.current_phase + 1) % pc
-        while p not in valid_phases:
+        zero_based = self.current_phase == 0 or 0 in valid_phases
+        first_phase = 0 if zero_based else 1
+        last_phase = pc - 1 if zero_based else pc
+        p = self.current_phase
+        for _ in range(pc):
+            p = first_phase if p >= last_phase else p + 1
+            if p in valid_phases:
+                return total
             total += self.get_phase_total_time(p)
-            p = (p + 1) % pc
-        return total
+        return 999.0
 
     def time_until_phase_end(self) -> float:
         '''Time remaining in current phase.'''
@@ -341,8 +349,9 @@ class SignalStrategy:
         if not pri_green_phases:
             return (self.DECISION_NO_ACTION, 0.0)
 
-        # Is EV's approach currently allowed?
-        approach_allowed = signal.approach_allowed(approach_road) if approach_road else signal.current_phase in pri_green_phases
+        # Turn-level phases are authoritative. A permissive right turn on the
+        # same road must not make a blocked left turn look green.
+        approach_allowed = signal.current_phase in pri_green_phases
         phase_remaining = signal.time_until_phase_end()
 
         if approach_allowed:
@@ -362,14 +371,14 @@ class SignalStrategy:
             else:
                 # EV arrives after phase ends
                 queue_clear = current_time + t_d
-                time_to_next = signal.time_until_next_valid_phase(approach_road)
+                time_to_next = signal.time_until_next_phase(pri_green_phases)
                 if time_to_next < 60 and t_d < t_a:
                     return (self.DECISION_GREEN_EXTEND, queue_clear - phase_end + GS)
                 else:
                     return (self.DECISION_FORCE_GREEN, 0.0)
         else:
             # Current phase does NOT allow EV
-            time_to_valid = signal.time_until_next_valid_phase(approach_road)
+            time_to_valid = signal.time_until_next_phase(pri_green_phases)
             valid_start = current_time + time_to_valid
             if t_a < valid_start + 60 and t_d < t_a:
                 # Close enough to wait or advance

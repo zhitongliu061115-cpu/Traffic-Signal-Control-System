@@ -11,10 +11,17 @@ PHASE_CODES = {
     3: "NTST",
     4: "ELWL",
     5: "NLSL",
+    6: "ETWT",
+    7: "ETWT",
+    8: "NTST",
+    9: "NTST",
 }
 
-BUSINESS_PHASE_CODE_TO_INDEX = {phase_code: phase_index for phase_index, phase_code in PHASE_CODES.items()}
-BUSINESS_PHASE_INDEXES = set(PHASE_CODES.keys())
+BUSINESS_PHASE_INDEXES = {2, 3, 4, 5}
+BUSINESS_PHASE_CODE_TO_INDEX = {
+    PHASE_CODES[phase_index]: phase_index
+    for phase_index in BUSINESS_PHASE_INDEXES
+}
 FIRST_BUSINESS_PHASE_INDEX = 2
 
 

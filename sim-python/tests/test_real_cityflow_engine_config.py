@@ -7,10 +7,18 @@ from unittest.mock import Mock
 
 from app.config import DATA_DIR
 from app.engine import CityFlowEngineSession, RealCityFlowEngine
+from app.roadnet_parser import BUSINESS_PHASE_CODE_TO_INDEX, BUSINESS_PHASE_INDEXES, PHASE_CODES
 from app.scene_registry import SceneRegistry
 
 
 class RealCityFlowEngineConfigTest(unittest.TestCase):
+    def test_extended_phase_display_mapping_does_not_expand_control_phases(self):
+        self.assertEqual("ETWT", PHASE_CODES[6])
+        self.assertEqual("NTST", PHASE_CODES[9])
+        self.assertEqual({2, 3, 4, 5}, BUSINESS_PHASE_INDEXES)
+        self.assertEqual(2, BUSINESS_PHASE_CODE_TO_INDEX["ETWT"])
+        self.assertEqual(3, BUSINESS_PHASE_CODE_TO_INDEX["NTST"])
+
     def test_generated_config_uses_absolute_scene_directory(self):
         engine = RealCityFlowEngine.__new__(RealCityFlowEngine)
         engine.scene_registry = SceneRegistry(DATA_DIR)

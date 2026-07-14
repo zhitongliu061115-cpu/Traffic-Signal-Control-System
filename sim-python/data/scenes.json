@@ -8,20 +8,12 @@
       "cityflowConfigMode": "generated"
     },
     {
-      "sceneId": "jinan_3x4_stress",
-      "name": "Jinan 3x4 stress roadnet",
-      "sceneDir": "jinan_3x4",
-      "roadnetFile": "roadnet_3_4.json",
-      "flowFile": "flow_3_4_jinan_stress.json",
+      "sceneId": "hangzhou_4_4",
+      "name": "Hangzhou 4x4 real",
+      "sceneDir": "hangzhou_4_4",
+      "roadnetFile": "roadnet_4_4.json",
+      "flowFile": "anon_4_4_hangzhou_real.json",
       "cityflowConfigMode": "generated"
-    },
-      {
-  "sceneId": "hangzhou_4_4",
-  "name": "Hangzhou 4x4 real",
-  "sceneDir": "hangzhou_4_4",
-  "roadnetFile": "roadnet_4_4.json",
-  "flowFile": "anon_4_4_hangzhou_real.json",
-  "cityflowConfigMode": "generated"
-}
+    }
   ]
 }
