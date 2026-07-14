@@ -416,6 +416,7 @@ export interface EvEventDto {
 /** EV 状态（后端 EvStatusDto） */
 export interface EvStatusDto {
   evId: string
+  cfVehicleId?: string
   evType: string
   priority: number
   route: string[]

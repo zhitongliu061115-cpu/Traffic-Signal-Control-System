@@ -20,7 +20,7 @@ import type { SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 const store = useTrafficStore()
 const {
   intersections, roads, vehicles,
-  systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId, latestEvStatus,
+  systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId, latestEvStatus, emergencyVehicle,
   simulationVehicles, simulationStatus, simRoadnet, emergencyCfVehicleId, simulationSceneId,
 } = storeToRefs(store)
 
@@ -35,6 +35,7 @@ let amapInstance: AMapInstance | null = null
 let roadLayer: ReturnType<typeof addAMapRoadLayer> | null = null
 let tlMarkers: ReturnType<typeof createTLMarkers> | null = null
 let emergencyLine: AMap.Polyline | null = null
+let emergencyVehicleMarker: AMap.CircleMarker | null = null
 let vehicleLayer: VehicleLayer | null = null
 let vehicleUpdateTimer: ReturnType<typeof setTimeout> | null = null
 let dashboardVideo: HTMLVideoElement | null = null
@@ -103,8 +104,10 @@ function scheduleVehicleLayerUpdate(delayMs = 500): void {
         intersections.value,
       )
     }
-    const evSet = emergencyCfVehicleId.value ? new Set([emergencyCfVehicleId.value]) : undefined
-    vehicleLayer.update(simulationVehicles.value as SimVehicleState[], evSet)
+    const displayVehicles = emergencyCfVehicleId.value
+      ? simulationVehicles.value.filter((vehicle) => vehicle.id !== emergencyCfVehicleId.value)
+      : simulationVehicles.value
+    vehicleLayer.update(displayVehicles as SimVehicleState[])
   }, delayMs)
 }
 
@@ -149,6 +152,18 @@ async function bootstrapMap(): Promise<void> {
       path: [], strokeColor: '#00E5FF', strokeWeight: 8, strokeOpacity: 0.9, zIndex: 50,
     })
     emergencyLine.setMap(map)
+    emergencyVehicleMarker = new AMap.CircleMarker({
+      center: [0, 0] as unknown as AMap.LngLat,
+      radius: 9,
+      fillColor: '#ff2d4d',
+      fillOpacity: 0.95,
+      strokeColor: '#ffffff',
+      strokeWeight: 2,
+      zIndex: 140,
+      bubble: true,
+    })
+    emergencyVehicleMarker.setMap(map)
+    emergencyVehicleMarker.hide()
 
     mapReady.value = true
     dataLoading.value = true
@@ -165,6 +180,98 @@ function addEndpoint(map: Map<string, Array<[number, number]>>, itId: string, pt
   const arr = map.get(itId)
   if (arr) arr.push(pt)
   else map.set(itId, [pt])
+}
+
+function routeDisplayId(routeId: string): string | null {
+  const direct = intersections.value.find((i) => i.id === routeId)
+  if (direct) return direct.id
+  const match = routeId.match(/^intersection_(\d+)_(\d+)$/)
+  if (!match) return null
+  const col = Number(match[1])
+  const row = Number(match[2])
+  return intersections.value.find((i) => i.col === col && i.row === row)?.id ?? null
+}
+
+function emergencyRoutePath(): [number, number][] {
+  const allPts: [number, number][] = []
+  for (let i = 0; i < emergencyRoute.value.length - 1; i++) {
+    const routeFrom = emergencyRoute.value[i]
+    const routeTo = emergencyRoute.value[i + 1]
+    if (!routeFrom || !routeTo) continue
+    const fromId = routeDisplayId(routeFrom)
+    const toId = routeDisplayId(routeTo)
+    if (!fromId || !toId) continue
+
+    const road = roads.value.find(
+      (r) => (r.from === fromId && r.to === toId) || (r.from === toId && r.to === fromId),
+    )
+    if (road?.path && road.path.length >= 2) {
+      const path = road.from === fromId ? road.path : [...road.path].reverse()
+      if (allPts.length > 0) path.shift()
+      allPts.push(...path.map((pt) => [pt[0], pt[1]] as [number, number]))
+      continue
+    }
+
+    const from = intersections.value.find((it) => it.id === fromId)
+    const to = intersections.value.find((it) => it.id === toId)
+    if (from && to) {
+      if (allPts.length === 0) allPts.push([from.lng, from.lat])
+      allPts.push([to.lng, to.lat])
+    }
+  }
+  return allPts
+}
+
+function segmentDistance(a: [number, number], b: [number, number]): number {
+  const dx = b[0] - a[0]
+  const dy = b[1] - a[1]
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+function interpolateRoutePath(path: [number, number][], progress: number): [number, number] | null {
+  if (path.length === 0) return null
+  if (path.length === 1) return path[0]!
+  const lengths: number[] = []
+  let total = 0
+  for (let i = 1; i < path.length; i++) {
+    const length = segmentDistance(path[i - 1]!, path[i]!)
+    lengths.push(length)
+    total += length
+  }
+  const target = Math.max(0, Math.min(1, progress)) * Math.max(total, 1e-9)
+  let acc = 0
+  for (let i = 0; i < lengths.length; i++) {
+    const length = lengths[i]!
+    if (target <= acc + length || i === lengths.length - 1) {
+      const t = length > 0 ? (target - acc) / length : 0
+      const from = path[i]!
+      const to = path[i + 1]!
+      return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
+    }
+    acc += length
+  }
+  return path[path.length - 1]!
+}
+
+function syncEmergencyVehicleMarker(path: [number, number][]): void {
+  if (!emergencyVehicleMarker) return
+  const evStatus = latestEvStatus.value?.find((item) => item.evId === emergencyVehicle.value.id)
+  if (systemMode.value !== 'emergency' || path.length < 2 || evStatus?.completed) {
+    emergencyVehicleMarker.hide()
+    return
+  }
+  const etaSeconds = Math.max(10, (emergencyVehicle.value.eta || 0.5) * 60)
+  const elapsedProgress = evStatus ? evStatus.elapsedTime / etaSeconds : 0
+  const passedProgress = evStatus && evStatus.totalCount > 1
+    ? evStatus.passedCount / Math.max(1, evStatus.totalCount - 1)
+    : 0
+  const point = interpolateRoutePath(path, Math.min(0.98, Math.max(elapsedProgress, passedProgress)))
+  if (!point) {
+    emergencyVehicleMarker.hide()
+    return
+  }
+  emergencyVehicleMarker.setCenter(point as unknown as AMap.LngLat)
+  emergencyVehicleMarker.show()
 }
 
 function fallbackBentPath(from: { lng: number; lat: number }, to: { lng: number; lat: number }, seed: string): [number, number][] {
@@ -205,7 +312,6 @@ async function planRoadsWithAMap(force = false): Promise<void> {
   const profile = currentMapProfile()
   map.setZoomAndCenter(profile.zoom, profile.center)
 
-  // ---- 第 1.5 步：高德 POI 地理编码修正路口坐标 ----
   // 杭州展示路网使用人工挑选的代表点，跳过 geocode，避免 POI 纠偏把点吸到不成网的位置。
   if (!profile.skipGeocode) {
     const snapItems = intersections.value.map((it) => ({ id: it.id, name: it.name, lng: it.lng, lat: it.lat }))
@@ -287,58 +393,18 @@ async function loadRealData(): Promise<void> {
 
 function syncEmergency(): void {
   if (!emergencyLine) return
-  // Hide path when EV has completed
-  const evCompleted = latestEvStatus.value?.some((s: any) => s.completed)
+  const evCompleted = latestEvStatus.value?.some((status) => status.evId === emergencyVehicle.value.id && status.completed)
   if (systemMode.value === 'emergency' && emergencyRoute.value.length > 0 && !evCompleted) {
-    // 将 CityFlow 路口 ID 映射为 mock 路口 ID
-    const cfToMock = (cfId: string): string | null => {
-      const direct = intersections.value.find((i) => i.id === cfId)
-      if (direct) return direct.id
-      const m = cfId.match(/^intersection_(\d+)_(\d+)$/)
-      if (m) {
-        const col = Number(m[1]), row = Number(m[2])
-        const it = intersections.value.find((i) => i.col === col && i.row === row)
-        return it ? it.id : null
-      }
-      return null
-    }
-
-    // 逐段找路网中的真实道路路径
-    const allPts: [number, number][] = []
-    for (let i = 0; i < emergencyRoute.value.length - 1; i++) {
-      const routeFrom = emergencyRoute.value[i]
-      const routeTo = emergencyRoute.value[i + 1]
-      if (!routeFrom || !routeTo) continue
-      const fromMock = cfToMock(routeFrom)
-      const toMock = cfToMock(routeTo)
-      if (!fromMock || !toMock) continue
-
-      // 找连接这两个 mock 路口的路
-      const road = roads.value.find(
-        (r) => (r.from === fromMock && r.to === toMock) || (r.from === toMock && r.to === fromMock)
-      )
-      if (road && road.path && road.path.length >= 2) {
-        const path = road.from === fromMock ? road.path : [...road.path].reverse()
-        for (const pt of path) {
-          allPts.push([pt[0], pt[1]])
-        }
-      } else {
-        // 降级：直连路口中心
-        const fi = intersections.value.find((it) => it.id === fromMock)
-        const ti = intersections.value.find((it) => it.id === toMock)
-        if (fi && ti) {
-          if (allPts.length === 0) allPts.push([fi.lng, fi.lat])
-          allPts.push([ti.lng, ti.lat])
-        }
-      }
-    }
+    const allPts = emergencyRoutePath()
     if (allPts.length >= 2) {
       emergencyLine.setPath(allPts)
       emergencyLine.show()
+      syncEmergencyVehicleMarker(allPts)
+      return
     }
-  } else {
-    emergencyLine.hide()
   }
+  emergencyLine.hide()
+  emergencyVehicleMarker?.hide()
 }
 
 // 防抖更新：避免 200ms 高频属性变更触发 AMap 全量重绘风暴
@@ -369,6 +435,7 @@ watch(simulationSceneId, (sceneId) => {
 })
 watch(systemMode, syncEmergency)
 watch(emergencyRoute, () => { if (systemMode.value === 'emergency') syncEmergency() }, { deep: true })
+watch(latestEvStatus, () => { if (systemMode.value === 'emergency') syncEmergency() }, { deep: true })
 
 // 单击路口 marker → 镜头拉近放大到该路口
 watch(selectedIntersectionId, (id) => {
@@ -407,6 +474,7 @@ onBeforeUnmount(() => {
   roadLayer?.dispose()
   tlMarkers?.dispose()
   vehicleLayer?.dispose()
+  emergencyVehicleMarker?.setMap(null)
   emergencyLine?.setMap(null)
   amapInstance?.destroy()
 })

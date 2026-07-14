@@ -266,7 +266,7 @@ class EVPriorityService:
             if ev_session.completed:
                 continue
 
-            vehicle_info = self._get_vehicle_info(engine, ev_session)
+            vehicle_info = self._get_vehicle_info(sid, engine, ev_session)
             if not vehicle_info:
                 if ev_session.missing_since is None:
                     ev_session.missing_since = sim_time
@@ -566,6 +566,7 @@ class EVPriorityService:
                 print(f"[DEBUG-EV] status {ev_id}: completed={ev.completed} passed={len(ev.passed_intersections)}/{len(ev.route)}", flush=True)
             result.append({
                 "evId": ev_id,
+                "cfVehicleId": ev.cf_vehicle_id,
                 "evType": ev.ev_type,
                 "priority": ev.priority,
                 "route": ev.route,
@@ -688,12 +689,13 @@ class EVPriorityService:
             pass
         return ""
 
-    def _get_vehicle_info(self, engine: Any, ev: EVSession) -> Optional[dict]:
+    def _get_vehicle_info(self, sid: str, engine: Any, ev: EVSession) -> Optional[dict]:
         if not ev.cf_vehicle_id:
             ev.cf_vehicle_id = self._find_pushed_vehicle(
                 engine,
                 ev.start_road,
                 ev.pre_dispatch_vehicle_ids,
+                sid,
             )
         if ev.cf_vehicle_id:
             try:

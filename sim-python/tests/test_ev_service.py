@@ -10,6 +10,16 @@ class MissingVehicleEngine:
         return None
 
 
+class DelayedVehicleEngine:
+    def get_vehicles(self):
+        return ["old_vehicle", "ev_delayed"]
+
+    def get_vehicle_info(self, vehicle_id):
+        if vehicle_id == "ev_delayed":
+            return {"road": "road_start", "distance": 12.0, "speed": 8.0}
+        return {"road": "other_road", "distance": 0.0, "speed": 0.0}
+
+
 class EVPriorityServiceTest(unittest.TestCase):
     @patch("app.ev_service.EVLogger")
     def test_completed_ev_releases_all_owned_signal_overrides(self, logger_type):
@@ -39,6 +49,22 @@ class EVPriorityServiceTest(unittest.TestCase):
 
         service._status_seq[sid] = ev.completion_seq + service.STATUS_LINGER_FRAMES + 1
         self.assertFalse(service.has_evs(sid))
+
+    @patch("app.ev_service.EVLogger")
+    def test_delayed_cityflow_vehicle_id_is_resolved_with_session_scope(self, logger_type):
+        service = EVPriorityService()
+        sid = "run_delayed"
+        ev = EVSession(
+            ev_id="ambulance_1",
+            start_road="road_start",
+            pre_dispatch_vehicle_ids={"old_vehicle"},
+        )
+        service.ev_sessions[sid] = {ev.ev_id: ev}
+
+        info = service._get_vehicle_info(sid, DelayedVehicleEngine(), ev)
+
+        self.assertEqual("ev_delayed", ev.cf_vehicle_id)
+        self.assertEqual("road_start", info["road"])
 
     def test_turn_level_phases_override_permissive_road_level_mapping(self):
         signal = SignalState(
