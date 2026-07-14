@@ -34,6 +34,8 @@ VEHICLE_TYPE_PRIORITY = {
     "convoy": 3,
 }
 
+MAX_EMERGENCY_OVERRIDE_SEC = 60.0
+
 @dataclass
 class EVSession:
     """EV tracking data for one EV in one simulation session."""
@@ -65,6 +67,7 @@ class EVPriorityService:
         self.safety_guard = SafetyGuard()
         self._active_overrides: Dict[str, Dict[str, int]] = {}  # sid -> {inter_id: phase}
         self._override_owners: Dict[str, Dict[str, str]] = {}  # sid -> {inter_id: ev_id}
+        self._override_started_at: Dict[str, Dict[str, float]] = {}
         self.logger = EVLogger()
         self.ev_sessions: Dict[str, Dict[str, EVSession]] = {}
         self.road_index: Dict[str, Dict[str, Any]] = {}
@@ -306,6 +309,7 @@ class EVPriorityService:
                 "current_road": current_road,
             })
 
+        self._expire_stale_overrides(sid, sim_time)
         if not detections:
             return dict(self._active_overrides.get(sid, {})), [], self._build_ev_status(sid, sim_time)
 
@@ -343,14 +347,36 @@ class EVPriorityService:
                 is_winner = (winner is not None and winner.ev_id == ev_id)
 
                 if is_winner:
-                    self.handled[sid].add(d["handle_key"])
-                    ev_session.passed_intersections.add(inter_id)
-
                     approach_dir = get_approach_direction(d["current_road"])
                     approach_road, next_road = self._find_approach_road(
                         ev_session, inter_id, road_by_id)
                     pri_green = self._get_pri_green_phases(
                         inter_id, approach_road, next_road, approach_phases, phase_counts)
+                    if not pri_green:
+                        self.handled[sid].add(d["handle_key"])
+                        ev_events.append({
+                            "evId": ev_id,
+                            "evType": ev_session.ev_type,
+                            "priority": ev_session.priority,
+                            "intersectionId": inter_id,
+                            "decision": "no_safe_turn_phase",
+                            "phaseIndex": -1,
+                            "phaseIndexBefore": -1,
+                            "timestamp": round(sim_time, 3),
+                            "status": "skipped",
+                        })
+                        self.logger.log(
+                            timestamp=sim_time,
+                            ev_id=ev_id,
+                            event_type="no_safe_turn_phase",
+                            intersection_id=inter_id,
+                            decision="no_action",
+                            detail=f"approach={approach_road} next={next_road}",
+                        )
+                        continue
+
+                    self.handled[sid].add(d["handle_key"])
+                    ev_session.passed_intersections.add(inter_id)
                     pri_green = [p + 1 for p in pri_green]  # convert to 1-based
                     try:
                         cityflow_phase = engine.get_tl_phase(inter_id)
@@ -438,6 +464,10 @@ class EVPriorityService:
             self._active_overrides[sid] = {}
         if sid not in self._override_owners:
             self._override_owners[sid] = {}
+        if sid not in self._override_started_at:
+            self._override_started_at[sid] = {}
+        for intersection_id in signal_overrides:
+            self._override_started_at[sid].setdefault(intersection_id, sim_time)
         self._active_overrides[sid].update(signal_overrides)
         self._override_owners[sid].update(signal_override_owners)
 
@@ -446,6 +476,8 @@ class EVPriorityService:
             if ev.completed:
                 for iid in ev.route:
                     self._active_overrides.get(sid, {}).pop(iid, None)
+                    self._override_owners.get(sid, {}).pop(iid, None)
+                    self._override_started_at.get(sid, {}).pop(iid, None)
                 continue
             if not ev.cf_vehicle_id:
                 continue
@@ -464,11 +496,13 @@ class EVPriorityService:
                             for iid in stale:
                                 del self._active_overrides[sid][iid]
                                 self._override_owners.get(sid, {}).pop(iid, None)
+                                self._override_started_at.get(sid, {}).pop(iid, None)
                             break
             except Exception:
                 pass
 
         # Merge new + persisted overrides
+        self._expire_stale_overrides(sid, sim_time)
         result = dict(self._active_overrides.get(sid, {}))
         return result, ev_events, self._build_ev_status(sid, sim_time)
 
@@ -506,6 +540,7 @@ class EVPriorityService:
         self.approach_phases.pop(sid, None)
         self._active_overrides.pop(sid, None)
         self._override_owners.pop(sid, None)
+        self._override_started_at.pop(sid, None)
 
     def _complete_ev(self, sid: str, ev: EVSession, sim_time: float) -> None:
         if ev.completed:
@@ -520,6 +555,7 @@ class EVPriorityService:
         for intersection_id in owned_intersections:
             self._active_overrides.get(sid, {}).pop(intersection_id, None)
             self._override_owners.get(sid, {}).pop(intersection_id, None)
+            self._override_started_at.get(sid, {}).pop(intersection_id, None)
         self.logger.log(
             timestamp=sim_time,
             ev_id=ev.ev_id,
@@ -530,6 +566,26 @@ class EVPriorityService:
     # ================================================================
     #  Internal helpers
     # ================================================================
+
+    def _expire_stale_overrides(self, sid: str, sim_time: float) -> None:
+        started = self._override_started_at.get(sid, {})
+        stale = [
+            intersection_id
+            for intersection_id, started_at in started.items()
+            if sim_time - started_at >= MAX_EMERGENCY_OVERRIDE_SEC
+        ]
+        for intersection_id in stale:
+            ev_id = self._override_owners.get(sid, {}).pop(intersection_id, None)
+            self._active_overrides.get(sid, {}).pop(intersection_id, None)
+            started.pop(intersection_id, None)
+            self.logger.log(
+                timestamp=sim_time,
+                ev_id=ev_id or "unknown",
+                event_type="override_timeout",
+                intersection_id=intersection_id,
+                decision="release",
+                detail=f"signal override exceeded {MAX_EMERGENCY_OVERRIDE_SEC:.0f}s",
+            )
 
     def _find_pushed_vehicle(self, engine: Any, start_road: str,
                              before_ids: set = None, sid: str = "") -> str:
@@ -610,26 +666,18 @@ class EVPriorityService:
                                next_road: Optional[str],
                                approach_phases: dict, phase_counts: dict) -> List[int]:
         """Get correct priority green phases for EV at this intersection.
-        Priority 1: turn-level mapping (approach_road, next_road) -> most precise.
-        Priority 2: road-level mapping (approach_road) -> fallback.
-        Priority 3: all phases."""
+        Only an exact (approach_road, next_road) movement is safe enough for
+        emergency override. Road-level fallbacks include unrelated turns."""
         if inter_id in approach_phases:
             ap_data = approach_phases[inter_id]
-            # Priority 1: turn-level (tuple key)
             if approach_road and next_road:
                 turn_map = ap_data.get("by_turn", {})
                 key = (approach_road, next_road)
                 phases = turn_map.get(key, [])
                 if phases:
-                    return phases
-            # Priority 2: road-level
-            if approach_road:
-                road_map = ap_data.get("by_road", {})
-                phases = road_map.get(approach_road, [])
-                if phases:
-                    return phases
-        # Fallback: all phases
-        return list(range(phase_counts.get(inter_id, 4)))
+                    non_transition_phases = [phase for phase in phases if phase > 0]
+                    return non_transition_phases or phases
+        return []
 
     def _intersections_to_roads(self, sid: str, path: List[str]) -> List[str]:
         roads = []

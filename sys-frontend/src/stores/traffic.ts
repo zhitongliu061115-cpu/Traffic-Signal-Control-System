@@ -96,6 +96,12 @@ const HANGZHOU_ARTERIAL_GRID = {
   },
 } as const
 
+function usesFixedShanghaiDisplayRoadnet(sceneId: string): boolean {
+  return sceneId === 'jinan_3x4' || sceneId === 'jinan_3x4_stress'
+}
+
+const FIXED_SHANGHAI_DISPLAY_ROAD_IDS = new Set(mockRoads.map((road) => road.id))
+
 function parseGridKey(id: string): { col: number; row: number } | null {
   const match = id.match(/^intersection_(\d+)_(\d+)$/)
   if (!match) return null
@@ -286,6 +292,22 @@ export const useTrafficStore = defineStore('traffic', () => {
   const simRoadnet = ref<SimRoadnetResponse | null>(null)
   /** 道路拥堵指数 EMA 平滑（key=roadId, value=smoothed value），避免帧间跳动 */
   const roadCongestionSmooth = new Map<string, number>()
+
+  function applyFixedShanghaiDisplayRoadnet(): void {
+    const fixedRoadnetAlreadyLoaded = roads.value.length === FIXED_SHANGHAI_DISPLAY_ROAD_IDS.size
+      && roads.value.every((road) => FIXED_SHANGHAI_DISPLAY_ROAD_IDS.has(road.id))
+    if (fixedRoadnetAlreadyLoaded) {
+      if (!intersections.value.some((item) => item.id === selectedIntersectionId.value)) {
+        selectedIntersectionId.value = intersections.value[0]?.id ?? null
+      }
+      return
+    }
+
+    intersections.value = structuredClone(mockIntersections)
+    roads.value = structuredClone(mockRoads)
+    selectedIntersectionId.value = intersections.value[0]?.id ?? null
+    roadCongestionSmooth.clear()
+  }
 
   // =========================================================
   // 2. Getters
@@ -1220,12 +1242,16 @@ export const useTrafficStore = defineStore('traffic', () => {
   /** 创建并初始化仿真会话 */
   async function loadSceneRoadnet(sceneId = simulationSceneId.value): Promise<boolean> {
     try {
+      simRoadnet.value = await fetchRoadnet(sceneId)
+      if (usesFixedShanghaiDisplayRoadnet(sceneId)) {
+        applyFixedShanghaiDisplayRoadnet()
+        return true
+      }
       const plannedPaths = new Map(
         roads.value
           .filter((road) => road.path && road.path.length > 2)
           .map((road) => [road.id, road.path] as const),
       )
-      simRoadnet.value = await fetchRoadnet(sceneId)
       const mappedTrafficData = buildTrafficMapFromRoadnet(simRoadnet.value)
       if (!mappedTrafficData) return false
       for (const road of mappedTrafficData.roads) {

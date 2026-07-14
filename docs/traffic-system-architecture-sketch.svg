@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#edf2f7" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#000" flood-opacity="0.13"/>
+    </filter>
+    <style>
+      .title { font: 800 40px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #172033; }
+      .subtitle { font: 600 22px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #475569; }
+      .layer-label { font: 800 26px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #263238; }
+      .layer-title { font: 800 27px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #1f2937; }
+      .module-text { font: 700 23px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #263238; }
+      .small-text { font: 700 20px "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #334155; }
+      .box { stroke: #263238; stroke-width: 2.8; rx: 14; ry: 14; filter: url(#shadow); }
+      .module { stroke: #263238; stroke-width: 2.4; rx: 10; ry: 10; }
+      .arrow { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .thin-arrow { stroke: #334155; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#fbfcf7"/>
+  <rect width="1920" height="1080" fill="url(#grid)" opacity="0.9"/>
+
+  <text x="960" y="58" text-anchor="middle" class="title">交通信号控制系统总体架构图</text>
+  <text x="960" y="94" text-anchor="middle" class="subtitle">前端大屏统一接入 Spring Boot 主后端，后端编排 CityFlow 仿真、策略控制、应急绿波、数据分析与智能体服务</text>
+
+  <!-- Left layer labels -->
+  <rect x="36" y="125" width="150" height="88" fill="#f8c8ce" class="box"/>
+  <text x="111" y="177" text-anchor="middle" class="layer-label">终端访问</text>
+
+  <rect x="36" y="235" width="150" height="118" fill="#f8c8ce" class="box"/>
+  <text x="111" y="287" text-anchor="middle" class="layer-label">前端</text>
+  <text x="111" y="320" text-anchor="middle" class="layer-label">展示层</text>
+
+  <rect x="36" y="375" width="150" height="238" fill="#f8c8ce" class="box"/>
+  <text x="111" y="486" text-anchor="middle" class="layer-label">后端</text>
+  <text x="111" y="519" text-anchor="middle" class="layer-label">业务层</text>
+
+  <rect x="36" y="635" width="150" height="148" fill="#f8c8ce" class="box"/>
+  <text x="111" y="700" text-anchor="middle" class="layer-label">仿真</text>
+  <text x="111" y="733" text-anchor="middle" class="layer-label">算法层</text>
+
+  <rect x="36" y="805" width="150" height="118" fill="#f8c8ce" class="box"/>
+  <text x="111" y="857" text-anchor="middle" class="layer-label">数据</text>
+  <text x="111" y="890" text-anchor="middle" class="layer-label">存储层</text>
+
+  <rect x="36" y="945" width="150" height="92" fill="#f8c8ce" class="box"/>
+  <text x="111" y="983" text-anchor="middle" class="layer-label">运维</text>
+  <text x="111" y="1015" text-anchor="middle" class="layer-label">支撑层</text>
+
+  <!-- Right support column -->
+  <rect x="1560" y="125" width="320" height="498" fill="#ffe0b2" class="box"/>
+  <text x="1720" y="172" text-anchor="middle" class="layer-title">外部服务与规范体系</text>
+
+  <rect x="1592" y="210" width="124" height="62" fill="#fff7e6" class="module"/>
+  <text x="1654" y="248" text-anchor="middle" class="small-text">邮件验证码</text>
+  <rect x="1734" y="210" width="116" height="62" fill="#fff7e6" class="module"/>
+  <text x="1792" y="248" text-anchor="middle" class="small-text">知识库</text>
+
+  <rect x="1592" y="292" width="124" height="62" fill="#fff7e6" class="module"/>
+  <text x="1654" y="330" text-anchor="middle" class="small-text">CFRP协议</text>
+  <rect x="1734" y="292" width="116" height="62" fill="#fff7e6" class="module"/>
+  <text x="1792" y="330" text-anchor="middle" class="small-text">接口规范</text>
+
+  <rect x="1592" y="374" width="124" height="62" fill="#fff7e6" class="module"/>
+  <text x="1654" y="412" text-anchor="middle" class="small-text">数据库规范</text>
+  <rect x="1734" y="374" width="116" height="62" fill="#fff7e6" class="module"/>
+  <text x="1792" y="412" text-anchor="middle" class="small-text">部署规范</text>
+
+  <rect x="1592" y="456" width="124" height="62" fill="#fff7e6" class="module"/>
+  <text x="1654" y="494" text-anchor="middle" class="small-text">测试规范</text>
+  <rect x="1734" y="456" width="116" height="62" fill="#fff7e6" class="module"/>
+  <text x="1792" y="494" text-anchor="middle" class="small-text">API工具</text>
+
+  <rect x="1592" y="538" width="258" height="52" fill="#fff7e6" class="module"/>
+  <text x="1721" y="572" text-anchor="middle" class="small-text">Traffic-R 云端模型 / 短时预测服务</text>
+
+  <rect x="1560" y="665" width="320" height="258" fill="#c8e6c9" class="box"/>
+  <text x="1720" y="712" text-anchor="middle" class="layer-title">服务治理</text>
+  <rect x="1592" y="750" width="124" height="58" fill="#e8f5e9" class="module"/>
+  <text x="1654" y="786" text-anchor="middle" class="small-text">健康检查</text>
+  <rect x="1734" y="750" width="116" height="58" fill="#e8f5e9" class="module"/>
+  <text x="1792" y="786" text-anchor="middle" class="small-text">日志审计</text>
+  <rect x="1592" y="830" width="124" height="58" fill="#e8f5e9" class="module"/>
+  <text x="1654" y="866" text-anchor="middle" class="small-text">策略回退</text>
+  <rect x="1734" y="830" width="116" height="58" fill="#e8f5e9" class="module"/>
+  <text x="1792" y="866" text-anchor="middle" class="small-text">安全校验</text>
+
+  <!-- Main center layers -->
+  <rect x="220" y="125" width="1288" height="88" fill="#ffe0b2" class="box"/>
+  <text x="310" y="178" text-anchor="middle" class="module-text">调度员</text>
+  <text x="475" y="178" text-anchor="middle" class="module-text">管理员</text>
+  <text x="670" y="178" text-anchor="middle" class="module-text">浏览器大屏</text>
+  <text x="890" y="178" text-anchor="middle" class="module-text">工作站终端</text>
+  <text x="1120" y="178" text-anchor="middle" class="module-text">移动端预留</text>
+  <text x="1360" y="178" text-anchor="middle" class="module-text">统一访问入口</text>
+
+  <rect x="220" y="235" width="1288" height="118" fill="#fff0c2" class="box"/>
+  <text x="250" y="277" class="layer-title">前端展示层：sys-frontend</text>
+  <rect x="505" y="256" width="140" height="62" fill="#fff8dc" class="module"/>
+  <text x="575" y="294" text-anchor="middle" class="small-text">Vue3大屏</text>
+  <rect x="670" y="256" width="140" height="62" fill="#fff8dc" class="module"/>
+  <text x="740" y="294" text-anchor="middle" class="small-text">地图渲染</text>
+  <rect x="835" y="256" width="140" height="62" fill="#fff8dc" class="module"/>
+  <text x="905" y="294" text-anchor="middle" class="small-text">三维路口</text>
+  <rect x="1000" y="256" width="140" height="62" fill="#fff8dc" class="module"/>
+  <text x="1070" y="294" text-anchor="middle" class="small-text">车辆动画</text>
+  <rect x="1165" y="256" width="140" height="62" fill="#fff8dc" class="module"/>
+  <text x="1235" y="294" text-anchor="middle" class="small-text">应急绿波</text>
+  <rect x="1330" y="256" width="140" height="62" fill="#fff8dc" class="module"/>
+  <text x="1400" y="294" text-anchor="middle" class="small-text">Agent面板</text>
+
+  <path class="arrow" d="M864 353 L864 375"/>
+
+  <rect x="220" y="375" width="1288" height="238" fill="#c8e6c9" class="box"/>
+  <text x="250" y="418" class="layer-title">后端业务层：Spring Boot 主后端</text>
+
+  <rect x="260" y="445" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="334" y="482" text-anchor="middle" class="small-text">认证权限</text>
+  <rect x="430" y="445" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="504" y="482" text-anchor="middle" class="small-text">REST入口</text>
+  <rect x="600" y="445" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="674" y="482" text-anchor="middle" class="small-text">WebSocket</text>
+  <rect x="770" y="445" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="844" y="482" text-anchor="middle" class="small-text">场景路网</text>
+  <rect x="940" y="445" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="1014" y="482" text-anchor="middle" class="small-text">仿真会话</text>
+  <rect x="1110" y="445" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="1184" y="482" text-anchor="middle" class="small-text">数据分析</text>
+  <rect x="1280" y="445" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="1354" y="482" text-anchor="middle" class="small-text">智能体</text>
+
+  <rect x="260" y="528" width="148" height="60" fill="#d8f3dc" class="module"/>
+  <text x="334" y="565" text-anchor="middle" class="small-text">策略调度</text>
+  <rect x="430" y="528" width="148" height="60" fill="#d8f3dc" class="module"/>
+  <text x="504" y="565" text-anchor="middle" class="small-text">Fixed-Time</text>
+  <rect x="600" y="528" width="148" height="60" fill="#d8f3dc" class="module"/>
+  <text x="674" y="565" text-anchor="middle" class="small-text">Max-Pressure</text>
+  <rect x="770" y="528" width="148" height="60" fill="#d8f3dc" class="module"/>
+  <text x="844" y="565" text-anchor="middle" class="small-text">Traffic-R/RL</text>
+  <rect x="940" y="528" width="148" height="60" fill="#ffe8a3" class="module"/>
+  <text x="1014" y="565" text-anchor="middle" class="small-text">Safety层</text>
+  <rect x="1110" y="528" width="148" height="60" fill="#ffe8a3" class="module"/>
+  <text x="1184" y="565" text-anchor="middle" class="small-text">控制决策</text>
+  <rect x="1280" y="528" width="148" height="60" fill="#e8f5e9" class="module"/>
+  <text x="1354" y="565" text-anchor="middle" class="small-text">应急绿波</text>
+
+  <path class="arrow" d="M864 613 L864 635"/>
+  <path class="thin-arrow" d="M844 528 C1035 498, 1320 505, 1560 540"/>
+
+  <rect x="220" y="635" width="1288" height="148" fill="#b2ebf2" class="box"/>
+  <text x="250" y="678" class="layer-title">仿真与算法层</text>
+  <rect x="500" y="663" width="170" height="70" fill="#e0f7fa" class="module"/>
+  <text x="585" y="706" text-anchor="middle" class="small-text">Python CityFlow</text>
+  <rect x="698" y="663" width="150" height="70" fill="#e0f7fa" class="module"/>
+  <text x="773" y="706" text-anchor="middle" class="small-text">路网解析</text>
+  <rect x="876" y="663" width="150" height="70" fill="#e0f7fa" class="module"/>
+  <text x="951" y="706" text-anchor="middle" class="small-text">后台Worker</text>
+  <rect x="1054" y="663" width="150" height="70" fill="#e0f7fa" class="module"/>
+  <text x="1129" y="706" text-anchor="middle" class="small-text">Frame缓存</text>
+  <rect x="1232" y="663" width="170" height="70" fill="#e0f7fa" class="module"/>
+  <text x="1317" y="706" text-anchor="middle" class="small-text">CityFlow引擎</text>
+
+  <path class="arrow" d="M864 783 L864 805"/>
+
+  <rect x="220" y="805" width="1288" height="118" fill="#dcedc8" class="box"/>
+  <text x="250" y="848" class="layer-title">数据存储层</text>
+  <rect x="500" y="832" width="145" height="62" fill="#f1f8e9" class="module"/>
+  <text x="572" y="870" text-anchor="middle" class="small-text">PostgreSQL</text>
+  <rect x="670" y="832" width="130" height="62" fill="#f1f8e9" class="module"/>
+  <text x="735" y="870" text-anchor="middle" class="small-text">H2验证库</text>
+  <rect x="825" y="832" width="158" height="62" fill="#f1f8e9" class="module"/>
+  <text x="904" y="870" text-anchor="middle" class="small-text">roadnet/flow</text>
+  <rect x="1008" y="832" width="158" height="62" fill="#f1f8e9" class="module"/>
+  <text x="1087" y="870" text-anchor="middle" class="small-text">运行时缓存</text>
+  <rect x="1191" y="832" width="158" height="62" fill="#f1f8e9" class="module"/>
+  <text x="1270" y="870" text-anchor="middle" class="small-text">决策与审计</text>
+
+  <path class="arrow" d="M864 923 L864 945"/>
+
+  <rect x="220" y="945" width="1288" height="92" fill="#e6f7c8" class="box"/>
+  <text x="250" y="998" class="layer-title">运维支撑层</text>
+  <rect x="505" y="965" width="130" height="50" fill="#f5ffdf" class="module"/>
+  <text x="570" y="996" text-anchor="middle" class="small-text">Docker</text>
+  <rect x="665" y="965" width="130" height="50" fill="#f5ffdf" class="module"/>
+  <text x="730" y="996" text-anchor="middle" class="small-text">Maven</text>
+  <rect x="825" y="965" width="130" height="50" fill="#f5ffdf" class="module"/>
+  <text x="890" y="996" text-anchor="middle" class="small-text">NPM/Vite</text>
+  <rect x="985" y="965" width="130" height="50" fill="#f5ffdf" class="module"/>
+  <text x="1050" y="996" text-anchor="middle" class="small-text">Flyway</text>
+  <rect x="1145" y="965" width="130" height="50" fill="#f5ffdf" class="module"/>
+  <text x="1210" y="996" text-anchor="middle" class="small-text">Vitest</text>
+  <rect x="1305" y="965" width="130" height="50" fill="#f5ffdf" class="module"/>
+  <text x="1370" y="996" text-anchor="middle" class="small-text">Playwright</text>
+</svg>
