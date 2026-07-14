@@ -20,7 +20,7 @@ import type { SimVehicleState, SimRoadnetResponse } from '@/types/traffic'
 const store = useTrafficStore()
 const {
   intersections, roads, vehicles,
-  systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId,
+  systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId, latestEvStatus,
   simulationVehicles, simulationStatus, simRoadnet, emergencyCfVehicleId, simulationSceneId,
 } = storeToRefs(store)
 
@@ -287,7 +287,9 @@ async function loadRealData(): Promise<void> {
 
 function syncEmergency(): void {
   if (!emergencyLine) return
-  if (systemMode.value === 'emergency' && emergencyRoute.value.length > 0) {
+  // Hide path when EV has completed
+  const evCompleted = latestEvStatus.value?.some((s: any) => s.completed)
+  if (systemMode.value === 'emergency' && emergencyRoute.value.length > 0 && !evCompleted) {
     // 将 CityFlow 路口 ID 映射为 mock 路口 ID
     const cfToMock = (cfId: string): string | null => {
       const direct = intersections.value.find((i) => i.id === cfId)

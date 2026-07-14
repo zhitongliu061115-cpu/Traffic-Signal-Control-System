@@ -439,6 +439,9 @@ export const useTrafficStore = defineStore('traffic', () => {
     startName: string,
     endName: string,
   ): void {
+    // Clear previous EV completion state so new dispatch doesn't show as completed immediately
+    latestEvEvents.value = []
+    latestEvStatus.value = []
     emergencyCfVehicleId.value = result.cfVehicleId || ''
     emergencyVehicle.value = {
       id: result.evId,
@@ -1075,8 +1078,11 @@ export const useTrafficStore = defineStore('traffic', () => {
     if (frame.evEvents && frame.evEvents.length > 0) {
       latestEvEvents.value = frame.evEvents
     }
+    console.log('[EV-DEBUG-RAW] frame keys:', Object.keys(frame).filter(k => k.startsWith('ev')))
+    console.log('[EV-DEBUG-RAW] evStatus:', JSON.stringify((frame as any).evStatus), 'evEvents:', JSON.stringify((frame as any).evEvents))
     if (frame.evStatus && frame.evStatus.length > 0) {
       latestEvStatus.value = frame.evStatus
+      console.log('[EV-DEBUG] evStatus updated:', JSON.stringify(frame.evStatus))
     }
     if (frame.status === 'finished') {
       simulationStatus.value = 'finished'
