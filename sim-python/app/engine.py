@@ -72,6 +72,7 @@ class RealCityFlowEngine(SimulationEngine):
         self.ev_service_lock = RLock()
         self.parsers: dict[str, RoadnetParser] = {}
         self.road_index: dict[str, dict[str, JsonDict]] = {}
+        self.lane_link_index: dict[str, dict[str, JsonDict]] = {}
         self.phase_indexes: dict[str, dict[str, list[int]]] = {}
         self.lane_movement_maps: dict[str, dict[str, dict[str, dict[int, str]]]] = {}
         self.ev_service = EVPriorityService()
@@ -416,6 +417,7 @@ class RealCityFlowEngine(SimulationEngine):
         parser = RoadnetParser(scene.roadnet_file)
         self.parsers[scene.scene_id] = parser
         self.road_index[scene.scene_id] = parser.road_by_id()
+        self.lane_link_index[scene.scene_id] = parser.lane_link_by_id()
         self.lane_movement_maps[scene.scene_id] = parser.lane_movement_map()
         phase_indexes: dict[str, list[int]] = {}
         for phase in parser.to_response(scene.scene_id).get("phases", []):
@@ -452,13 +454,32 @@ class RealCityFlowEngine(SimulationEngine):
         speed_by_vehicle = engine.get_vehicle_speed()
         distance_by_vehicle = engine.get_vehicle_distance()
         lane_by_vehicle = self._vehicle_lane_index(engine.get_lane_vehicles())
+        lane_link_by_id = self.lane_link_index.get(session.scene_id, {})
 
         vehicles = []
         for vehicle_id in vehicle_ids[:DEFAULT_VISIBLE_VEHICLE_LIMIT]:
-            lane_id = lane_by_vehicle.get(vehicle_id, "")
-            road_id, lane_index = self._split_lane_id(lane_id)
-            distance = float(distance_by_vehicle.get(vehicle_id, 0.0))
-            x, y, angle = self._position_on_road(road_by_id.get(road_id), distance)
+            info = engine.get_vehicle_info(vehicle_id)
+            drivable_id = str(info.get("drivable") or lane_by_vehicle.get(vehicle_id, ""))
+            distance = float(info.get("distance", distance_by_vehicle.get(vehicle_id, 0.0)))
+            speed = float(info.get("speed", speed_by_vehicle.get(vehicle_id, 0.0)))
+            lane_link = lane_link_by_id.get(drivable_id)
+
+            if lane_link is not None:
+                road_id = str(lane_link["fromRoadId"])
+                lane_index = int(lane_link["startLaneIndex"])
+                next_road_id = str(lane_link["toRoadId"])
+                next_lane_index = int(lane_link["endLaneIndex"])
+                drivable_type = "lane_link"
+                x, y, angle = self._position_on_points(lane_link.get("points", []), distance)
+            else:
+                road_id, lane_index = self._split_lane_id(drivable_id)
+                if not road_id:
+                    road_id = str(info.get("road", ""))
+                next_road_id = None
+                next_lane_index = None
+                drivable_type = "lane"
+                x, y, angle = self._position_on_road(road_by_id.get(road_id), distance)
+
             vehicles.append({
                 "id": vehicle_id,
                 "roadId": road_id,
@@ -466,7 +487,12 @@ class RealCityFlowEngine(SimulationEngine):
                 "x": round(x, 3),
                 "y": round(y, 3),
                 "angle": round(angle, 3),
-                "speed": round(float(speed_by_vehicle.get(vehicle_id, 0.0)), 3),
+                "speed": round(speed, 3),
+                "drivableId": drivable_id,
+                "drivableType": drivable_type,
+                "distance": round(distance, 3),
+                "nextRoadId": next_road_id,
+                "nextLane": next_lane_index,
             })
         return vehicles
 
@@ -490,7 +516,9 @@ class RealCityFlowEngine(SimulationEngine):
         if road is None:
             return 0.0, 0.0, 0.0
 
-        points = road.get("points", [])
+        return self._position_on_points(road.get("points", []), distance)
+
+    def _position_on_points(self, points: list[JsonDict], distance: float) -> tuple[float, float, float]:
         if len(points) < 2:
             point = points[0] if points else {"x": 0.0, "y": 0.0}
             return float(point.get("x", 0.0)), float(point.get("y", 0.0)), 0.0

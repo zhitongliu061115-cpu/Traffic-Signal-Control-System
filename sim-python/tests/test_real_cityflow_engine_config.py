@@ -127,6 +127,8 @@ class RealCityFlowEngineConfigTest(unittest.TestCase):
 
     def test_simulation_finishes_only_after_last_departure_and_empty_network(self):
         engine = RealCityFlowEngine.__new__(RealCityFlowEngine)
+        engine.ev_service = Mock()
+        engine.ev_service.has_evs.return_value = False
         session = Mock(flow_end_time=100.0, hard_end_time=200.0)
 
         self.assertFalse(engine._simulation_complete(session, 99.0, {"activeVehicleCount": 0}))
