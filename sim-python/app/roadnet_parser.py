@@ -65,6 +65,23 @@ class RoadnetParser:
                     "fromRoadId": road_link.get("startRoad"),
                     "toRoadId": road_link.get("endRoad"),
                     "type": road_link.get("type", "unknown"),
+                    "laneLinks": [
+                        {
+                            "id": self._lane_link_id(
+                                road_link.get("startRoad", ""),
+                                int(lane_link.get("startLaneIndex", 0)),
+                                road_link.get("endRoad", ""),
+                                int(lane_link.get("endLaneIndex", 0)),
+                            ),
+                            "startLaneIndex": int(lane_link.get("startLaneIndex", 0)),
+                            "endLaneIndex": int(lane_link.get("endLaneIndex", 0)),
+                            "points": [
+                                {"x": float(point.get("x", 0.0)), "y": float(point.get("y", 0.0))}
+                                for point in lane_link.get("points", [])
+                            ],
+                        }
+                        for lane_link in road_link.get("laneLinks", [])
+                    ],
                 })
 
             traffic_light = item.get("trafficLight", {})
@@ -86,6 +103,10 @@ class RoadnetParser:
                     for point in item.get("points", [])
                 ],
                 "laneCount": len(item.get("lanes", [])),
+                "lanes": [
+                    {"index": index, "width": float(lane.get("width", 0.0))}
+                    for index, lane in enumerate(item.get("lanes", []))
+                ],
             })
 
         return {
@@ -98,6 +119,38 @@ class RoadnetParser:
 
     def road_by_id(self) -> dict[str, JsonDict]:
         return {road["id"]: road for road in self.raw.get("roads", [])}
+
+    def lane_link_by_id(self) -> dict[str, JsonDict]:
+        lane_links: dict[str, JsonDict] = {}
+        for intersection in self.raw.get("intersections", []):
+            for road_link_index, road_link in enumerate(intersection.get("roadLinks", [])):
+                start_road_id = road_link.get("startRoad", "")
+                end_road_id = road_link.get("endRoad", "")
+                for lane_link in road_link.get("laneLinks", []):
+                    start_lane_index = int(lane_link.get("startLaneIndex", 0))
+                    end_lane_index = int(lane_link.get("endLaneIndex", 0))
+                    lane_link_id = self._lane_link_id(
+                        start_road_id,
+                        start_lane_index,
+                        end_road_id,
+                        end_lane_index,
+                    )
+                    lane_links[lane_link_id] = {
+                        "id": lane_link_id,
+                        "intersectionId": intersection.get("id", ""),
+                        "roadLinkIndex": road_link_index,
+                        "fromRoadId": start_road_id,
+                        "toRoadId": end_road_id,
+                        "type": road_link.get("type", "unknown"),
+                        "startLaneIndex": start_lane_index,
+                        "endLaneIndex": end_lane_index,
+                        "points": lane_link.get("points", []),
+                    }
+        return lane_links
+
+    @staticmethod
+    def _lane_link_id(start_road_id: str, start_lane_index: int, end_road_id: str, end_lane_index: int) -> str:
+        return f"{start_road_id}_{start_lane_index}_TO_{end_road_id}_{end_lane_index}"
 
     def real_intersection_ids(self) -> list[str]:
         return [

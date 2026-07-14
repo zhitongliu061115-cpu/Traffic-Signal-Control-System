@@ -21,8 +21,6 @@ import {
   InstancedMesh,
   Matrix4,
   BoxGeometry,
-  Sprite,
-  SpriteMaterial,
   CanvasTexture,
   LinearFilter,
   CylinderGeometry,
@@ -33,6 +31,7 @@ import {
   BufferGeometry,
   Line,
   LineBasicMaterial,
+  Vector3,
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -41,6 +40,8 @@ import { useTrafficStore } from '@/stores/traffic'
 import { IntersectionVehicleAnimator, type IntersectionSimState } from '@/three/IntersectionVehicleAnimator'
 import { createLocalRoadCenterlines } from '@/three/intersection/IntersectionGeometry'
 import { createLocalLaneLinkPaths, createLocalRoadSurfaceSegments } from '@/three/intersection/RoadSurfaceGeometry'
+import { installPanoramaGuidance } from '@/three/intersection/PanoramaGuidance'
+import { cameraCompassRotationDeg } from '@/three/intersection/PanoramaSignal'
 import { PHASE_LABELS, DEVICE_STATUS_LABELS } from '@/types/traffic'
 import { signalRemainingSec, toSignalPhase } from '@/simulation/signalState'
 import type { SignalPhase, SimVehicleState, SimSignalState, SimRoadnetResponse, Intersection } from '@/types/traffic'
@@ -53,6 +54,7 @@ const store = useTrafficStore()
 const { intersections, roads, vehicles, simulationVehicles, simulationSignals, simRoadnet, simulationStatus, simulationErrorMessage } = storeToRefs(store)
 
 const viewerBox = ref<HTMLDivElement | null>(null)
+const compassRose = ref<HTMLDivElement | null>(null)
 const loading = ref(true)
 const modelFound = ref(false)
 const showRoadnetDebug = ref(true)
@@ -132,6 +134,18 @@ const displayedRemainingSec = computed<number | null>(() => {
   return intersection.value?.greenRemain ?? null
 })
 
+const displayedPhase = computed<SignalPhase>(() => {
+  if (simulationStatus.value === 'running') return simState.value?.currentPhase ?? 'all_red'
+  return intersection.value?.currentPhase ?? 'all_red'
+})
+
+const displayedPhaseLabel = computed(() => {
+  if (displayedPhase.value === 'all_red' && intersection.value?.deviceStatus === 'online') {
+    return '仅右转放行'
+  }
+  return PHASE_LABELS[displayedPhase.value]
+})
+
 const dataModeLabel = computed(() => {
   if (simulationStatus.value === 'running') {
     return simulationErrorMessage.value ? '仿真数据延迟' : 'CityFlow 逐车映射'
@@ -151,6 +165,7 @@ let lastFrameTime = 0
 let lastRenderTime = 0
 const tlSpriteUpdaters: Array<() => void> = []
 let vehicleAnimator: IntersectionVehicleAnimator | null = null
+const cameraViewDirection = new Vector3()
 
 /** 搭建路口全景实景：三车道 × 四方向 + 3D 灯柱 + 设备 */
 function buildProceduralIntersection(): Group {
@@ -460,6 +475,15 @@ function buildFallback(): void {
   rootGroup = new Group()
   scene.add(rootGroup)
   modelFound.value = false
+  tlSpriteUpdaters.push(installPanoramaGuidance(rootGroup, () => {
+    const it = intersection.value
+    if (!it) return null
+    return {
+      phase: displayedPhase.value,
+      online: it.deviceStatus === 'online',
+      remaining: displayedRemainingSec.value,
+    }
+  }))
 
   // 加载用户编辑的场景 GLB
   const sceneLoader = new GLTFLoader()
@@ -486,59 +510,6 @@ function buildFallback(): void {
       // ---- end ----
       loading.value = false
 
-      // 在 Blender 标记的 tl_label_* 空物体上挂倒计时 Sprite
-      const tlSprites: Sprite[] = []
-      const tlLabels = ['tl_label_0', 'tl_label_1', 'tl_label_2', 'tl_label_3']
-      gltf.scene.traverse((child) => {
-        const name = (child as any).name || ''
-        const idx = tlLabels.findIndex(l => name.includes(l))
-        if (idx >= 0) {
-          const canvas = document.createElement('canvas')
-          canvas.width = 64; canvas.height = 48
-          const ctx = canvas.getContext('2d')!
-          const tex = new CanvasTexture(canvas)
-          tex.minFilter = LinearFilter
-          const sprite = new Sprite(new SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }))
-          sprite.scale.set(6, 4, 1)
-          sprite.userData = { canvas, ctx, idx: tlLabels.findIndex(l => name.includes(l)) }
-          child.add(sprite)
-          tlSprites.push(sprite)
-        }
-      })
-
-      let lastTLSpriteState = ''
-      function updateTLSprite() {
-        const it = intersection.value
-        if (!it) return
-        const isEW = it.currentPhase.startsWith('eastwest')
-        const remaining = simulationStatus.value === 'running'
-          ? simState.value?.greenRemain ?? null
-          : it.greenRemain
-        const allRed = it.currentPhase === 'all_red' || it.deviceStatus !== 'online'
-        const roundedRemaining = remaining === null ? null : Math.round(remaining)
-        const spriteState = `${it.currentPhase}|${it.deviceStatus}|${roundedRemaining ?? 'unknown'}`
-        if (spriteState === lastTLSpriteState) return
-        lastTLSpriteState = spriteState
-        // SW/SE=东西向, NW/NE=南北向
-        const ewSet = new Set([0, 1])
-        for (const s of tlSprites) {
-          const idx = s.userData.idx as number
-          const isActiveDir = ewSet.has(idx) ? isEW : !isEW
-          const color = allRed ? '#FF4D6D' : isActiveDir ? '#22D3A0' : '#FF4D6D'
-          const c = s.userData.canvas as HTMLCanvasElement
-          const ctx = c.getContext('2d')!
-          ctx.clearRect(0, 0, c.width, c.height)
-          ctx.fillStyle = color
-          ctx.beginPath(); ctx.arc(32, 24, 16, 0, Math.PI * 2); ctx.fill()
-          ctx.fillStyle = '#fff'
-          ctx.font = 'bold 16px Rajdhani, sans-serif'
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-          if (roundedRemaining !== null) ctx.fillText(String(roundedRemaining), 32, 22)
-          ;(s.material as SpriteMaterial).map!.needsUpdate = true
-        }
-      }
-      updateTLSprite()
-      tlSpriteUpdaters.push(updateTLSprite)
       // ---- ??????????????? ----
       const dashMat = new MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222, emissiveIntensity: 0.3 })
       const m4 = new Matrix4()
@@ -772,6 +743,11 @@ onMounted(async () => {
     const deltaMs = lastFrameTime ? now - lastFrameTime : 16
     lastFrameTime = now
     controls?.update()
+    if (camera && compassRose.value) {
+      camera.getWorldDirection(cameraViewDirection)
+      const rotation = cameraCompassRotationDeg(cameraViewDirection.x, cameraViewDirection.z)
+      compassRose.value.style.transform = `rotate(${rotation.toFixed(1)}deg)`
+    }
     tlSpriteUpdaters.forEach((fn) => fn())
     if (vehicleAnimator && intersection.value) {
       vehicleAnimator.setIntersection(intersection.value)
@@ -884,9 +860,19 @@ function onOverlayClick(ev: MouseEvent): void {
         <div ref="viewerBox" class="i3d-canvas" />
         <div v-if="loading" class="i3d-loading">加载三维实景中…</div>
 
+        <div class="i3d-compass" aria-label="场景方向指南针">
+          <div ref="compassRose" class="i3d-compass__rose">
+            <span class="i3d-compass__north">北</span>
+            <span class="i3d-compass__east">东</span>
+            <span class="i3d-compass__south">南</span>
+            <span class="i3d-compass__west">西</span>
+            <span class="i3d-compass__needle" />
+          </div>
+        </div>
+
         <!-- 右下角路口信息 -->
         <div v-if="intersection" class="i3d-info">
-          <span class="i3d-info__item">相位 <b class="text-cyan">{{ PHASE_LABELS[intersection.currentPhase] }}</b></span>
+          <span class="i3d-info__item">相位 <b class="text-cyan">{{ displayedPhaseLabel }}</b></span>
           <span class="i3d-info__sep">|</span>
           <span class="i3d-info__item">相位剩余 <b class="text-emerald">{{ displayedRemainingSec === null ? '—' : `${Math.round(displayedRemainingSec)}s` }}</b></span>
           <span class="i3d-info__sep">|</span>
@@ -1054,6 +1040,55 @@ function onOverlayClick(ev: MouseEvent): void {
   letter-spacing: 0.1em;
 }
 
+.i3d-compass {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  z-index: 30;
+  width: 76px;
+  height: 76px;
+  pointer-events: none;
+  border: 1px solid rgba(85, 216, 255, 0.55);
+  border-radius: 50%;
+  background: rgba(3, 14, 24, 0.88);
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.2);
+}
+
+.i3d-compass__rose {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transition: transform 80ms linear;
+}
+
+.i3d-compass__rose span {
+  position: absolute;
+  font-size: 11px;
+  line-height: 1;
+  color: #b9d8e8;
+}
+
+.i3d-compass__north {
+  top: 7px;
+  left: 50%;
+  color: #ff6675 !important;
+  font-weight: 700;
+  transform: translateX(-50%);
+}
+
+.i3d-compass__east { top: 50%; right: 7px; transform: translateY(-50%); }
+.i3d-compass__south { bottom: 7px; left: 50%; transform: translateX(-50%); }
+.i3d-compass__west { top: 50%; left: 7px; transform: translateY(-50%); }
+
+.i3d-compass__needle {
+  top: 20px;
+  left: 35px;
+  width: 6px;
+  height: 28px;
+  background: linear-gradient(180deg, #ff4d5e 0 50%, #d9f4ff 50% 100%);
+  clip-path: polygon(50% 0, 100% 50%, 68% 50%, 68% 100%, 32% 100%, 32% 50%, 0 50%);
+}
+
 .i3d-info {
   position: absolute;
   left: 12px;
@@ -1099,6 +1134,20 @@ function onOverlayClick(ev: MouseEvent): void {
     grid-template-columns: minmax(0, 1fr);
     gap: 8px;
     padding: 10px;
+  }
+
+  .i3d-compass {
+    width: 64px;
+    height: 64px;
+    top: auto;
+    right: 10px;
+    bottom: 48px;
+  }
+
+  .i3d-compass__needle {
+    top: 16px;
+    left: 29px;
+    height: 24px;
   }
 
   .i3d-header__mark,
