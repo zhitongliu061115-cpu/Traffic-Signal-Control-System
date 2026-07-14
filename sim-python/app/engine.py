@@ -751,6 +751,8 @@ class RealCityFlowEngine(SimulationEngine):
         vehicle_count = len(vehicles)
         queue_count = sum(road["queueCount"] for road in roads)
         avg_speed = sum(vehicle["speed"] for vehicle in vehicles) / vehicle_count if vehicle_count else 0.0
+        # avgWait: average delay per vehicle (s). Vehicles with speed < 5 m/s are waiting.
+        avg_wait = round(queue_count * 3.0 / max(vehicle_count, 1), 1)
         active_vehicle_count = int(session.engine.get_vehicle_count())
         finished_vehicle_count = self._finished_vehicle_count(session.engine)
         scheduled_departure_count = min(session.total_vehicle_count, finished_vehicle_count + active_vehicle_count)
@@ -760,7 +762,7 @@ class RealCityFlowEngine(SimulationEngine):
             "scheduledDepartureCount": scheduled_departure_count,
             "queueCount": queue_count,
             "avgSpeed": round(avg_speed, 3),
-            "avgWait": round(queue_count * 3.0, 3),
+            "avgWait": avg_wait,
             "throughput": finished_vehicle_count,
         }
 

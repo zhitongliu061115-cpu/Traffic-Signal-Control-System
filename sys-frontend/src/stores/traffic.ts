@@ -239,6 +239,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     averageWaitTime: 0,
     congestionIndex: 0,
     congestedRoadCount: 0,
+    averageVehicleDelay: 0,
     optimizedIntersectionCount: 0,
     emergencyVehicleCount: 0,
     deviceOnlineRate: 0,
@@ -668,6 +669,7 @@ export const useTrafficStore = defineStore('traffic', () => {
         statistics.value.totalFlow = m.activeVehicleCount ?? m.vehicleCount
         statistics.value.averageSpeed = Math.round(m.avgSpeed * 3.6 * 10) / 10
         statistics.value.averageWaitTime = m.avgWait
+        statistics.value.averageVehicleDelay = m.avgWait
         statistics.value.throughput = m.throughput
         const wait = Math.max(0, m.avgWait)
         const vehicles = m.activeVehicleCount ?? m.vehicleCount ?? 0
@@ -679,15 +681,14 @@ export const useTrafficStore = defineStore('traffic', () => {
       if (simRoads.length > 0) {
         const jammed = simRoads.filter((r) => r.level === 'jammed').length
         statistics.value.congestedRoadCount = jammed
+
       }
 
       statistics.value.optimizedIntersectionCount = simulationIntersections.value.filter(
         (it) => it.level !== 'free',
       ).length
-      statistics.value.emergencyVehicleCount = vehicles.value.filter(
-        (v) => v.type !== 'normal',
-      ).length
-      statistics.value.deviceOnlineRate = 100
+      statistics.value.emergencyVehicleCount = latestEvStatus.value.filter((s: any) => !s.completed).length
+      statistics.value.deviceOnlineRate = simulationStatus.value === 'running' ? 100 : 0
       statistics.value.greenWaveCount = systemMode.value === 'emergency' ? 1 : 0
       statistics.value.todayAlertCount = alerts.value.length
 
@@ -731,6 +732,7 @@ export const useTrafficStore = defineStore('traffic', () => {
       averageWaitTime: 0,
       congestionIndex: 0,
       congestedRoadCount: 0,
+      averageVehicleDelay: 0,
       optimizedIntersectionCount: 0,
       emergencyVehicleCount: 0,
       deviceOnlineRate: 0,
@@ -983,9 +985,10 @@ export const useTrafficStore = defineStore('traffic', () => {
     s.averageWaitTime = Math.max(20, Math.min(50, +(s.averageWaitTime + (Math.random() - 0.5) * 3).toFixed(1)))
     s.congestionIndex = Math.max(30, Math.min(80, +(s.congestionIndex + (Math.random() - 0.5) * 4).toFixed(1)))
     s.congestedRoadCount = congestedRoads.value.length
+    s.averageVehicleDelay = s.averageWaitTime
     s.optimizedIntersectionCount = onlineIntersections.value.length
-    s.emergencyVehicleCount = emergencyVehiclesOnRoad.value.length
-    s.deviceOnlineRate = +((onlineIntersections.value.length / intersections.value.length) * 100).toFixed(1)
+    s.emergencyVehicleCount = latestEvStatus.value.filter((s: any) => !s.completed).length
+    s.deviceOnlineRate = 100
     s.greenWaveCount = systemMode.value === 'emergency' ? 1 : 0
 
     // ---- 5e. 系统延迟 ----
@@ -1257,10 +1260,13 @@ export const useTrafficStore = defineStore('traffic', () => {
         ? statistics.value.averageSpeed
         : Math.round(frame.metrics.avgSpeed * 3.6 * 10) / 10
       statistics.value.averageWaitTime = frame.metrics.avgWait ?? statistics.value.averageWaitTime
+      statistics.value.averageVehicleDelay = frame.metrics.avgWait ?? statistics.value.averageVehicleDelay
       const wait = Math.max(0, frame.metrics.avgWait ?? 0)
       const vehicles = frame.metrics.activeVehicleCount ?? frame.metrics.vehicleCount ?? 0
       const raw = Math.sqrt(wait) * 7.5 + vehicles * 0.022
       statistics.value.congestionIndex = Math.min(100, Math.round(raw * 10) / 10)
+      statistics.value.deviceOnlineRate = 100
+      statistics.value.emergencyVehicleCount = (frame.evStatus || []).filter((s: any) => !s.completed).length
     }
   }
 
@@ -1438,6 +1444,7 @@ export const useTrafficStore = defineStore('traffic', () => {
       averageWaitTime: 0,
       congestionIndex: 0,
       congestedRoadCount: 0,
+      averageVehicleDelay: 0,
       optimizedIntersectionCount: 0,
       emergencyVehicleCount: 0,
       deviceOnlineRate: 0,
