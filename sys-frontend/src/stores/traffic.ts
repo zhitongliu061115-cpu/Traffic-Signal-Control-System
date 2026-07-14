@@ -38,7 +38,7 @@ import {
   findAssistantReply,
   mockAssistantReplies,
 } from '@/mock/trafficMock'
-import { buildShanghaiDisplayRoadnet } from '@/mock/displayRoadnet'
+import { buildHangzhouDisplayRoadnet, buildShanghaiDisplayRoadnet } from '@/mock/displayRoadnet'
 import { fetchDashboardBootstrap } from '@/api/dashboard'
 import {
   createSimulation,
@@ -107,6 +107,13 @@ function freshShanghaiDisplayRoadnet(): { intersections: Intersection[]; roads: 
       .map((it) => ({ ...it, queueLength: 0, averageDelay: 0, congestionIndex: 0 })),
     roads: structuredClone(SHANGHAI_DISPLAY_ROADNET.roads)
       .map((road) => ({ ...road, congestionIndex: 0, queueLength: 0, flow: 0, speed: 0 })),
+  }
+}
+
+function clearDisplayRoadnetMetrics(roadnet: { intersections: Intersection[]; roads: Road[] }): { intersections: Intersection[]; roads: Road[] } {
+  return {
+    intersections: roadnet.intersections.map((it) => ({ ...it, queueLength: 0, averageDelay: 0, congestionIndex: 0 })),
+    roads: roadnet.roads.map((road) => ({ ...road, congestionIndex: 0, queueLength: 0, flow: 0, speed: 0 })),
   }
 }
 
@@ -315,6 +322,21 @@ export const useTrafficStore = defineStore('traffic', () => {
   /** 道路拥堵指数 EMA 平滑（key=roadId, value=smoothed value），避免帧间跳动 */
   const roadCongestionSmooth = new Map<string, number>()
 
+  function currentPlannedRoadPaths(): Map<string, [number, number][]> {
+    return new Map(
+      roads.value
+        .filter((road) => road.path && road.path.length > 2)
+        .map((road) => [road.id, road.path] as const),
+    )
+  }
+
+  function restorePlannedRoadPaths(nextRoads: Road[], plannedPaths: Map<string, [number, number][]>): void {
+    for (const road of nextRoads) {
+      const plannedPath = plannedPaths.get(road.id)
+      if (plannedPath && plannedPath.length > 2) road.path = plannedPath
+    }
+  }
+
   function applyFixedShanghaiDisplayRoadnet(): void {
     const fixedRoadnetAlreadyLoaded = roads.value.length === FIXED_SHANGHAI_DISPLAY_ROAD_IDS.size
       && roads.value.every((road) => FIXED_SHANGHAI_DISPLAY_ROAD_IDS.has(road.id))
@@ -325,10 +347,32 @@ export const useTrafficStore = defineStore('traffic', () => {
       return
     }
 
-    intersections.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.intersections)
-    roads.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.roads)
+    const displayRoadnet = freshShanghaiDisplayRoadnet()
+    intersections.value = displayRoadnet.intersections
+    roads.value = displayRoadnet.roads
     selectedIntersectionId.value = intersections.value[0]?.id ?? null
     roadCongestionSmooth.clear()
+  }
+
+  function applyDisplayRoadnetForScene(sceneId = simulationSceneId.value): boolean {
+    const plannedPaths = currentPlannedRoadPaths()
+    if (usesFixedShanghaiDisplayRoadnet(sceneId)) {
+      applyFixedShanghaiDisplayRoadnet()
+      restorePlannedRoadPaths(roads.value, plannedPaths)
+      return true
+    }
+    if (sceneId === 'hangzhou_4_4' && simRoadnet.value) {
+      const mappedTrafficData = buildTrafficMapFromRoadnet(simRoadnet.value)
+      if (!mappedTrafficData) return false
+      const displayRoadnet = clearDisplayRoadnetMetrics(buildHangzhouDisplayRoadnet(mappedTrafficData))
+      restorePlannedRoadPaths(displayRoadnet.roads, plannedPaths)
+      intersections.value = displayRoadnet.intersections
+      roads.value = displayRoadnet.roads
+      selectedIntersectionId.value = intersections.value[0]?.id ?? null
+      roadCongestionSmooth.clear()
+      return true
+    }
+    return false
   }
 
   // =========================================================
@@ -431,8 +475,11 @@ export const useTrafficStore = defineStore('traffic', () => {
     // 将 mock 路口 ID 映射为 CityFlow 真实路口 ID
     const toCityFlowId = (id: string): string => {
       const it = intersections.value.find((i) => i.id === id)
-      if (it && it.col > 0 && it.row > 0) {
-        return 'intersection_' + it.col + '_' + it.row
+      if (it) {
+        const maxRow = simulationSceneId.value === 'hangzhou_4_4' ? 4 : 3
+        const col = Math.max(1, Math.min(4, it.col))
+        const row = Math.max(1, Math.min(maxRow, it.row))
+        return 'intersection_' + col + '_' + row
       }
       return id
     }
@@ -1083,8 +1130,10 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     try {
       const data = await fetchDashboardBootstrap()
-      intersections.value = data.intersections.map(it => ({ ...it, queueLength: 0, averageDelay: 0, congestionIndex: 0 }))
-      roads.value = data.roads.map(r => ({ ...r, congestionIndex: 0, queueLength: 0, flow: 0, speed: 0 }))
+      if (!applyDisplayRoadnetForScene()) {
+        intersections.value = data.intersections.map(it => ({ ...it, queueLength: 0, averageDelay: 0, congestionIndex: 0 }))
+        roads.value = data.roads.map(r => ({ ...r, congestionIndex: 0, queueLength: 0, flow: 0, speed: 0 }))
+      }
       vehicles.value = []
       emergencyVehicle.value = data.emergencyVehicle
       emergencyRoute.value = data.emergencyRoute
@@ -1279,8 +1328,7 @@ export const useTrafficStore = defineStore('traffic', () => {
   async function loadSceneRoadnet(sceneId = simulationSceneId.value): Promise<boolean> {
     try {
       simRoadnet.value = await fetchRoadnet(sceneId)
-      if (usesFixedShanghaiDisplayRoadnet(sceneId)) {
-        applyFixedShanghaiDisplayRoadnet()
+      if (applyDisplayRoadnetForScene(sceneId)) {
         return true
       }
       const plannedPaths = new Map(

@@ -72,7 +72,10 @@ describe('traffic simulation frame storage', () => {
 
     store.simulationSceneId = 'hangzhou_4_4'
     expect(await store.loadSceneRoadnet()).toBe(true)
-    expect(store.roads.map((road) => road.id)).toEqual(['hangzhou-road'])
+    expect(store.roads.map((road) => road.id)).toContain('hangzhou-road')
+    expect(store.roads.some((road) => road.id.startsWith('HZRX'))).toBe(true)
+    expect(store.intersections.some((intersection) => intersection.id.startsWith('HZVX'))).toBe(true)
+    expect(store.vehicles).toEqual([])
 
     store.simulationSceneId = 'jinan_3x4'
     expect(await store.loadSceneRoadnet()).toBe(true)
@@ -88,5 +91,26 @@ describe('traffic simulation frame storage', () => {
 
     expect(result?.sceneId).toBe('jinan_3x4')
     expect(store.roads[0]!.path).toEqual(plannedPath)
+  })
+
+  it('keeps planned Hangzhou display paths when simulation creation reloads the roadnet', async () => {
+    const store = useTrafficStore()
+    store.simulationSceneId = 'hangzhou_4_4'
+    expect(await store.loadSceneRoadnet()).toBe(true)
+
+    const road = store.roads.find((item) => item.id === 'HZRX01')
+    expect(road).toBeTruthy()
+    const plannedPath: [number, number][] = [
+      [120.111, 30.301],
+      [120.126, 30.303],
+      [120.144, 30.304],
+    ]
+    road!.path = plannedPath
+
+    const result = await store.initSimulationSession()
+
+    expect(result?.sceneId).toBe('hangzhou_4_4')
+    expect(store.roads.find((item) => item.id === 'HZRX01')?.path).toEqual(plannedPath)
+    expect(store.vehicles).toEqual([])
   })
 })
