@@ -42,6 +42,7 @@ public final class RuntimeQueryDtos {
     public record SignalSnapshot(
             String intersectionId,
             String cityflowIntersectionId,
+            String displayName,
             Integer phaseIndex,
             String phaseCode,
             int queueCount,

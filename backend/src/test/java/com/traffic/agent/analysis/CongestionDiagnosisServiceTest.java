@@ -33,7 +33,7 @@ class CongestionDiagnosisServiceTest {
                 null,
                 0,
                 0,
-                new SignalSnapshot("intersection-uuid", "intersection_3", 1, "ETWT", 22, 94.2, "HEAVY"),
+                new SignalSnapshot("intersection-uuid", "intersection_3", "intersection_3", 1, "ETWT", 22, 94.2, "HEAVY"),
                 List.of(new MovementSnapshot("E_0", 18, 21, 94.2, 2.1, List.of(4, 5, 5, 4), 120.0, 12)),
                 List.of(),
                 List.of()

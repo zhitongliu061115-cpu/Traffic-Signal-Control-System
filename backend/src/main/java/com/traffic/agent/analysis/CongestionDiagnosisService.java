@@ -43,6 +43,7 @@ public class CongestionDiagnosisService {
 
     private DiagnosisReport diagnoseIntersection(String intersectionId, String sid, String sceneCode) {
         IntersectionDetail detail = liveSimulationStateService.getIntersectionDetail(intersectionId, sid, sceneCode);
+        String intersectionLabel = intersectionLabel(detail);
         List<String> evidence = new ArrayList<>();
         List<String> causes = new ArrayList<>();
         List<String> recommendations = new ArrayList<>();
@@ -50,7 +51,7 @@ public class CongestionDiagnosisService {
 
         SignalSnapshot state = detail.latestState();
         if (state != null) {
-            evidence.add("intersection=" + detail.cityflowId()
+            evidence.add("intersection=" + intersectionLabel
                     + ", queue_count=" + state.queueCount()
                     + ", avg_wait=" + round(state.avgWait()) + "s"
                     + ", level=" + state.level()
@@ -106,12 +107,14 @@ public class CongestionDiagnosisService {
                 List.of("任何相位延长、策略切换或绿波请求都需要人工确认并经过安全层"), Map.of(
                         "targetType", "intersection",
                         "targetId", detail.cityflowId(),
+                        "targetName", detail.name(),
                         "movementCount", detail.movements().size()
                 ));
     }
 
     private DiagnosisReport diagnoseRoad(String roadId, String sid, String sceneCode) {
         RoadDetail detail = liveSimulationStateService.getRoadDetail(roadId, sid, sceneCode);
+        String roadLabel = roadLabel(detail);
         List<String> evidence = new ArrayList<>();
         List<String> causes = new ArrayList<>();
         List<String> recommendations = new ArrayList<>();
@@ -126,7 +129,7 @@ public class CongestionDiagnosisService {
         }
 
         var state = detail.latestState();
-        evidence.add("road=" + detail.cityflowId()
+        evidence.add("road=" + roadLabel
                 + ", queue_count=" + state.queueCount()
                 + ", vehicle_count=" + state.vehicleCount()
                 + ", avg_speed=" + round(state.avgSpeed()) + "m/s"
@@ -155,6 +158,7 @@ public class CongestionDiagnosisService {
                 List.of("需要人工确认道路几何、车道映射和下游相位是否正确"), Map.of(
                         "targetType", "road",
                         "targetId", detail.cityflowId(),
+                        "targetName", detail.name(),
                         "laneCount", detail.laneCount()
                 ));
     }
@@ -191,7 +195,7 @@ public class CongestionDiagnosisService {
                     + ", avg_wait=" + round(state.latestFrame().avgWait()) + "s"
                     + ", avg_speed=" + round(state.latestFrame().avgSpeed()) + "m/s");
         }
-        congestedSignals.forEach(signal -> evidence.add("intersection " + signal.cityflowIntersectionId()
+        congestedSignals.forEach(signal -> evidence.add("intersection " + signalLabel(signal)
                 + " queue=" + signal.queueCount()
                 + ", avg_wait=" + round(signal.avgWait()) + "s"
                 + ", level=" + signal.level()));
@@ -200,7 +204,7 @@ public class CongestionDiagnosisService {
         return report(
                 congested ? "当前仿真存在局部拥堵风险" : "当前仿真未发现明显拥堵证据",
                 evidence,
-                congestedSignals.stream().map(SignalSnapshot::cityflowIntersectionId).toList(),
+                congestedSignals.stream().map(this::signalLabel).toList(),
                 congested ? List.of("局部路口排队或等待时间超过阈值", "可能存在下游排空能力不足或相位分配不均")
                         : List.of("已落库信号快照未超过拥堵阈值"),
                 congested ? List.of("建议逐个调用 get_intersection_detail 或 diagnose_congestion 定位主要 movement",
@@ -233,6 +237,25 @@ public class CongestionDiagnosisService {
                 new LinkedHashMap<>(data),
                 Instant.now()
         );
+    }
+
+    private String intersectionLabel(IntersectionDetail detail) {
+        return label(detail.name(), detail.cityflowId());
+    }
+
+    private String roadLabel(RoadDetail detail) {
+        return label(detail.name(), detail.cityflowId());
+    }
+
+    private String signalLabel(SignalSnapshot signal) {
+        return label(signal.displayName(), signal.cityflowIntersectionId());
+    }
+
+    private String label(String displayName, String rawId) {
+        if (displayName == null || displayName.isBlank() || displayName.equals(rawId)) {
+            return rawId;
+        }
+        return displayName + " (id=" + rawId + ")";
     }
 
     private String normalizeType(String targetType, String targetId) {

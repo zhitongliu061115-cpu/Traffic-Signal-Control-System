@@ -3,6 +3,7 @@ package com.traffic.simulation.state;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.traffic.common.exception.BusinessException;
+import com.traffic.common.util.TrafficDisplayNames;
 import com.traffic.roadnet.dto.IntersectionDto;
 import com.traffic.roadnet.dto.PhaseDto;
 import com.traffic.roadnet.dto.RoadDto;
@@ -125,7 +126,7 @@ public class LiveSimulationStateService {
                 mapSession(state),
                 latest == null ? null : mapFrame(latest),
                 state.frames.size(),
-                latest == null ? List.of() : mapSignals(latest.frame())
+                latest == null ? List.of() : mapSignals(latest.frame(), state.sceneId)
         );
     }
 
@@ -138,7 +139,7 @@ public class LiveSimulationStateService {
         IntersectionDto intersection = findIntersection(roadnet, intersectionId).orElse(null);
         LiveFrame latest = latestFrame(state).orElse(null);
         String cityflowId = intersection == null ? intersectionId : intersection.id();
-        SignalSnapshot latestState = latest == null ? null : mapSignal(latest.frame(), cityflowId).orElse(null);
+        SignalSnapshot latestState = latest == null ? null : mapSignal(latest.frame(), cityflowId, state.sceneId).orElse(null);
 
         if (intersection == null && latestState == null && !hasLaneState(latest == null ? null : latest.frame(), cityflowId)) {
             throw new BusinessException("实时缓存中未找到路口：" + intersectionId);
@@ -149,7 +150,7 @@ public class LiveSimulationStateService {
                 state.sceneId,
                 cityflowId,
                 null,
-                cityflowId,
+                TrafficDisplayNames.intersectionName(state.sceneId, cityflowId),
                 "cityflow-live",
                 intersection == null || intersection.virtual(),
                 null,
@@ -183,7 +184,12 @@ public class LiveSimulationStateService {
                 cityflowId,
                 road == null ? null : road.from(),
                 road == null ? null : road.to(),
-                cityflowId,
+                TrafficDisplayNames.roadName(
+                        state.sceneId,
+                        cityflowId,
+                        road == null ? null : road.from(),
+                        road == null ? null : road.to()
+                ),
                 "unknown",
                 road == null ? 0.0 : roadLength(road),
                 null,
@@ -318,18 +324,18 @@ public class LiveSimulationStateService {
         );
     }
 
-    private List<SignalSnapshot> mapSignals(SimFrameData frame) {
+    private List<SignalSnapshot> mapSignals(SimFrameData frame, String sceneId) {
         Map<String, IntersectionStateDto> intersections = indexIntersections(frame);
         if (frame.signals() == null) {
             return List.of();
         }
         return frame.signals().stream()
                 .filter(signal -> signal != null && StringUtils.hasText(signal.intersectionId()))
-                .map(signal -> mapSignal(signal, intersections.get(signal.intersectionId())))
+                .map(signal -> mapSignal(signal, intersections.get(signal.intersectionId()), sceneId))
                 .toList();
     }
 
-    private Optional<SignalSnapshot> mapSignal(SimFrameData frame, String intersectionId) {
+    private Optional<SignalSnapshot> mapSignal(SimFrameData frame, String intersectionId, String sceneId) {
         if (frame.signals() == null) {
             return Optional.empty();
         }
@@ -337,13 +343,14 @@ public class LiveSimulationStateService {
         return frame.signals().stream()
                 .filter(signal -> signal != null && intersectionId.equals(signal.intersectionId()))
                 .findFirst()
-                .map(signal -> mapSignal(signal, intersections.get(intersectionId)));
+                .map(signal -> mapSignal(signal, intersections.get(intersectionId), sceneId));
     }
 
-    private SignalSnapshot mapSignal(SignalStateDto signal, IntersectionStateDto state) {
+    private SignalSnapshot mapSignal(SignalStateDto signal, IntersectionStateDto state, String sceneId) {
         return new SignalSnapshot(
                 signal.intersectionId(),
                 signal.intersectionId(),
+                TrafficDisplayNames.intersectionName(sceneId, signal.intersectionId()),
                 signal.phaseIndex(),
                 signal.phaseCode(),
                 state == null ? 0 : state.queueCount(),

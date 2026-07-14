@@ -28,8 +28,6 @@ import type {
   SimRoadnetResponse,
 } from '@/types/traffic'
 import {
-  mockIntersections,
-  mockRoads,
   mockVehicles,
   mockEmergencyVehicle,
   mockEmergencyRoute,
@@ -41,6 +39,7 @@ import {
   findAssistantReply,
   mockAssistantReplies,
 } from '@/mock/trafficMock'
+import { buildShanghaiDisplayRoadnet } from '@/mock/displayRoadnet'
 import { fetchDashboardBootstrap } from '@/api/dashboard'
 import {
   createSimulation,
@@ -97,10 +96,11 @@ const HANGZHOU_ARTERIAL_GRID = {
 } as const
 
 function usesFixedShanghaiDisplayRoadnet(sceneId: string): boolean {
-  return sceneId === 'jinan_3x4' || sceneId === 'jinan_3x4_stress'
+  return sceneId === 'jinan_3x4'
 }
 
-const FIXED_SHANGHAI_DISPLAY_ROAD_IDS = new Set(mockRoads.map((road) => road.id))
+const SHANGHAI_DISPLAY_ROADNET = buildShanghaiDisplayRoadnet()
+const FIXED_SHANGHAI_DISPLAY_ROAD_IDS = new Set(SHANGHAI_DISPLAY_ROADNET.roads.map((road) => road.id))
 
 function parseGridKey(id: string): { col: number; row: number } | null {
   const match = id.match(/^intersection_(\d+)_(\d+)$/)
@@ -220,8 +220,8 @@ export const useTrafficStore = defineStore('traffic', () => {
   const systemMode = ref<SystemMode>('normal')
   const aiEnabled = ref(true)
   const selectedIntersectionId = ref<string | null>(null)
-  const intersections = ref<Intersection[]>(structuredClone(mockIntersections))
-  const roads = ref<Road[]>(structuredClone(mockRoads))
+  const intersections = ref<Intersection[]>(structuredClone(SHANGHAI_DISPLAY_ROADNET.intersections))
+  const roads = ref<Road[]>(structuredClone(SHANGHAI_DISPLAY_ROADNET.roads))
   const vehicles = ref<Vehicle[]>(structuredClone(mockVehicles))
   const emergencyVehicle = ref<EmergencyVehicle>(structuredClone(mockEmergencyVehicle))
   /** CityFlow 分配的车辆 ID，用于在仿真帧数据中匹配 EV */
@@ -303,8 +303,8 @@ export const useTrafficStore = defineStore('traffic', () => {
       return
     }
 
-    intersections.value = structuredClone(mockIntersections)
-    roads.value = structuredClone(mockRoads)
+    intersections.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.intersections)
+    roads.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.roads)
     selectedIntersectionId.value = intersections.value[0]?.id ?? null
     roadCongestionSmooth.clear()
   }
@@ -1407,8 +1407,8 @@ export const useTrafficStore = defineStore('traffic', () => {
 
   /** 重置所有数据到初始状态 */
   function resetAllData(): void {
-    intersections.value = structuredClone(mockIntersections)
-    roads.value = structuredClone(mockRoads)
+    intersections.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.intersections)
+    roads.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.roads)
     vehicles.value = structuredClone(mockVehicles)
     emergencyVehicle.value = structuredClone(mockEmergencyVehicle)
     emergencyRoute.value = structuredClone(mockEmergencyRoute)

@@ -1,6 +1,7 @@
 package com.traffic.runtime.query;
 
 import com.traffic.common.exception.BusinessException;
+import com.traffic.common.util.TrafficDisplayNames;
 import com.traffic.runtime.query.RuntimeQueryDtos.ControlDecisionSummary;
 import com.traffic.runtime.query.RuntimeQueryDtos.CurrentSimulationState;
 import com.traffic.runtime.query.RuntimeQueryDtos.DecisionTraceEntry;
@@ -106,7 +107,7 @@ public class RuntimeQueryService {
                 row.sceneCode(),
                 row.cityflowId(),
                 row.mapIntersectionId(),
-                row.name(),
+                hasText(row.name()) ? row.name() : TrafficDisplayNames.intersectionName(row.sceneCode(), row.cityflowId()),
                 row.type(),
                 row.virtualIntersection(),
                 row.longitude(),
@@ -161,7 +162,9 @@ public class RuntimeQueryService {
                 row.cityflowId(),
                 row.fromIntersectionId(),
                 row.toIntersectionId(),
-                row.name(),
+                hasText(row.name())
+                        ? row.name()
+                        : TrafficDisplayNames.roadName(row.sceneCode(), row.cityflowId(), row.fromIntersectionId(), row.toIntersectionId()),
                 row.direction(),
                 row.lengthM(),
                 row.speedLimit(),
@@ -601,11 +604,12 @@ public class RuntimeQueryService {
                 .addValue("frameId", UUID.fromString(frameId))
                 .addValue("limit", limit);
         return jdbcTemplate.query("""
-                select i.id as intersection_id, i.cityflow_id, sp.phase_index, sp.phase_code,
+                select i.id as intersection_id, s.scene_code, i.cityflow_id, sp.phase_index, sp.phase_code,
                        iss.queue_count, iss.avg_wait, iss.level
                 from intersection_state_snapshot iss
                 join simulation_frame sf on sf.id = iss.frame_id
                 join intersection i on i.id = iss.intersection_id
+                join scene s on s.id = i.scene_id
                 join signal_phase sp on sp.id = iss.current_phase_id
                 where sf.session_id = :sessionId and sf.id = :frameId
                 order by i.cityflow_id
@@ -617,12 +621,13 @@ public class RuntimeQueryService {
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("intersectionId", UUID.fromString(intersectionUuid));
         StringBuilder sql = new StringBuilder("""
-                select i.id as intersection_id, i.cityflow_id, sp.phase_index, sp.phase_code,
+                select i.id as intersection_id, s.scene_code, i.cityflow_id, sp.phase_index, sp.phase_code,
                        iss.queue_count, iss.avg_wait, iss.level
                 from intersection_state_snapshot iss
                 join simulation_frame sf on sf.id = iss.frame_id
                 join simulation_session ss on ss.id = sf.session_id
                 join intersection i on i.id = iss.intersection_id
+                join scene s on s.id = i.scene_id
                 join signal_phase sp on sp.id = iss.current_phase_id
                 where iss.intersection_id = :intersectionId
                 """);
@@ -877,6 +882,7 @@ public class RuntimeQueryService {
         return new SignalSnapshot(
                 uuidString(rs, "intersection_id"),
                 rs.getString("cityflow_id"),
+                TrafficDisplayNames.intersectionName(rs.getString("scene_code"), rs.getString("cityflow_id")),
                 nullableInteger(rs, "phase_index"),
                 rs.getString("phase_code"),
                 rs.getInt("queue_count"),

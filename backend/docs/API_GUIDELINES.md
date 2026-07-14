@@ -189,7 +189,7 @@
 
 常用返回 DTO：
 
-- `CurrentSimulationState`：`session`、`latestFrame`、`persistedFrameCount`、`signals[]`。
+- `CurrentSimulationState`：`session`、`latestFrame`、`persistedFrameCount`、`signals[]`；`signals[]` 中保留 `cityflowIntersectionId` 作为稳定映射键，同时提供 `displayName` 给 Agent 和前端展示真实路口名。
 - `IntersectionDetail`：路口基础字段、`latestState`、`movements[]`、`phases[]`、`roadLinks[]`。
 - `RoadDetail`：道路基础字段、`latestState`、`lanes[]`。
 - `ControlDecisionSummary`：策略来源、请求相位、最终相位、持续时间、状态、原因、置信度、metadata、错误信息。

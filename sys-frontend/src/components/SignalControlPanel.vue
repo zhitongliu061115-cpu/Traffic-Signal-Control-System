@@ -49,9 +49,8 @@ const controllerOptions = [
 ]
 
 const sceneOptions = [
-  { value: 'jinan_3x4', label: 'Jinan 3x4' },
-  { value: 'jinan_3x4_stress', label: 'Jinan 3x4 Stress' },
-  { value: 'hangzhou_4_4', label: 'Hangzhou 4x4' },
+  { value: 'jinan_3x4', label: '上海' },
+  { value: 'hangzhou_4_4', label: '杭州' },
 ]
 
 function openControllerDialog(e: MouseEvent): void {
