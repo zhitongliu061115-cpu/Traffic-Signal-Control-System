@@ -59,6 +59,21 @@ def calculate_risk_thresholds(frame) -> dict[str, Any]:
     }
 
 
+def write_model_pointer(artifact_root: Path, artifact_dir: Path) -> None:
+    resolved_root = artifact_root.resolve()
+    resolved_dir = artifact_dir.resolve()
+    try:
+        relative_dir = resolved_dir.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError("model artifact must be stored under the configured model root") from exc
+    resolved_root.mkdir(parents=True, exist_ok=True)
+    pointer_tmp = resolved_root / "current.json.tmp"
+    pointer_tmp.write_text(
+        json.dumps({"modelDir": relative_dir.as_posix()}, ensure_ascii=True), encoding="utf-8"
+    )
+    shutil.move(str(pointer_tmp), str(resolved_root / "current.json"))
+
+
 def train_models(
     repository: ForecastRepository,
     artifact_root: Path,
@@ -173,11 +188,6 @@ def train_models(
     (artifact_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    pointer_tmp = artifact_root / "current.json.tmp"
-    pointer_tmp.write_text(
-        json.dumps({"modelDir": str(artifact_dir)}, ensure_ascii=True), encoding="utf-8"
-    )
-    shutil.move(str(pointer_tmp), str(artifact_root / "current.json"))
+    write_model_pointer(artifact_root, artifact_dir)
     repository.register_model(manifest, artifact_dir)
     return manifest, artifact_dir
