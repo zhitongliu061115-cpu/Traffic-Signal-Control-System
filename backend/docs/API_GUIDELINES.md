@@ -287,7 +287,7 @@ ws://localhost:8080/ws/v1/simulations/{sid}
 
 当前已推送的主要 `type`：
 
-- `sim.frame`：仿真帧，`data` 为 `SimFrameData`，包括车辆、道路、laneStates、路口、信号、指标、应急事件和应急状态；`evStatus[]` 包含 `evId`、`cfVehicleId`、路线进度和完成状态，前端用 `cfVehicleId` 绑定真实 CityFlow 应急车辆红点，缺失时按调度路线做兜底展示。
+- `sim.frame`：仿真帧，`data` 为 `SimFrameData`，包括车辆、道路、laneStates、路口、信号、指标、应急事件和应急状态。
 - `control.decision`：控制决策事件，`data` 为 `List<ControlDecision>`。
 
 ### K. Agent 内部 LangChain4j 工具接口（非 HTTP 路由）

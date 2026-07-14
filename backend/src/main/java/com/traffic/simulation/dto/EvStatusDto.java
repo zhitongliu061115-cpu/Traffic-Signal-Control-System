@@ -4,7 +4,6 @@ import java.util.List;
 
 public record EvStatusDto(
         String evId,
-        String cfVehicleId,
         String evType,
         int priority,
         List<String> route,

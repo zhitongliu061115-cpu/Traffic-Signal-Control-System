@@ -197,14 +197,10 @@ export function createVehicleLayer(
   // ---- 鍏紑鏂规硶 ----
   return {
     update(vehicles: SimVehicleState[], evIds?: Set<string>): void {
-      const orderedVehicles = evIds && evIds.size > 0
-        ? [...vehicles].sort((a, b) => Number(evIds.has(b.id)) - Number(evIds.has(a.id)))
-        : vehicles
-      ensurePool(Math.min(orderedVehicles.length, MAX_MARKERS))
+      ensurePool(Math.min(vehicles.length, MAX_MARKERS))
       let vi = 0
 
-      for (const v of orderedVehicles) {
-        if (vi >= MAX_MARKERS) break
+      for (const v of vehicles) {
         const mapping = roadMapping.get(v.roadId)
         if (!mapping) continue
         // 计算 CityFlow 直路上的 progress
@@ -223,11 +219,7 @@ export function createVehicleLayer(
           const fillColor = evIds?.has(v.id) ? EMERGENCY_FILL : (v.speed < 0.5 ? STOPPED_FILL : NORMAL_FILL)
           if (lastFillColors[vi] !== fillColor) {
             lastFillColors[vi] = fillColor
-            pool[vi]!.setOptions({
-              fillColor,
-              radius: fillColor === EMERGENCY_FILL ? MARKER_RADIUS * 1.7 : MARKER_RADIUS,
-              zIndex: fillColor === EMERGENCY_FILL ? 120 : 80,
-            })
+            pool[vi]!.setOptions({ fillColor })
           }
           if (vi >= visibleCount) pool[vi]!.show()
           vi++

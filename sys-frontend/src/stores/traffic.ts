@@ -1173,10 +1173,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     console.log('[EV-DEBUG-RAW] evStatus:', JSON.stringify((frame as any).evStatus), 'evEvents:', JSON.stringify((frame as any).evEvents))
     if (frame.evStatus && frame.evStatus.length > 0) {
       latestEvStatus.value = frame.evStatus
-      const currentEvStatus = frame.evStatus.find((status) => status.evId === emergencyVehicle.value.id)
-      if (!emergencyCfVehicleId.value && currentEvStatus?.cfVehicleId) {
-        emergencyCfVehicleId.value = currentEvStatus.cfVehicleId
-      }
       console.log('[EV-DEBUG] evStatus updated:', JSON.stringify(frame.evStatus))
     }
     if (frame.status === 'finished') {
