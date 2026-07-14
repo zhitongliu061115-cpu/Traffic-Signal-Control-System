@@ -417,7 +417,7 @@ const overview = computed(() => [
   { label: '监测车辆', value: String(
     simulationStatus.value === 'running' ? simulationVehicles.value.length : vehicles.value.length,
   ), unit: '辆' },
-  { label: '拥堵路段', value: String(store.statistics.congestedRoadCount), unit: '条' },
+  { label: '车辆平均延误', value: store.statistics.averageWaitTime.toFixed(1), unit: 's' },
 ])
 const selectedName = computed(
   () => intersections.value.find((it) => it.id === selectedIntersectionId.value)?.name ?? '',

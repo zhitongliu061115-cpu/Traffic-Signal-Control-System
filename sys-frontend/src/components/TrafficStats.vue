@@ -38,34 +38,20 @@ const kpiTiles: KpiTile[] = [
     fmt: (v) => v.toFixed(1),
   },
   {
-    label: '平均等待时间',
-    key: 'averageWaitTime',
-    unit: 's',
-    icon: '⏱️',
-    tone: 'amber',
-    fmt: (v) => v.toFixed(1),
-  },
-  {
-    label: '当前拥堵指数',
-    key: 'congestionIndex',
-    unit: '/100',
-    icon: '📊',
-    tone: 'rose',
-    fmt: (v) => v.toFixed(1),
-  },
-  {
-    label: '拥堵路段数量',
-    key: 'congestedRoadCount',
-    unit: '条',
-    icon: '🛣️',
-    tone: 'amber',
-  },
-  {
-    label: '已优化路口',
-    key: 'optimizedIntersectionCount',
-    unit: '个',
-    icon: '🔀',
+    label: '设备在线率',
+    key: 'deviceOnlineRate',
+    unit: '%',
+    icon: '📡',
     tone: 'emerald',
+    fmt: (v) => v.toFixed(1),
+  },
+  {
+    label: '车辆平均延误',
+    key: 'averageVehicleDelay',
+    unit: 's',
+    icon: '⏰',
+    tone: 'amber',
+    fmt: (v) => v.toFixed(1),
   },
   {
     label: '应急车辆',
@@ -75,47 +61,16 @@ const kpiTiles: KpiTile[] = [
     tone: 'rose',
   },
   {
-    label: '设备在线率',
-    key: 'deviceOnlineRate',
-    unit: '%',
-    icon: '📡',
-    tone: 'emerald',
-    fmt: (v) => v.toFixed(1),
-  },
-  {
-    label: '今日告警数量',
-    key: 'todayAlertCount',
-    unit: '条',
-    icon: '🔔',
+    label: '当前拥堵指数',
+    key: 'congestionIndex',
+    unit: '/100',
+    icon: '📊',
     tone: 'rose',
-  },
-  {
-    label: '绿波执行次数',
-    key: 'greenWaveCount',
-    unit: '次',
-    icon: '🌊',
-    tone: 'violet',
+    fmt: (v) => v.toFixed(1),
   },
 ]
 
-// ---- 饱和度（从 roads 和 intersections 聚合计算） ----
-const saturation = computed(() => {
-  const dirs = [
-    { label: '东西向主干', color: '#FFB800', pattern: /东/ },
-    { label: '南北向主干', color: '#22D3A0', pattern: /南/ },
-    { label: '环城快速路', color: '#00D4FF', pattern: /环城|快速/ },
-    { label: '建设路沿线', color: '#FF4D6D', pattern: /建设/ },
-  ]
 
-  return dirs.map((d) => {
-    const matched = store.roads.filter((r) => d.pattern.test(r.name))
-    if (matched.length === 0) {
-      return { name: d.label, value: 0, color: d.color }
-    }
-    const avg = matched.reduce((sum, r) => sum + r.congestionIndex, 0) / matched.length
-    return { name: d.label, value: Math.round(avg), color: d.color }
-  })
-})
 </script>
 
 <template>
@@ -153,20 +108,6 @@ const saturation = computed(() => {
         </div>
       </div>
 
-      <!-- 方向饱和度 -->
-      <div class="ts-saturation">
-        <div class="ts-saturation__title">路段饱和度</div>
-        <div v-for="s in saturation" :key="s.name" class="ts-sat-row">
-          <span class="ts-sat-name">{{ s.name }}</span>
-          <div class="health-bar ts-sat-bar">
-            <div
-              class="health-bar-fill"
-              :style="{ width: `${s.value}%`, background: s.color }"
-            />
-          </div>
-          <span class="ts-sat-value" :style="{ color: s.color }">{{ s.value }}%</span>
-        </div>
-      </div>
     </div>
   </section>
 </template>
@@ -275,45 +216,4 @@ const saturation = computed(() => {
   color: #5a7595;
 }
 
-/* 饱和度区域 */
-.ts-saturation {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  flex: 0 0 auto;
-}
-
-.ts-saturation__title {
-  font-size: 11px;
-  color: #8da8c5;
-  letter-spacing: 0.06em;
-}
-
-.ts-sat-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.ts-sat-name {
-  flex: 0 0 78px;
-  font-size: 10px;
-  color: #8da8c5;
-  text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ts-sat-bar {
-  flex: 1;
-}
-
-.ts-sat-value {
-  flex: 0 0 36px;
-  text-align: right;
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 12px;
-  font-weight: 700;
-}
 </style>
