@@ -28,7 +28,6 @@ import type {
   SimRoadnetResponse,
 } from '@/types/traffic'
 import {
-  mockVehicles,
   mockEmergencyVehicle,
   mockEmergencyRoute,
   mockStatistics,
@@ -101,6 +100,15 @@ function usesFixedShanghaiDisplayRoadnet(sceneId: string): boolean {
 
 const SHANGHAI_DISPLAY_ROADNET = buildShanghaiDisplayRoadnet()
 const FIXED_SHANGHAI_DISPLAY_ROAD_IDS = new Set(SHANGHAI_DISPLAY_ROADNET.roads.map((road) => road.id))
+
+function freshShanghaiDisplayRoadnet(): { intersections: Intersection[]; roads: Road[] } {
+  return {
+    intersections: structuredClone(SHANGHAI_DISPLAY_ROADNET.intersections)
+      .map((it) => ({ ...it, queueLength: 0, averageDelay: 0, congestionIndex: 0 })),
+    roads: structuredClone(SHANGHAI_DISPLAY_ROADNET.roads)
+      .map((road) => ({ ...road, congestionIndex: 0, queueLength: 0, flow: 0, speed: 0 })),
+  }
+}
 
 function parseGridKey(id: string): { col: number; row: number } | null {
   const match = id.match(/^intersection_(\d+)_(\d+)$/)
@@ -179,7 +187,7 @@ function buildTrafficMapFromRoadnet(roadnet: SimRoadnetResponse): { intersection
       greenRemain: PHASE_DURATIONS.eastwest_straight,
       queueLength: 0,
       averageDelay: 0,
-      congestionIndex: deterministicCongestion(item.id),
+      congestionIndex: 0,
       deviceStatus: 'online',
       roadIds: [],
     })
@@ -201,7 +209,7 @@ function buildTrafficMapFromRoadnet(roadnet: SimRoadnetResponse): { intersection
       flow: 0,
       speed: 0,
       queueLength: 0,
-      congestionIndex: deterministicCongestion(road.id),
+      congestionIndex: 0,
       laneCount: Math.max(1, road.laneCount || 1),
       direction: 'one-way',
       path,
@@ -220,16 +228,29 @@ export const useTrafficStore = defineStore('traffic', () => {
   const systemMode = ref<SystemMode>('normal')
   const aiEnabled = ref(true)
   const selectedIntersectionId = ref<string | null>(null)
-  const intersections = ref<Intersection[]>(structuredClone(SHANGHAI_DISPLAY_ROADNET.intersections))
-  const roads = ref<Road[]>(structuredClone(SHANGHAI_DISPLAY_ROADNET.roads))
-  const vehicles = ref<Vehicle[]>(structuredClone(mockVehicles))
+  const initialShanghaiRoadnet = freshShanghaiDisplayRoadnet()
+  const intersections = ref<Intersection[]>(initialShanghaiRoadnet.intersections)
+  const roads = ref<Road[]>(initialShanghaiRoadnet.roads)
+  const vehicles = ref<Vehicle[]>([])
   const emergencyVehicle = ref<EmergencyVehicle>(structuredClone(mockEmergencyVehicle))
   /** CityFlow 分配的车辆 ID，用于在仿真帧数据中匹配 EV */
   const emergencyCfVehicleId = ref<string>('')
   const emergencyRoute = ref<string[]>(structuredClone(mockEmergencyRoute))
   const activeGreenWaveIndex = ref(0)
   const alerts = ref<Alert[]>(structuredClone(mockInitialAlerts))
-  const statistics = ref<GlobalStatistics>(structuredClone(mockStatistics))
+  const statistics = ref<GlobalStatistics>({
+    totalFlow: 0,
+    averageSpeed: 0,
+    averageWaitTime: 0,
+    congestionIndex: 0,
+    congestedRoadCount: 0,
+    optimizedIntersectionCount: 0,
+    emergencyVehicleCount: 0,
+    deviceOnlineRate: 0,
+    todayAlertCount: 0,
+    greenWaveCount: 0,
+    throughput: 0,
+  })
   const compareMetrics = ref<CompareMetrics>(structuredClone(mockCompareMetrics))
   const congestionTrend = ref<CongestionTrendPoint[]>(generateInitialTrend())
   const refreshConfig = ref<RefreshConfig>({ ...mockRefreshConfig })
@@ -653,14 +674,16 @@ export const useTrafficStore = defineStore('traffic', () => {
         statistics.value.averageSpeed = Math.round(m.avgSpeed * 3.6 * 10) / 10
         statistics.value.averageWaitTime = m.avgWait
         statistics.value.throughput = m.throughput
+        const wait = Math.max(0, m.avgWait)
+        const vehicles = m.activeVehicleCount ?? m.vehicleCount ?? 0
+        const raw = Math.sqrt(wait) * 7.5 + vehicles * 0.022
+        statistics.value.congestionIndex = Math.min(100, Math.round(raw * 10) / 10)
       }
 
       const simRoads = simulationRoads.value
       if (simRoads.length > 0) {
         const jammed = simRoads.filter((r) => r.level === 'jammed').length
-        const slow = simRoads.filter((r) => r.level === 'slow').length
         statistics.value.congestedRoadCount = jammed
-        statistics.value.congestionIndex = +(((jammed * 85 + slow * 45) / simRoads.length) || 0).toFixed(1)
       }
 
       statistics.value.optimizedIntersectionCount = simulationIntersections.value.filter(
@@ -705,15 +728,36 @@ export const useTrafficStore = defineStore('traffic', () => {
     // =========================================================
     // 无仿真：本地 mock / 后端 DB 数据 + 轻微随机噪声（演示用）
     // =========================================================
-    // ---- 道路拥堵波动 ----
-    for (const r of roads.value) {
-      const drift = (Math.random() - 0.5) * 4
-      r.congestionIndex = Math.max(10, Math.min(98, r.congestionIndex + drift))
-      r.speed = Math.max(15, Math.min(70, r.speed + (Math.random() - 0.5) * 3))
-      r.queueLength = Math.max(20, Math.min(300, r.queueLength + (Math.random() - 0.5) * 20))
-      r.flow = Math.max(600, Math.min(3000, r.flow + (Math.random() - 0.5) * 80))
+
+    // ---- 无仿真运行，统计归零 ----
+    statistics.value = {
+      totalFlow: 0,
+      averageSpeed: 0,
+      averageWaitTime: 0,
+      congestionIndex: 0,
+      congestedRoadCount: 0,
+      optimizedIntersectionCount: 0,
+      emergencyVehicleCount: 0,
+      deviceOnlineRate: 0,
+      todayAlertCount: 0,
+      greenWaveCount: 0,
+      throughput: 0,
     }
 
+
+    // ---- 地图拥堵归零 ----
+    for (const r of roads.value) {
+      r.congestionIndex = 0
+      r.queueLength = 0
+      r.flow = 0
+      r.speed = 0
+    }
+    for (const it of intersections.value) {
+      it.queueLength = 0
+      it.averageDelay = 0
+      it.congestionIndex = 0
+    }
+    vehicles.value = []
     // ---- 信号灯倒计时 ----
     for (const it of intersections.value) {
       if (it.deviceStatus === 'fault' || it.deviceStatus === 'offline') {
@@ -737,33 +781,10 @@ export const useTrafficStore = defineStore('traffic', () => {
         }
       }
 
-      it.queueLength = Math.max(2, Math.min(40, it.queueLength + Math.round((Math.random() - 0.5) * 3)))
-      it.averageDelay = Math.max(8, Math.min(90, it.averageDelay + (Math.random() - 0.5) * 5))
-      it.congestionIndex = Math.max(10, Math.min(95, it.congestionIndex + (Math.random() - 0.5) * 4))
     }
-
-    // ---- 统计指标 ----
-    const s = statistics.value
-    const minFlow = dataSourceStatus.value === 'database' ? 6500 : 2500
-    const maxFlow = dataSourceStatus.value === 'database' ? 12000 : 5500
-    s.totalFlow = Math.max(minFlow, Math.min(maxFlow, s.totalFlow + Math.round((Math.random() - 0.5) * 120)))
-    s.averageSpeed = Math.max(30, Math.min(55, +(s.averageSpeed + (Math.random() - 0.5) * 2).toFixed(1)))
-    s.averageWaitTime = Math.max(20, Math.min(50, +(s.averageWaitTime + (Math.random() - 0.5) * 3).toFixed(1)))
-    s.congestionIndex = Math.max(30, Math.min(80, +(s.congestionIndex + (Math.random() - 0.5) * 4).toFixed(1)))
-    s.congestedRoadCount = congestedRoads.value.length
-    s.optimizedIntersectionCount = onlineIntersections.value.length
-    s.emergencyVehicleCount = emergencyVehiclesOnRoad.value.length
-    s.deviceOnlineRate = +(
-      (onlineIntersections.value.length / intersections.value.length) *
-      100
-    ).toFixed(1)
-    s.greenWaveCount = systemMode.value === 'emergency' ? 1 : 0
-
     // ---- 系统延迟 ----
     updateSystemLatency()
 
-    // ---- 自动告警检测（带去重） ----
-    checkAndGenerateAlerts()
   }
 
   // ---- 自动告警去重 Map（key = type:id, value = 上次生成时间戳） ----
@@ -1059,13 +1080,12 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     try {
       const data = await fetchDashboardBootstrap()
-      intersections.value = data.intersections
-      roads.value = data.roads
-      vehicles.value = data.vehicles
+      intersections.value = data.intersections.map(it => ({ ...it, queueLength: 0, averageDelay: 0, congestionIndex: 0 }))
+      roads.value = data.roads.map(r => ({ ...r, congestionIndex: 0, queueLength: 0, flow: 0, speed: 0 }))
+      vehicles.value = []
       emergencyVehicle.value = data.emergencyVehicle
       emergencyRoute.value = data.emergencyRoute
       alerts.value = data.alerts
-      statistics.value = data.statistics
       compareMetrics.value = data.compareMetrics
       congestionTrend.value = data.congestionTrend
       assistantReplies.value = data.assistantReplies
@@ -1242,6 +1262,10 @@ export const useTrafficStore = defineStore('traffic', () => {
         ? statistics.value.averageSpeed
         : Math.round(frame.metrics.avgSpeed * 3.6 * 10) / 10
       statistics.value.averageWaitTime = frame.metrics.avgWait ?? statistics.value.averageWaitTime
+      const wait = Math.max(0, frame.metrics.avgWait ?? 0)
+      const vehicles = frame.metrics.activeVehicleCount ?? frame.metrics.vehicleCount ?? 0
+      const raw = Math.sqrt(wait) * 7.5 + vehicles * 0.022
+      statistics.value.congestionIndex = Math.min(100, Math.round(raw * 10) / 10)
     }
   }
 
@@ -1407,13 +1431,26 @@ export const useTrafficStore = defineStore('traffic', () => {
 
   /** 重置所有数据到初始状态 */
   function resetAllData(): void {
-    intersections.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.intersections)
-    roads.value = structuredClone(SHANGHAI_DISPLAY_ROADNET.roads)
-    vehicles.value = structuredClone(mockVehicles)
+    const initialRoadnet = freshShanghaiDisplayRoadnet()
+    intersections.value = initialRoadnet.intersections
+    roads.value = initialRoadnet.roads
+    vehicles.value = []
     emergencyVehicle.value = structuredClone(mockEmergencyVehicle)
     emergencyRoute.value = structuredClone(mockEmergencyRoute)
     alerts.value = structuredClone(mockInitialAlerts)
-    statistics.value = structuredClone(mockStatistics)
+    statistics.value = {
+      totalFlow: 0,
+      averageSpeed: 0,
+      averageWaitTime: 0,
+      congestionIndex: 0,
+      congestedRoadCount: 0,
+      optimizedIntersectionCount: 0,
+      emergencyVehicleCount: 0,
+      deviceOnlineRate: 0,
+      todayAlertCount: 0,
+      greenWaveCount: 0,
+      throughput: 0,
+    }
     compareMetrics.value = structuredClone(mockCompareMetrics)
     congestionTrend.value = generateInitialTrend()
     systemMode.value = 'normal'
