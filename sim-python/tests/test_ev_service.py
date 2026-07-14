@@ -34,8 +34,11 @@ class EVPriorityServiceTest(unittest.TestCase):
 
         self.assertEqual({}, overrides)
         self.assertTrue(status[0]["completed"])
-        self.assertFalse(service.has_evs(sid))
+        self.assertTrue(service.has_evs(sid))
         self.assertEqual({}, service._override_started_at[sid])
+
+        service._status_seq[sid] = ev.completion_seq + service.STATUS_LINGER_FRAMES + 1
+        self.assertFalse(service.has_evs(sid))
 
     def test_turn_level_phases_override_permissive_road_level_mapping(self):
         signal = SignalState(

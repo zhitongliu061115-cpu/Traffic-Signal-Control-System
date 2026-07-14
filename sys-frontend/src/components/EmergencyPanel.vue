@@ -96,11 +96,6 @@ const currentSpeed = computed(() => {
   return 0
 })
 
-// ---- 预计到达时间（分钟） ----
-const estimatedEta = computed(() => {
-  return emergencyVehicle.value.eta
-})
-
 // ---- 已激活绿波路口数 ----
 const activatedNodeCount = computed(() => {
   if (!emergencyVehicle.value.greenWaveActive || activeGreenWaveIndex.value < 0) return 0
@@ -109,10 +104,11 @@ const activatedNodeCount = computed(() => {
 
 const totalRouteNodes = computed(() => emergencyRoute.value.length)
 
-// ---- 预计节省时间 ----
-const timeSaved = computed(() => {
-  const m = compareMetrics.value.emergencyPassTime
-  return +(m.traditional - m.ai).toFixed(1)
+// ---- 已运行时间（秒）----
+const elapsedRunningTime = computed(() => {
+  const status = latestEvStatus.value
+  const firstStatus = status?.[0]
+  return firstStatus?.elapsedTime ?? 0
 })
 
 // ---- 绿波路线节点列表（用于内联展示） ----
@@ -128,6 +124,9 @@ type EmergencyPhase = 'idle' | 'planning' | 'executing' | 'completed'
 
 const emergencyPhase = computed<EmergencyPhase>(() => {
   if (!wasEverTriggered.value) return 'idle'
+  // Backend evStatus.completed takes priority over map vehicle presence.
+  // EV may still appear in vehicle list (speed=0) after reaching destination.
+  if (latestEvStatus.value?.some((s: any) => s.completed)) return 'completed'
   if (systemMode.value === 'emergency' && emergencyVehicle.value.greenWaveActive) return 'executing'
   // 车辆在路上但绿波未激活
   if (emergencyVehOnRoad.value) return 'planning'
@@ -256,6 +255,7 @@ const latestEvDecision = computed(() => {
   const evEvents = events.filter(e => e.evId === evId)
   if (evEvents.length === 0) return null
   const latest = evEvents[evEvents.length - 1]
+  if (!latest) return null
   const label = intersections.value.find((it) => it.id === latest.intersectionId)?.name ?? latest.intersectionId
   return { ...latest, label }
 })
@@ -340,15 +340,11 @@ const signalDispatchList = computed(() => {
         <div class="ep-vehicle-card__metrics">
           <div class="ep-vm">
             <span class="ep-vm__label">当前速度</span>
-            <span class="ep-vm__value text-emerald">{{ currentSpeed }} km/h</span>
+            <span class="ep-vm__value text-emerald">{{ (currentSpeed * 3.6).toFixed(1) }} km/h</span>
           </div>
-          <div class="ep-vm">
-            <span class="ep-vm__label">预计到达</span>
-            <span class="ep-vm__value text-cyan">{{ estimatedEta }} min</span>
-          </div>
-          <div class="ep-vm">
-            <span class="ep-vm__label">预计节省</span>
-            <span class="ep-vm__value text-emerald">~{{ timeSaved }} min</span>
+          <div class="ep-vm ep-vm--stacked">
+            <div class="ep-vm__label">已运行时间</div>
+            <div class="ep-vm__value text-emerald">{{ elapsedRunningTime }} s</div>
           </div>
         </div>
       </div>
@@ -530,10 +526,6 @@ const signalDispatchList = computed(() => {
                   <span class="ep-result__key">路线</span>
                   <span class="ep-result__val text-cyan">{{ dispatchResult.route.join(' → ') }}</span>
                 </div>
-                <div class="ep-result__row">
-                  <span class="ep-result__key">预计通行</span>
-                  <span class="ep-result__val text-emerald">~{{ dispatchResult.estimatedTravelTime.toFixed(1) }} min</span>
-                </div>
               </div>
             </div>
           </div>
@@ -691,7 +683,7 @@ const signalDispatchList = computed(() => {
 /* 应急指标 3 列 */
 .ep-vehicle-card__metrics {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 7px;
 }
 
@@ -711,6 +703,17 @@ const signalDispatchList = computed(() => {
   white-space: nowrap;
 }
 
+.ep-vm--stacked .ep-vm__label {
+  font-size: 10px;
+  color: #5a7595;
+  text-align: center;
+}
+.ep-vm--stacked .ep-vm__value {
+  display: block;
+  text-align: center;
+  margin-top: 4px;
+  font-size: 18px;
+}
 .ep-vm__value {
   margin-top: 3px;
   font-family: 'Rajdhani', 'DINPro', sans-serif;

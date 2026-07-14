@@ -368,6 +368,9 @@ class RealCityFlowEngine(SimulationEngine):
             }
 
     def _simulation_complete(self, session: "CityFlowEngineSession", sim_time: float, metrics: JsonDict) -> bool:
+        # Keep simulation alive while EV is still active, so completion frame can be delivered.
+        if self.ev_service.has_evs(session.sid):
+            return False
         return (
             (
                 sim_time >= session.flow_end_time
@@ -660,13 +663,18 @@ class RealCityFlowEngine(SimulationEngine):
         signals = []
         for intersection_id in parser.real_intersection_ids():
             phase_index = current_phases.get(intersection_id, FIRST_BUSINESS_PHASE_INDEX)
+            # Normalize: EV overrides may store enumerate-based indices (1-4);
+            # business phases are (2-5). If phaseCode is None, try +1 offset.
+            phase_code = PHASE_CODES.get(phase_index)
+            if phase_code is None and 1 <= phase_index <= 5:
+                phase_code = PHASE_CODES.get(phase_index + 1)
             elapsed = max(0.0, sim_time - phase_started_at.get(intersection_id, sim_time))
             duration_sec = max(1.0, float(phase_durations.get(intersection_id, 10.0)))
             remaining_sec = duration_sec - (elapsed % duration_sec)
             signals.append({
                 "intersectionId": intersection_id,
                 "phaseIndex": phase_index,
-                "phaseCode": PHASE_CODES.get(phase_index),
+                "phaseCode": phase_code,
                 "remainingSec": round(max(0.0, remaining_sec), 3),
             })
         return signals

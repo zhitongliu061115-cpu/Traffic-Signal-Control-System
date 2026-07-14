@@ -54,6 +54,7 @@ class EVSession:
     passed_intersections: set = field(default_factory=set)
     completed: bool = False
     completion_time: float = 0.0
+    completion_seq: int = 0  # frame seq when EV completed, for lingering evStatus
 
 class EVPriorityService:
 
@@ -70,6 +71,7 @@ class EVPriorityService:
         self._override_started_at: Dict[str, Dict[str, float]] = {}
         self.logger = EVLogger()
         self.ev_sessions: Dict[str, Dict[str, EVSession]] = {}
+        self._status_seq: Dict[str, int] = {}  # sid -> frame counter for _build_ev_status
         self.road_index: Dict[str, Dict[str, Any]] = {}
         self.handled: Dict[str, set] = {}
         self.phase_counts: Dict[str, Dict[str, int]] = {}
@@ -268,23 +270,51 @@ class EVPriorityService:
             if not vehicle_info:
                 if ev_session.missing_since is None:
                     ev_session.missing_since = sim_time
+                    print(f"[DEBUG-EV] {ev_id} vehicle MISSING at t={sim_time:.1f}s, seen_in_engine={ev_session.seen_in_engine}", flush=True)
                 grace_seconds = 1.0 if ev_session.seen_in_engine else 5.0
                 if sim_time - ev_session.missing_since >= grace_seconds:
+                    print(f"[DEBUG-EV] {ev_id} COMPLETING via missing timeout at t={sim_time:.1f}s", flush=True)
                     self._complete_ev(sid, ev_session, sim_time)
                 continue
             ev_session.seen_in_engine = True
             ev_session.missing_since = None
 
-            # If EV has passed all intersections on its route, mark as completed
-            # (CityFlow may not always remove the vehicle from the engine at route end)
-            if len(ev_session.passed_intersections) >= len(ev_session.route):
-                self._complete_ev(sid, ev_session, sim_time)
-                continue
-
             current_road = str(vehicle_info.get("road", ""))
             distance = float(vehicle_info.get("distance", 0))
             speed = float(vehicle_info.get("speed", 0))
             road_length = self._road_length(current_road, road_by_id)
+
+            # DEBUG: log EV state every 10s
+            if int(sim_time) % 10 == 0 and int(sim_time) != getattr(ev_session, '_last_debug', -1):
+                ev_session._last_debug = int(sim_time)
+                print(f"[DEBUG-EV] {ev_id} t={sim_time:.1f}s road={current_road} speed={speed:.1f} passed={len(ev_session.passed_intersections)}/{len(ev_session.route)} route_roads={ev_session.route_roads[-1] if ev_session.route_roads else 'none'} completed={ev_session.completed}", flush=True)
+
+            # ---- Completion detection ----
+            if len(ev_session.passed_intersections) >= len(ev_session.route):
+                self._complete_ev(sid, ev_session, sim_time)
+                continue
+            # EV stopped at destination: on last road + near-zero speed > 3s
+            route_roads = ev_session.route_roads
+            if route_roads and current_road == route_roads[-1] and speed < 2.0:
+                t = getattr(ev_session, '_stopped_since', None)
+                if t is None:
+                    ev_session._stopped_since = sim_time
+                elif sim_time - t >= 3.0:
+                    print(f"[DEBUG-EV] {ev_id} COMPLETING via stop-detect at t={sim_time:.1f}s", flush=True)
+                    self._complete_ev(sid, ev_session, sim_time)
+                    continue
+            else:
+                ev_session._stopped_since = None
+            # If second-to-last intersection passed AND EV is very close to
+            # the end of the last road segment (destination), mark complete.
+            route_roads = ev_session.route_roads
+            if len(ev_session.passed_intersections) >= len(ev_session.route) - 1                     and route_roads                     and current_road == route_roads[-1]:
+                remaining = max(0, road_length - distance) if road_length > 0 else 999
+                if remaining < 10:  # within 10m of destination
+                    print(f"[DEBUG-EV] {ev_id} COMPLETING via Path B at t={sim_time:.1f}s remaining={remaining:.1f}m", flush=True)
+                    self._complete_ev(sid, ev_session, sim_time)
+                    continue
+
 
             detection = self.detector.poll_vehicle(
                 ev_session.cf_vehicle_id or ev_id,
@@ -417,7 +447,8 @@ class EVPriorityService:
                         resolved = pri_green[0] if pri_green else current_phase
                     elif decision == SignalStrategy.DECISION_FORCE_GREEN:
                         resolved = pri_green[0] if pri_green else current_phase
-                    signal_overrides[inter_id] = resolved
+                    # resolved is 1-based enumerate index; +1 converts to business phase (2-5) for frontend display
+                    signal_overrides[inter_id] = resolved + 1
                     signal_override_owners[inter_id] = ev_id
 
                     self.logger.log(
@@ -510,11 +541,29 @@ class EVPriorityService:
     #  Status
     # ================================================================
 
+    # Number of extra frames a completed EV stays in status (ensures frontend receives it)
+    STATUS_LINGER_FRAMES = 15
+
     def _build_ev_status(self, sid: str, sim_time: float) -> List[dict]:
+        # Increment frame counter per sid
+        seq = self._status_seq.get(sid, 0) + 1
+        self._status_seq[sid] = seq
+
         result = []
-        for ev_id, ev in self.ev_sessions.get(sid, {}).items():
+        sessions = self.ev_sessions.get(sid, {})
+        if int(sim_time) % 5 == 0 and int(sim_time) != getattr(self, '_last_status_full_dump', -1):
+            self._last_status_full_dump = int(sim_time)
+            print(f"[DEBUG-STATUS] sid={sid} session_count={len(sessions)} keys={list(sessions.keys())} has_evs={self.has_evs(sid)} has_overrides={bool(self._active_overrides.get(sid))}", flush=True)
+        for ev_id, ev in sessions.items():
+            # After completion, linger in status for STATUS_LINGER_FRAMES more calls
+            # so the frontend has time to receive completed=true.
+            if ev.completed and seq - ev.completion_seq > self.STATUS_LINGER_FRAMES:
+                continue
             elapsed = sim_time - ev.dispatch_time if not ev.completed else (
                 ev.completion_time - ev.dispatch_time)
+            if int(sim_time) % 15 == 0 and int(sim_time) != getattr(ev, '_last_status_debug', -1):
+                ev._last_status_debug = int(sim_time)
+                print(f"[DEBUG-EV] status {ev_id}: completed={ev.completed} passed={len(ev.passed_intersections)}/{len(ev.route)}", flush=True)
             result.append({
                 "evId": ev_id,
                 "evType": ev.ev_type,
@@ -525,12 +574,22 @@ class EVPriorityService:
                 "completed": ev.completed,
                 "elapsedTime": round(max(0, elapsed), 1),
             })
+        if int(sim_time) > 105:
+            print(f"[DEBUG-STATUS-DUMP] t={sim_time:.1f}s sid={sid[:20]} result_len={len(result)} completed={[r['completed'] for r in result]}", flush=True)
         return result
 
     def has_evs(self, sid: str) -> bool:
-        return any(not ev.completed for ev in self.ev_sessions.get(sid, {}).values()) or bool(
-            self._active_overrides.get(sid)
-        )
+        # Active (uncompleted) EVs or active overrides -> True
+        if any(not ev.completed for ev in self.ev_sessions.get(sid, {}).values()):
+            return True
+        if bool(self._active_overrides.get(sid)):
+            return True
+        # Recently-completed EVs still lingering in status -> True so _build_ev_status runs
+        seq = self._status_seq.get(sid, 0)
+        for ev in self.ev_sessions.get(sid, {}).values():
+            if ev.completed and seq - ev.completion_seq <= self.STATUS_LINGER_FRAMES:
+                return True
+        return False
 
     def release_session(self, sid: str) -> None:
         self.ev_sessions.pop(sid, None)
@@ -541,11 +600,14 @@ class EVPriorityService:
         self._active_overrides.pop(sid, None)
         self._override_owners.pop(sid, None)
         self._override_started_at.pop(sid, None)
+        self._status_seq.pop(sid, None)
 
     def _complete_ev(self, sid: str, ev: EVSession, sim_time: float) -> None:
         if ev.completed:
             return
         ev.completed = True
+        ev.completion_seq = self._status_seq.get(sid, 0)
+        print(f"[DEBUG-EV] _complete_ev called for {ev.ev_id} at t={sim_time:.1f}s", flush=True)
         ev.completion_time = sim_time
         owned_intersections = [
             intersection_id
