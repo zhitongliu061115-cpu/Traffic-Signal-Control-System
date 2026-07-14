@@ -26,6 +26,13 @@ REQUEST_COLUMN_MAP = {
 }
 
 
+def resolve_model_dir(artifact_root: Path, configured_path: str) -> Path:
+    model_dir = Path(configured_path)
+    if not model_dir.is_absolute():
+        model_dir = artifact_root / model_dir
+    return model_dir.resolve()
+
+
 class ForecastRuntime:
     def __init__(self, artifact_root: Path):
         import lightgbm as lgb
@@ -34,7 +41,7 @@ class ForecastRuntime:
         if not pointer_path.exists():
             raise FileNotFoundError(f"model pointer does not exist: {pointer_path}")
         pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-        self.artifact_dir = Path(pointer["modelDir"]).resolve()
+        self.artifact_dir = resolve_model_dir(artifact_root, pointer["modelDir"])
         self.manifest = json.loads((self.artifact_dir / "manifest.json").read_text(encoding="utf-8"))
         expected_feature_names = feature_names()
         if self.manifest.get("featureNames") != expected_feature_names:

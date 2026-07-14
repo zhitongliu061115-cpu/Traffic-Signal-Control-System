@@ -48,6 +48,18 @@ const forecastData: DataAnalysisForecastData = {
   })),
 }
 
+const unavailableForecastData: DataAnalysisForecastData = {
+  available: false,
+  dataUntil: null,
+  generatedAt: null,
+  message: '预测历史数据不足',
+  modelType: null,
+  modelVersion: null,
+  trainedSource: null,
+  intersections: [],
+  timeline: [],
+}
+
 const bootstrapData: DataAnalysisBootstrapData = {
   sampleCount: 34752,
   sampleRate: 96,
@@ -183,6 +195,27 @@ describe('DataAnalysis', () => {
     const dateCards = wrapper.findAll('.daily-date-card')
     expect(dateCards).toHaveLength(12)
     expect(dateCards[dateCards.length - 1]?.text()).toContain('07-12')
+
+    wrapper.unmount()
+  })
+
+  it('renders local demo forecast when backend forecast is unavailable', async () => {
+    vi.mocked(fetchDataAnalysisForecast).mockResolvedValue(unavailableForecastData)
+
+    const wrapper = mount(DataAnalysis, {
+      global: {
+        plugins: [createPinia()],
+        stubs: {
+          RouterLink: RouterLinkStub,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('lgbm-local-demo')
+    expect(wrapper.text()).not.toContain('本地演示数据')
+    expect(wrapper.findAll('.forecast-intersection-card')).toHaveLength(12)
+    expect(wrapper.findAll('.forecast-unavailable')).toHaveLength(0)
 
     wrapper.unmount()
   })
