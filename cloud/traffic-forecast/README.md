@@ -10,7 +10,7 @@ Risk levels are calibrated from the training data instead of fixed demo constant
 
 Training reads `traffic_forecast_observation`. Real collection must write one valid row per intersection and minute using `observation_source='REAL'`. Synthetic rows use the same columns and remain distinguishable with `observation_source='SYNTHETIC'`. When both sources exist at the same intersection and minute, training and inference prefer `REAL`.
 
-Required environment variables:
+Training and data-seeding commands require these environment variables. Serving the committed model does not connect to the database directly:
 
 ```text
 FORECAST_DB_HOST
@@ -22,7 +22,7 @@ FORECAST_DB_PASSWORD
 
 ## Local workflow
 
-Create the environment and install fixed dependencies:
+Create the local environment and install fixed dependencies. `.venv` is intentionally not committed because it contains machine-specific Python executables:
 
 ```powershell
 python -m venv .venv
@@ -59,6 +59,14 @@ Start the service:
 .\.venv\Scripts\python.exe -m app.server
 ```
 
+The active model is committed under `models/lgbm-20260713T075131Z`, and `models/current.json` uses a repository-relative path. Verify that the model loaded before starting the backend or frontend:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:17008/health
+```
+
+The response must contain `status: ok` and `modelCount: 15`. Merely seeing the server listening message is insufficient because the process remains observable when model loading fails.
+
 Endpoints:
 
 ```text
@@ -67,4 +75,4 @@ POST /predict
 POST /reload
 ```
 
-Model artifacts are written under `models/` and are intentionally ignored by Git. A successful training run writes its evaluation metrics to `manifest.json` and registers the active version in `traffic_forecast_model_registry`.
+The active deployment artifact is committed under `models/`; newly trained versions remain ignored until deliberately selected for release. A successful training run writes its evaluation metrics to `manifest.json`, updates `current.json` with a portable relative path, and registers the active version in `traffic_forecast_model_registry`.

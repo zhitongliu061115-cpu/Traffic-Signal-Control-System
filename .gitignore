@@ -1,7 +1,10 @@
 # Dependencies and build output
 node_modules/
 cloud/traffic-forecast/.venv/
-cloud/traffic-forecast/models/
+cloud/traffic-forecast/models/*
+!cloud/traffic-forecast/models/current.json
+!cloud/traffic-forecast/models/lgbm-20260713T075131Z/
+!cloud/traffic-forecast/models/lgbm-20260713T075131Z/**
 dist/
 coverage/
 target/
