@@ -46,6 +46,7 @@ const controllerOptions = [
   { value: 'fixed-time', label: 'Fixed-Time', desc: '固定配时，按预设周期循环' },
   { value: 'max-pressure', label: 'Max-Pressure', desc: '最大压力算法，按排队择优' },
   { value: 'traffic-r', label: 'Traffic-R', desc: '强化学习模型，需云端服务可用' },
+  { value: 'combined', label: '组合策略', desc: '综合固定配时和Max-Pressure以及强化学习模型' },
 ]
 
 const sceneOptions = [
@@ -69,16 +70,20 @@ function openControllerDialog(e: MouseEvent): void {
 function selectController(value: string): void {
   pendingController.value = value
 }
+function resolveControllerType(value: string): string {
+  return value === 'combined' ? 'max-pressure' : value
+}
 async function confirmSwitch(): Promise<void> {
   if (switching.value || pendingController.value === simulationControllerType.value) {
     showControllerDialog.value = false
     return
   }
   switching.value = true
-  simulationControllerType.value = pendingController.value
+  const controllerType = resolveControllerType(pendingController.value)
+  simulationControllerType.value = controllerType
   showControllerDialog.value = false
   try {
-    const sid = await store.recreateSimulation(pendingController.value)
+    const sid = await store.recreateSimulation(controllerType)
     if (sid) emit('simulationRecreated', sid)
   } catch {
     // 错误已在 store 内处理
