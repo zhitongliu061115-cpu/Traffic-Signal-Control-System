@@ -71,9 +71,11 @@ public class AgentIntentClassifier {
     }
 
     private AgentPlan normalizePlan(AgentPlan plan, AgentPlanningInput input) {
+        DispatchMemory dispatchMemory = dispatchMemoryFromContext(input.contextJson());
         List<AgentPlan.PlannedToolCall> normalizedCalls = new ArrayList<>();
         for (AgentPlan.PlannedToolCall call : plan.toolCalls()) {
             AgentPlan.PlannedToolCall normalized = normalizeRealtimeToolChoice(call, input);
+            normalized = normalizeEmergencyDraftFromMemory(normalized, dispatchMemory, input);
             if (hasInvalidRequiredArguments(normalized)) {
                 continue;
             }
@@ -81,6 +83,17 @@ public class AgentIntentClassifier {
         }
         if (normalizedCalls.isEmpty()) {
             String rationale = plan.rationale();
+            if (looksLikeEmergencyDraft(input.message()) && dispatchMemory != null) {
+                return new AgentPlan(
+                        plan.intent(),
+                        true,
+                        appendRationale(rationale, "已读取最近一次应急调度起终点，自动调用 draft_emergency_dispatch 生成草案。"),
+                        List.of(emergencyDraftCall(dispatchMemory, input.sid(), "使用最近一次应急调度起终点生成调度草案")),
+                        plan.rawPlan(),
+                        plan.plannerSource(),
+                        plan.fallback()
+                );
+            }
             if (looksLikeEmergencyDraft(input.message())) {
                 rationale = appendRationale(rationale, "生成应急调度草案需要真实起点和终点路口 ID，当前请求未提供，后端已阻止占位参数调用。");
             } else if (plan.needsTools()) {
@@ -91,11 +104,67 @@ public class AgentIntentClassifier {
         return new AgentPlan(plan.intent(), plan.needsTools(), plan.rationale(), normalizedCalls, plan.rawPlan(), plan.plannerSource(), plan.fallback());
     }
 
+    private AgentPlan.PlannedToolCall normalizeEmergencyDraftFromMemory(
+            AgentPlan.PlannedToolCall call,
+            DispatchMemory dispatchMemory,
+            AgentPlanningInput input
+    ) {
+        if (!"draft_emergency_dispatch".equals(call.toolName()) || dispatchMemory == null) {
+            return call;
+        }
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        if (call.arguments() != null) {
+            arguments.putAll(call.arguments());
+        }
+        if (!StringUtils.hasText(String.valueOf(arguments.getOrDefault("sid", ""))) && StringUtils.hasText(input.sid())) {
+            arguments.put("sid", input.sid());
+        }
+        if (invalidArg(arguments, "startIntersection")) {
+            arguments.put("startIntersection", dispatchMemory.startIntersection());
+        }
+        if (invalidArg(arguments, "endIntersection")) {
+            arguments.put("endIntersection", dispatchMemory.endIntersection());
+        }
+        if (!arguments.containsKey("evId") && StringUtils.hasText(dispatchMemory.evId())) {
+            arguments.put("evId", dispatchMemory.evId());
+        }
+        if (!arguments.containsKey("evType") && StringUtils.hasText(dispatchMemory.evType())) {
+            arguments.put("evType", dispatchMemory.evType());
+        }
+        if (!arguments.containsKey("priority") && dispatchMemory.priority() != null) {
+            arguments.put("priority", dispatchMemory.priority());
+        }
+        return new AgentPlan.PlannedToolCall(
+                call.toolName(),
+                arguments,
+                appendRationale(call.reason(), "已从最近一次应急调度记忆补齐起终点路口。")
+        );
+    }
+
+    private AgentPlan.PlannedToolCall emergencyDraftCall(DispatchMemory dispatchMemory, String sid, String reason) {
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        if (StringUtils.hasText(sid)) {
+            arguments.put("sid", sid);
+        }
+        arguments.put("startIntersection", dispatchMemory.startIntersection());
+        arguments.put("endIntersection", dispatchMemory.endIntersection());
+        if (StringUtils.hasText(dispatchMemory.evId())) {
+            arguments.put("evId", dispatchMemory.evId());
+        }
+        if (StringUtils.hasText(dispatchMemory.evType())) {
+            arguments.put("evType", dispatchMemory.evType());
+        }
+        if (dispatchMemory.priority() != null) {
+            arguments.put("priority", dispatchMemory.priority());
+        }
+        return new AgentPlan.PlannedToolCall("draft_emergency_dispatch", arguments, reason);
+    }
+
     private AgentPlan.PlannedToolCall normalizeRealtimeToolChoice(
             AgentPlan.PlannedToolCall call,
             AgentPlanningInput input
     ) {
-        if ("get_region_metrics".equals(call.toolName()) && looksLikeRealtimeCongestionQuestion(input.message())) {
+        if (looksLikeRealtimeCongestionQuestion(input.message()) && shouldUseNetworkCongestionDiagnosis(call.toolName())) {
             Map<String, Object> arguments = new LinkedHashMap<>();
             if (StringUtils.hasText(input.sid())) {
                 arguments.put("sid", input.sid());
@@ -107,6 +176,13 @@ public class AgentIntentClassifier {
             );
         }
         return call;
+    }
+
+    private boolean shouldUseNetworkCongestionDiagnosis(String toolName) {
+        return "get_region_metrics".equals(toolName)
+                || "get_intersection_detail".equals(toolName)
+                || "get_road_detail".equals(toolName)
+                || "diagnose_congestion".equals(toolName);
     }
 
     private boolean hasInvalidRequiredArguments(AgentPlan.PlannedToolCall call) {
@@ -154,6 +230,32 @@ public class AgentIntentClassifier {
                 "A",
                 "B"
         ).stream().anyMatch(placeholder -> placeholder.equalsIgnoreCase(text));
+    }
+
+    private DispatchMemory dispatchMemoryFromContext(String contextJson) {
+        if (!StringUtils.hasText(contextJson)) {
+            return null;
+        }
+        try {
+            JsonNode memory = objectMapper.readTree(contextJson).path("emergencyDispatchMemory");
+            if (memory.isMissingNode() || memory.isNull()) {
+                return null;
+            }
+            String start = text(memory, "startIntersection", "");
+            String end = text(memory, "endIntersection", "");
+            if (!StringUtils.hasText(start) || !StringUtils.hasText(end)) {
+                return null;
+            }
+            return new DispatchMemory(
+                    start,
+                    end,
+                    text(memory, "evId", ""),
+                    text(memory, "evType", ""),
+                    memory.path("priority").isNumber() ? memory.path("priority").asInt() : null
+            );
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private boolean looksLikeRealtimeCongestionQuestion(String message) {
@@ -286,6 +388,15 @@ public class AgentIntentClassifier {
             String message,
             String sid,
             String contextJson
+    ) {
+    }
+
+    private record DispatchMemory(
+            String startIntersection,
+            String endIntersection,
+            String evId,
+            String evType,
+            Integer priority
     ) {
     }
 }

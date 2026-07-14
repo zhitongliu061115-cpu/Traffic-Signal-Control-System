@@ -18,6 +18,7 @@ const {
   simulationControllerType,
   simulationStatus,
   simulationSid,
+  simulationSceneId,
   simulationSpeed,
   latestControlDecision,
 } = storeToRefs(store)
@@ -45,6 +46,12 @@ const controllerOptions = [
   { value: 'fixed-time', label: 'Fixed-Time', desc: '固定配时，按预设周期循环' },
   { value: 'max-pressure', label: 'Max-Pressure', desc: '最大压力算法，按排队择优' },
   { value: 'traffic-r', label: 'Traffic-R', desc: '强化学习模型，需云端服务可用' },
+]
+
+const sceneOptions = [
+  { value: 'jinan_3x4', label: 'Jinan 3x4' },
+  { value: 'jinan_3x4_stress', label: 'Jinan 3x4 Stress' },
+  { value: 'hangzhou_4_4', label: 'Hangzhou 4x4' },
 ]
 
 function openControllerDialog(e: MouseEvent): void {
@@ -134,6 +141,12 @@ function selectSpeed(speed: number): void {
   if (!canSetSpeed.value) return
   simulationSpeed.value = speed
   showSpeedMenu.value = false
+}
+
+async function selectScene(event: Event): Promise<void> {
+  if (!canSetSpeed.value) return
+  simulationSceneId.value = (event.target as HTMLSelectElement).value
+  await store.loadSceneRoadnet(simulationSceneId.value)
 }
 // 点击外部关闭
 function onOverlayClick(e: MouseEvent): void {
@@ -312,6 +325,23 @@ const phaseProgressColor = computed(() => {
       </div>
 
       <!-- ===== 策略选择弹窗 ===== -->
+      <div class="sc-section sc-section--compact">
+        <div class="sc-section__head">
+          <span class="sc-section__label">仿真路网</span>
+          <span class="sc-select-hint">{{ canSetSpeed ? '可切换' : '仿真中锁定' }}</span>
+        </div>
+        <select
+          class="sc-scene-select"
+          :value="simulationSceneId"
+          :disabled="!canSetSpeed"
+          @change="selectScene"
+        >
+          <option v-for="scene in sceneOptions" :key="scene.value" :value="scene.value">
+            {{ scene.label }}
+          </option>
+        </select>
+      </div>
+
       <Teleport to="body">
         <div v-if="showControllerDialog" class="sc-dialog-overlay" @click="onOverlayClick">
           <aside
@@ -957,6 +987,20 @@ const phaseProgressColor = computed(() => {
   padding: 5px 14px;
   font-size: 11px;
   flex-shrink: 0;
+}
+.sc-scene-select {
+  width: 100%;
+  height: 30px;
+  border: 1px solid rgba(0, 212, 255, 0.26);
+  border-radius: 8px;
+  background: rgba(4, 12, 24, 0.78);
+  color: #dffbff;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.sc-scene-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .sc-status-badge {
   margin-left: auto;

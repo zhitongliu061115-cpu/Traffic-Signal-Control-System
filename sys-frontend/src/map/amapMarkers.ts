@@ -151,7 +151,7 @@ export function createTLMarkers(
   // 存储每个 marker 对应的最新路口数据引用
   const latestData = new Map<string, Intersection>()
 
-  for (const it of intersections) {
+  function addMarker(it: Intersection): void {
     latestData.set(it.id, it)
     const content = buildIcon(it)
     const marker = new AMap.Marker({
@@ -171,6 +171,7 @@ export function createTLMarkers(
     marker.on('click', () => onSelect(it.id))
 
     let lastIconState = `${it.currentPhase}|${it.deviceStatus}`
+    let lastPosition = `${it.lng.toFixed(7)},${it.lat.toFixed(7)}`
     const tlMarker: TLMarker = {
       id: it.id, marker,
       update: (updatedIt: Intersection) => {
@@ -179,6 +180,11 @@ export function createTLMarkers(
         if (iconState !== lastIconState) {
           lastIconState = iconState
           marker.setContent(buildIcon(updatedIt))
+        }
+        const nextPosition = `${updatedIt.lng.toFixed(7)},${updatedIt.lat.toFixed(7)}`
+        if (nextPosition !== lastPosition) {
+          lastPosition = nextPosition
+          marker.setPosition([updatedIt.lng, updatedIt.lat])
         }
         if (hoveredId === updatedIt.id && popupVisible) {
           showPopup(updatedIt)
@@ -190,12 +196,23 @@ export function createTLMarkers(
     markerLookup.set(it.id, tlMarker)
   }
 
+  for (const it of intersections) addMarker(it)
+
   return {
     markers,
     updateAll(its: Intersection[]) {
+      const nextIds = new Set(its.map((it) => it.id))
+      for (let index = markers.length - 1; index >= 0; index -= 1) {
+        const marker = markers[index]!
+        if (nextIds.has(marker.id)) continue
+        marker.remove()
+        markerLookup.delete(marker.id)
+        markers.splice(index, 1)
+      }
       for (const it of its) {
         const m = markerLookup.get(it.id)
         if (m) m.update(it)
+        else addMarker(it)
       }
     },
     dispose() {

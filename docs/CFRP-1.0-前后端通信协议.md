@@ -442,7 +442,8 @@ wss://api.example.com/ws/v1/simulations/run_001
       {
         "intersectionId": "intersection_1_1",
         "phaseIndex": 1,
-        "phaseCode": "ETWT"
+        "phaseCode": "ETWT",
+        "remainingSec": 8.4
       }
     ],
     "metrics": {
@@ -467,7 +468,7 @@ wss://api.example.com/ws/v1/simulations/run_001
 | `roads` | `RoadState[]` | 是 | 当前道路状态。前端用它更新道路颜色和 tooltip。 | `[{ "id": "road_1_1_0", "level": "slow" }]` |
 | `laneStates` | `Record<string, IntersectionLaneState>` | 否 | 路口 movement lane 级状态，主要供 Traffic-R 输入和调试展示。 | `{ "intersection_1_1": { "lanes": { "WT": {...} } } }` |
 | `intersections` | `IntersectionState[]` | 是 | 当前路口状态。前端用它显示路口拥堵和排队。 | `[{ "id": "intersection_1_1", "queueCount": 14 }]` |
-| `signals` | `SignalState[]` | 是 | 当前信号灯状态。前端用它高亮放行方向。 | `[{ "intersectionId": "intersection_1_1", "phaseIndex": 1 }]` |
+| `signals` | `SignalState[]` | 是 | 当前信号灯状态。前端用它高亮放行方向并显示相位倒计时。 | `[{ "intersectionId": "intersection_1_1", "phaseIndex": 1, "remainingSec": 8.4 }]` |
 | `metrics` | `SimulationMetrics` | 是 | 全局指标。前端用它更新大屏指标卡。 | `{ "vehicleCount": 582, "queueCount": 96 }` |
 | `evEvents` | `EvEvent[]` | 是 | 本帧信号控制事件。应急车接近路口时产生延绿/红灯缩短等动作。 | `[{ intersectionId: intersection_1_1, decision: extend_green }]` |
 | `evStatus` | `EvStatus[]` | 是 | 应急车进度追踪。前端用它显示进度条和剩余时间。 | `[{ evId: ev_default, passedCount: 1, totalCount: 5 }]` |
@@ -527,6 +528,7 @@ wss://api.example.com/ws/v1/simulations/run_001
 | `intersectionId` | `string` | 是 | 信号灯所属路口 ID。 | `"intersection_1_1"` |
 | `phaseIndex` | `number` | 是 | CityFlow 当前相位编号。 | `1` |
 | `phaseCode` | `string` | 否 | 业务相位编码。四相位控制建议使用 `ETWT`、`NTST`、`ELWL`、`NLSL`。 | `"ETWT"` |
+| `remainingSec` | `number` | 否 | 当前相位剩余时间，单位秒；前端倒计时优先使用该字段。 | `8.4` |
 
 前端使用指南：
 
@@ -967,6 +969,7 @@ export interface SignalState {
   intersectionId: string;
   phaseIndex: number;
   phaseCode?: string;
+  remainingSec?: number;
 }
 
 export interface SimulationMetrics {

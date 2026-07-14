@@ -21,7 +21,7 @@ const store = useTrafficStore()
 const {
   intersections, roads, vehicles,
   systemMode, emergencyRoute, activeGreenWaveIndex, selectedIntersectionId,
-  simulationVehicles, simulationStatus, simRoadnet, emergencyCfVehicleId,
+  simulationVehicles, simulationStatus, simRoadnet, emergencyCfVehicleId, simulationSceneId,
 } = storeToRefs(store)
 
 const mapBox = ref<HTMLDivElement | null>(null)
@@ -40,6 +40,55 @@ let vehicleUpdateTimer: ReturnType<typeof setTimeout> | null = null
 let dashboardVideo: HTMLVideoElement | null = null
 let resumeDashboardVideo = false
 let mapInteracting = false
+let plannedRoadSignature = ''
+
+const MAP_PROFILES: Record<string, { city: string; center: [number, number]; zoom: number; minLng: number; maxLng: number; minLat: number; maxLat: number; skipGeocode?: boolean }> = {
+  hangzhou_4_4: {
+    city: '杭州',
+    center: [120.168, 30.263],
+    zoom: 12,
+    minLng: 120.1250,
+    maxLng: 120.2100,
+    minLat: 30.2350,
+    maxLat: 30.2920,
+    skipGeocode: true,
+  },
+}
+
+function currentMapProfile() {
+  return MAP_PROFILES[simulationSceneId.value] ?? {
+    city: '上海',
+    center: [121.4644, 31.2240] as [number, number],
+    zoom: 14,
+    minLng: 121.450,
+    maxLng: 121.485,
+    minLat: 31.213,
+    maxLat: 31.240,
+    skipGeocode: false,
+  }
+}
+
+function syncNormalizedPoint(it: { lng: number; lat: number; x: number; y: number }): void {
+  const profile = currentMapProfile()
+  it.x = (it.lng - profile.minLng) / Math.max(0.000001, profile.maxLng - profile.minLng)
+  it.y = (profile.maxLat - it.lat) / Math.max(0.000001, profile.maxLat - profile.minLat)
+}
+
+function roadSignature(): string {
+  const nodePart = intersections.value
+    .map((it) => `${it.id}:${it.name}`)
+    .join('|')
+  const roadPart = roads.value.map((r) => `${r.id}:${r.from}>${r.to}`).join('|')
+  return `${simulationSceneId.value}|${nodePart}|${roadPart}`
+}
+
+function recreateNetworkLayers(): void {
+  if (!amapInstance) return
+  roadLayer?.dispose()
+  tlMarkers?.dispose()
+  roadLayer = addAMapRoadLayer(amapInstance.map, intersections.value, roads.value, (id) => { selectedRoadId.value = id })
+  tlMarkers = createTLMarkers(amapInstance.map, intersections.value, (id) => store.selectIntersection(id))
+}
 
 function scheduleVehicleLayerUpdate(delayMs = 500): void {
   if (vehicleUpdateTimer !== null || viewerOpen.value || mapInteracting) return
@@ -118,24 +167,59 @@ function addEndpoint(map: Map<string, Array<[number, number]>>, itId: string, pt
   else map.set(itId, [pt])
 }
 
-async function loadRealData(): Promise<void> {
-  const map = amapInstance!.map
+function fallbackBentPath(from: { lng: number; lat: number }, to: { lng: number; lat: number }, seed: string): [number, number][] {
+  const dx = to.lng - from.lng
+  const dy = to.lat - from.lat
+  let hash = 0
+  for (const ch of seed) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  const sign = hash % 2 === 0 ? 1 : -1
+  const offset = sign * (0.0012 + (hash % 5) * 0.00018)
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const midLat = (from.lat + to.lat) / 2 + offset
+    return [
+      [from.lng, from.lat],
+      [from.lng + dx * 0.22, midLat],
+      [from.lng + dx * 0.55, midLat],
+      [from.lng + dx * 0.78, to.lat - offset * 0.35],
+      [to.lng, to.lat],
+    ]
+  }
+  const midLng = (from.lng + to.lng) / 2 + offset
+  return [
+    [from.lng, from.lat],
+    [midLng, from.lat + dy * 0.22],
+    [midLng, from.lat + dy * 0.55],
+    [to.lng - offset * 0.35, from.lat + dy * 0.78],
+    [to.lng, to.lat],
+  ]
+}
 
-  // ---- 第 1 步：从后端加载数据（失败自动降级 mock）----
-  await store.loadDashboardData()
+async function planRoadsWithAMap(force = false): Promise<void> {
+  if (!amapInstance) return
+  const signature = roadSignature()
+  const topologyChanged = signature !== plannedRoadSignature
+  if (!force && !topologyChanged) return
+  plannedRoadSignature = signature
+
+  const map = amapInstance.map
+  const profile = currentMapProfile()
+  map.setZoomAndCenter(profile.zoom, profile.center)
 
   // ---- 第 1.5 步：高德 POI 地理编码修正路口坐标 ----
-  // 把手写的 mock 坐标替换为高德认定的真实交叉口位置
-  const snapItems = intersections.value.map((it) => ({ id: it.id, name: it.name, lng: it.lng, lat: it.lat }))
-  const snapped = await snapIntersectionsToAMap(snapItems, 3)
-  for (const it of intersections.value) {
-    const pt = snapped.get(it.id)
-    if (pt) {
-      it.lng = pt[0]
-      it.lat = pt[1]
-      it.x = (it.lng - 121.450) / 0.035
-      it.y = (31.240 - it.lat) / 0.027
+  // 杭州展示路网使用人工挑选的代表点，跳过 geocode，避免 POI 纠偏把点吸到不成网的位置。
+  if (!profile.skipGeocode) {
+    const snapItems = intersections.value.map((it) => ({ id: it.id, name: it.name, lng: it.lng, lat: it.lat }))
+    const snapped = await snapIntersectionsToAMap(snapItems, 3, { city: profile.city })
+    for (const it of intersections.value) {
+      const pt = snapped.get(it.id)
+      if (pt) {
+        it.lng = pt[0]
+        it.lat = pt[1]
+        syncNormalizedPoint(it)
+      }
     }
+  } else {
+    for (const it of intersections.value) syncNormalizedPoint(it)
   }
 
   // ---- 第 2 步：路径规划（用修正后的坐标）----
@@ -153,11 +237,12 @@ async function loadRealData(): Promise<void> {
     const to = intersections.value.find((i) => i.id === r.to)
     if (!from || !to) continue
     const realPath = paths[pi++]
-    if (realPath) r.path = realPath
+    r.path = realPath && realPath.length > 2
+      ? realPath
+      : fallbackBentPath(from, to, r.id)
   }
 
   // ---- 第 2.5 步：用真实路径端点修正路口坐标 ----
-  // 高德驾车路径端点 = 道路实际交叉口位置，比 mock 手写坐标更准确
   const itEndpoints = new Map<string, Array<[number, number]>>()
   for (const r of roads.value) {
     if (!r.path || r.path.length < 2) continue
@@ -173,14 +258,30 @@ async function loadRealData(): Promise<void> {
     const sumLat = pts.reduce((s, p) => s + p[1], 0)
     it.lng = sumLng / pts.length
     it.lat = sumLat / pts.length
-    // 同步修正归一化坐标（Three.js 备用）
-    it.x = (it.lng - 121.450) / 0.035
-    it.y = (31.240 - it.lat) / 0.027
+    syncNormalizedPoint(it)
   }
 
+  if (roadLayer && tlMarkers && topologyChanged) {
+    recreateNetworkLayers()
+  } else {
+    roadLayer?.update(intersections.value, roads.value)
+    tlMarkers?.updateAll(intersections.value)
+  }
+  vehicleLayer?.dispose()
+  vehicleLayer = null
+  syncEmergency()
+}
+
+async function loadRealData(): Promise<void> {
+  const map = amapInstance!.map
+
+  // ---- 第 1 步：从后端加载数据（失败自动降级 mock）----
+  await store.loadDashboardData()
+
+  await planRoadsWithAMap(true)
+
   // ---- 第 3 步：一次性创建 ----
-  roadLayer = addAMapRoadLayer(map, intersections.value, roads.value, (id) => { selectedRoadId.value = id })
-  tlMarkers = createTLMarkers(map, intersections.value, (id) => store.selectIntersection(id))
+  recreateNetworkLayers()
 
 }
 
@@ -203,8 +304,11 @@ function syncEmergency(): void {
     // 逐段找路网中的真实道路路径
     const allPts: [number, number][] = []
     for (let i = 0; i < emergencyRoute.value.length - 1; i++) {
-      const fromMock = cfToMock(emergencyRoute.value[i])
-      const toMock = cfToMock(emergencyRoute.value[i + 1])
+      const routeFrom = emergencyRoute.value[i]
+      const routeTo = emergencyRoute.value[i + 1]
+      if (!routeFrom || !routeTo) continue
+      const fromMock = cfToMock(routeFrom)
+      const toMock = cfToMock(routeTo)
       if (!fromMock || !toMock) continue
 
       // 找连接这两个 mock 路口的路
@@ -246,6 +350,21 @@ watch([roads, intersections], () => {
     syncEmergency()
   }, 300)
 }, { deep: true })
+let routePlanTimer: ReturnType<typeof setTimeout> | null = null
+watch(() => roadSignature(), () => {
+  if (!mapReady.value || !amapInstance) return
+  if (routePlanTimer) clearTimeout(routePlanTimer)
+  routePlanTimer = setTimeout(() => {
+    routePlanTimer = null
+    dataLoading.value = true
+    void planRoadsWithAMap()
+      .finally(() => { dataLoading.value = false })
+  }, 500)
+})
+watch(simulationSceneId, (sceneId) => {
+  if (!mapReady.value || !amapInstance) return
+  void store.loadSceneRoadnet(sceneId)
+})
 watch(systemMode, syncEmergency)
 watch(emergencyRoute, () => { if (systemMode.value === 'emergency') syncEmergency() }, { deep: true })
 
@@ -282,6 +401,7 @@ setTimeout(bootstrapMap, 100)
 onBeforeUnmount(() => {
   if (resumeDashboardVideo) void dashboardVideo?.play().catch(() => undefined)
   if (vehicleUpdateTimer) clearTimeout(vehicleUpdateTimer)
+  if (routePlanTimer) clearTimeout(routePlanTimer)
   roadLayer?.dispose()
   tlMarkers?.dispose()
   vehicleLayer?.dispose()

@@ -80,8 +80,8 @@ const dynamicMetrics = computed(() => [
     dot: 'live',
   },
   {
-    label: '实时车流',
-    value: `${statistics.value.totalFlow.toLocaleString()} 辆/h`,
+    label: '在网车辆',
+    value: `${statistics.value.totalFlow.toLocaleString()} 辆`,
     tone: 'cyan',
     dot: 'live',
   },

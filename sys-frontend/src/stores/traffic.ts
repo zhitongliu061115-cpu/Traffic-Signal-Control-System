@@ -72,6 +72,141 @@ const PHASE_DURATIONS: Record<SignalPhase, number> = {
 
 let trendTick = 0 // 不放在 state 里避免响应式开销
 
+const SCENE_GEO_BOUNDS: Record<string, { minLng: number; maxLng: number; minLat: number; maxLat: number }> = {
+  hangzhou_4_4: {
+    minLng: 120.1250,
+    maxLng: 120.2100,
+    minLat: 30.2350,
+    maxLat: 30.2920,
+  },
+}
+
+const HANGZHOU_ARTERIAL_GRID = {
+  cols: {
+    1: { lng: 120.1250, name: '曙光路/黄龙' },
+    2: { lng: 120.1550, name: '武林/湖墅' },
+    3: { lng: 120.1820, name: '中河/建国' },
+    4: { lng: 120.2100, name: '钱江/秋涛' },
+  },
+  rows: {
+    1: { lat: 30.2920, name: '文二/学院' },
+    2: { lat: 30.2740, name: '体育场/凤起' },
+    3: { lat: 30.2550, name: '庆春/解放' },
+    4: { lat: 30.2350, name: '望江/钱江' },
+  },
+} as const
+
+function parseGridKey(id: string): { col: number; row: number } | null {
+  const match = id.match(/^intersection_(\d+)_(\d+)$/)
+  if (!match) return null
+  return { col: Number(match[1]), row: Number(match[2]) }
+}
+
+function interpolateByIndex(index: number, anchors: number[]): number {
+  if (anchors.length === 0) return 0
+  const clamped = Math.max(1, Math.min(anchors.length, index))
+  const lower = Math.floor(clamped)
+  const upper = Math.ceil(clamped)
+  const lowerValue = anchors[lower - 1] ?? anchors[0] ?? 0
+  const upperValue = anchors[upper - 1] ?? lowerValue
+  if (lower === upper) return lowerValue
+  return lowerValue + (upperValue - lowerValue) * (clamped - lower)
+}
+
+
+
+function deterministicCongestion(id: string): number {
+  let hash = 0
+  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+  return 20 + (hash % 55)
+}
+
+function buildTrafficMapFromRoadnet(roadnet: SimRoadnetResponse): { intersections: Intersection[]; roads: Road[] } | null {
+  const bounds = SCENE_GEO_BOUNDS[roadnet.sceneId]
+  if (!bounds || !roadnet.intersections.length) return null
+
+  const realIntersections = roadnet.intersections.filter((item) => !item.virtual)
+  if (!realIntersections.length) return null
+
+  const xs = realIntersections.map((item) => item.x)
+  const ys = realIntersections.map((item) => item.y)
+  const minX = Math.min(...xs)
+  const maxX = Math.max(...xs)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  const dx = Math.max(1, maxX - minX)
+  const dy = Math.max(1, maxY - minY)
+  const hangzhouColLng = Object.values(HANGZHOU_ARTERIAL_GRID.cols).map((item) => item.lng)
+  const hangzhouRowLat = Object.values(HANGZHOU_ARTERIAL_GRID.rows).map((item) => item.lat)
+
+  const toLngLat = (point: { x: number; y: number }): [number, number] => {
+    const nx = (point.x - minX) / dx
+    const ny = (point.y - minY) / dy
+    if (roadnet.sceneId === 'hangzhou_4_4') {
+      return [
+        interpolateByIndex(1 + nx * 3, hangzhouColLng),
+        interpolateByIndex(1 + ny * 3, hangzhouRowLat),
+      ]
+    }
+    return [
+      bounds.minLng + nx * (bounds.maxLng - bounds.minLng),
+      bounds.minLat + ny * (bounds.maxLat - bounds.minLat),
+    ]
+  }
+
+  const intersectionsById = new Map<string, Intersection>()
+  for (const item of realIntersections) {
+    const [lng, lat] = toLngLat(item)
+    const grid = parseGridKey(item.id) ?? { col: Math.round(item.x), row: Math.round(item.y) }
+    const colName = HANGZHOU_ARTERIAL_GRID.cols[grid.col as keyof typeof HANGZHOU_ARTERIAL_GRID.cols]?.name
+    const rowName = HANGZHOU_ARTERIAL_GRID.rows[grid.row as keyof typeof HANGZHOU_ARTERIAL_GRID.rows]?.name
+    intersectionsById.set(item.id, {
+      id: item.id,
+      name: rowName && colName ? `${rowName} × ${colName}` : `Hangzhou ${grid.col}-${grid.row}`,
+      x: (item.x - minX) / dx,
+      y: 1 - (item.y - minY) / dy,
+      lng,
+      lat,
+      row: grid.row,
+      col: grid.col,
+      currentPhase: 'eastwest_straight',
+      greenRemain: PHASE_DURATIONS.eastwest_straight,
+      queueLength: 0,
+      averageDelay: 0,
+      congestionIndex: deterministicCongestion(item.id),
+      deviceStatus: 'online',
+      roadIds: [],
+    })
+  }
+
+  const roads: Road[] = []
+  for (const road of roadnet.roads) {
+    const from = intersectionsById.get(road.from)
+    const to = intersectionsById.get(road.to)
+    if (!from || !to) continue
+    const path = road.points.length >= 2
+      ? road.points.map((point) => toLngLat(point))
+      : [[from.lng, from.lat], [to.lng, to.lat]] as [number, number][]
+    roads.push({
+      id: road.id,
+      from: road.from,
+      to: road.to,
+      name: road.id,
+      flow: 0,
+      speed: 0,
+      queueLength: 0,
+      congestionIndex: deterministicCongestion(road.id),
+      laneCount: Math.max(1, road.laneCount || 1),
+      direction: 'one-way',
+      path,
+    })
+    from.roadIds.push(road.id)
+    to.roadIds.push(road.id)
+  }
+
+  return { intersections: Array.from(intersectionsById.values()), roads }
+}
+
 export const useTrafficStore = defineStore('traffic', () => {
   // =========================================================
   // 1. State
@@ -489,8 +624,8 @@ export const useTrafficStore = defineStore('traffic', () => {
     ) {
       const m = simulationMetrics.value
       if (m) {
-        statistics.value.totalFlow = m.vehicleCount
-        statistics.value.averageSpeed = m.avgSpeed
+        statistics.value.totalFlow = m.activeVehicleCount ?? m.vehicleCount
+        statistics.value.averageSpeed = Math.round(m.avgSpeed * 3.6 * 10) / 10
         statistics.value.averageWaitTime = m.avgWait
         statistics.value.throughput = m.throughput
       }
@@ -974,19 +1109,26 @@ export const useTrafficStore = defineStore('traffic', () => {
     // CityFlow 网格是转置的：intersection_R_C 中 R=上海col，C=上海row
     // 所以上海 (row, col) 对应 CityFlow intersection_{col}_{row}
     const itBySimKey = new Map<string, Intersection>()
+    const itBySimId = new Map<string, Intersection>()
     for (const it of intersections.value) {
       itBySimKey.set(`${it.col}_${it.row}`, it) // key = "R_C"（R=col, C=row）
+      itBySimId.set(it.id, it)
     }
     // 从 CityFlow ID 取出匹配键（去掉 intersection_ 前缀即为 "R_C"）
     function simKeyOf(id: string): string | null {
       const m = id.match(/^intersection_(\d+)_(\d+)$/)
       return m ? `${m[1]}_${m[2]}` : null
     }
+    function intersectionForSimId(id: string): Intersection | undefined {
+      const direct = itBySimId.get(id)
+      if (direct) return direct
+      const key = simKeyOf(id)
+      return key ? itBySimKey.get(key) : undefined
+    }
 
     // ---- 信号灯 → 路口相位（按转置键精确匹配）----
     for (const sig of frame.signals) {
-      const key = simKeyOf(sig.intersectionId)
-      const it = key ? itBySimKey.get(key) : undefined
+      const it = intersectionForSimId(sig.intersectionId)
       if (!it) continue
       it.currentPhase = toSignalPhase(sig.phaseCode)
       it.deviceStatus = 'online'
@@ -997,8 +1139,7 @@ export const useTrafficStore = defineStore('traffic', () => {
 
     // ---- 路口排队/延误（按转置键精确匹配）----
     for (const istate of frame.intersections) {
-      const key = simKeyOf(istate.id)
-      const it = key ? itBySimKey.get(key) : undefined
+      const it = intersectionForSimId(istate.id)
       if (!it) continue
       it.queueLength = istate.queueCount
       it.averageDelay = Math.round(istate.avgWait)
@@ -1068,13 +1209,40 @@ export const useTrafficStore = defineStore('traffic', () => {
     // ---- 车辆：将 SimVehicleState[] 注入到 vehicles[] ----
     // ---- 全局统计 ----
     if (frame.metrics) {
-      statistics.value.totalFlow = frame.metrics.vehicleCount ?? statistics.value.totalFlow
-      statistics.value.averageSpeed = frame.metrics.avgSpeed ?? statistics.value.averageSpeed
+      statistics.value.totalFlow = frame.metrics.activeVehicleCount ?? frame.metrics.vehicleCount ?? statistics.value.totalFlow
+      statistics.value.averageSpeed = frame.metrics.avgSpeed == null
+        ? statistics.value.averageSpeed
+        : Math.round(frame.metrics.avgSpeed * 3.6 * 10) / 10
       statistics.value.averageWaitTime = frame.metrics.avgWait ?? statistics.value.averageWaitTime
     }
   }
 
   /** 创建并初始化仿真会话 */
+  async function loadSceneRoadnet(sceneId = simulationSceneId.value): Promise<boolean> {
+    try {
+      const plannedPaths = new Map(
+        roads.value
+          .filter((road) => road.path && road.path.length > 2)
+          .map((road) => [road.id, road.path] as const),
+      )
+      simRoadnet.value = await fetchRoadnet(sceneId)
+      const mappedTrafficData = buildTrafficMapFromRoadnet(simRoadnet.value)
+      if (!mappedTrafficData) return false
+      for (const road of mappedTrafficData.roads) {
+        const plannedPath = plannedPaths.get(road.id)
+        if (plannedPath && plannedPath.length > 2) road.path = plannedPath
+      }
+      intersections.value = mappedTrafficData.intersections
+      roads.value = mappedTrafficData.roads
+      selectedIntersectionId.value = intersections.value[0]?.id ?? null
+      roadCongestionSmooth.clear()
+      return true
+    } catch (e) {
+      console.warn('[TrafficStore] scene roadnet fetch failed', e)
+      return false
+    }
+  }
+
   async function initSimulationSession(): Promise<CreateSimulationResponse | null> {
     simulationStatus.value = 'booting'
     simulationErrorMessage.value = null
@@ -1092,8 +1260,8 @@ export const useTrafficStore = defineStore('traffic', () => {
 
       // 拉取 CityFlow 静态路网，供车辆坐标映射使用
       try {
-        simRoadnet.value = await fetchRoadnet(simulationSceneId.value)
-        console.log('[TrafficStore] sim roadnet loaded', simRoadnet.value.intersections.length, 'intersections')
+        await loadSceneRoadnet(simulationSceneId.value)
+        console.log('[TrafficStore] sim roadnet loaded', simRoadnet.value?.intersections.length ?? 0, 'intersections')
       } catch (e) {
         console.warn('[TrafficStore] sim roadnet fetch failed', e)
       }
@@ -1315,6 +1483,7 @@ export const useTrafficStore = defineStore('traffic', () => {
     handleSimFrame,
     checkSimulationFrameTimeout,
     applySimFrameToTrafficData,
+    loadSceneRoadnet,
     initSimulationSession,
     resumeSimulation,
     pauseSimulationSession,

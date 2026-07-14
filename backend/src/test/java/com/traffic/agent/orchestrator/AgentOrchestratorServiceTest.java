@@ -1,6 +1,7 @@
 package com.traffic.agent.orchestrator;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.traffic.agent.service.AgentEmergencyDispatchMemory;
 import com.traffic.agent.dto.AgentChatRequest;
 import com.traffic.agent.dto.AgentChatResponse.EvidenceItem;
 import com.traffic.agent.dto.AgentChatResponse.ToolCallSummary;
@@ -29,7 +30,7 @@ class AgentOrchestratorServiceTest {
     @Test
     void chatPersistsMessagesRecordsPlanExecutesToolsAndReturnsSummary() {
         AgentDataService dataService = mock(AgentDataService.class);
-        AgentContextBuilder contextBuilder = new AgentContextBuilder(new ObjectMapper());
+        AgentContextBuilder contextBuilder = new AgentContextBuilder(new ObjectMapper(), new AgentEmergencyDispatchMemory());
         AgentIntentClassifier classifier = mock(AgentIntentClassifier.class);
         AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
         AgentResponseAssembler assembler = mock(AgentResponseAssembler.class);

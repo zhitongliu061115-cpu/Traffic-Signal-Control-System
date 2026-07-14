@@ -1,6 +1,7 @@
 package com.traffic.simulation.service;
 
 import com.traffic.cityflow.client.CityFlowClient;
+import com.traffic.agent.service.AgentEmergencyDispatchMemory;
 import com.traffic.runtime.persistence.RuntimePersistenceService;
 import com.traffic.simulation.dto.SimFrameData;
 import com.traffic.simulation.session.SimulationSessionRegistry;
@@ -32,6 +33,7 @@ class SimulationServiceTest {
         SimulationFrameTimingLogger frameTimingLogger = mock(SimulationFrameTimingLogger.class);
         RuntimePersistenceService runtimePersistenceService = mock(RuntimePersistenceService.class);
         LiveSimulationStateService liveSimulationStateService = mock(LiveSimulationStateService.class);
+        AgentEmergencyDispatchMemory emergencyDispatchMemory = mock(AgentEmergencyDispatchMemory.class);
         SimulationService service = new SimulationService(
                 cityFlowClient,
                 registry,
@@ -40,7 +42,8 @@ class SimulationServiceTest {
                 strategyDispatchService,
                 frameTimingLogger,
                 runtimePersistenceService,
-                liveSimulationStateService
+                liveSimulationStateService,
+                emergencyDispatchMemory
         );
         var session = registry.register("run_finished", "jinan_3x4", "fixed-time");
         session.setState(SimulationSessionState.RUNNING);

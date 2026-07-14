@@ -10,8 +10,9 @@ export type SignalLight = 'green' | 'yellow' | 'red'
 export function signalStatus(it: Intersection): SignalLight {
   if (it.currentPhase === 'all_red') return 'red'
   if (it.deviceStatus !== 'online') return 'red'
-  if (it.greenRemain <= 3) return 'red'
-  if (it.greenRemain <= 8) return 'yellow'
+  // CityFlow frames currently expose only the active green phase and remainingSec.
+  // Do not invent yellow/red from the countdown; otherwise the UI shows red while
+  // the simulator is still in a permissive green phase.
   return 'green'
 }
 

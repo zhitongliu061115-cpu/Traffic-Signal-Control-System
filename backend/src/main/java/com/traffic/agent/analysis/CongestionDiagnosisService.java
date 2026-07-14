@@ -161,6 +161,21 @@ public class CongestionDiagnosisService {
 
     private DiagnosisReport diagnoseCurrentNetwork(String sid) {
         CurrentSimulationState state = liveSimulationStateService.getCurrentSimulationState(sid);
+        if (state.latestFrame() == null) {
+            String sessionId = state.session() == null ? "unknown" : state.session().sid();
+            String status = state.session() == null ? "unknown" : state.session().status();
+            return report(
+                    "已找到仿真会话，但还没有可用于判断最拥堵路口的实时帧",
+                    List.of("sid=" + sessionId + ", status=" + status + ", cached_frame_count=" + state.persistedFrameCount()),
+                    List.of("当前仿真会话尚未产生首帧"),
+                    List.of("仿真可能刚创建、尚未开始运行，或 WebSocket/轮询还没有写入最新帧缓存"),
+                    List.of("请先启动或恢复仿真，等待首帧到达后再询问“哪个路口最拥堵”",
+                            "如果前端已经在运行，请确认请求携带当前 sid，或等待后端接收到 sim.frame 后重试"),
+                    0.35,
+                    List.of("需要确认仿真服务已启动并持续产生帧"),
+                    Map.of("targetType", "network", "sid", sessionId, "signalCount", state.signals().size())
+            );
+        }
         List<SignalSnapshot> congestedSignals = state.signals().stream()
                 .filter(signal -> signal.queueCount() >= HIGH_QUEUE || signal.avgWait() >= HIGH_WAIT_SECONDS
                         || isCongestedLevel(signal.level()))

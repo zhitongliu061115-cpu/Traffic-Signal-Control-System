@@ -250,7 +250,10 @@ public class LiveSimulationStateService {
             return state;
         }
         return sessions.values().stream()
+                .filter(LiveSessionState::hasFrames)
                 .max(Comparator.comparing(LiveSessionState::sortTime))
+                .or(() -> sessions.values().stream()
+                        .max(Comparator.comparing(LiveSessionState::sortTime)))
                 .orElseThrow(() -> new BusinessException("当前没有可用的实时仿真状态"));
     }
 
@@ -260,7 +263,11 @@ public class LiveSimulationStateService {
         }
         return sessions.values().stream()
                 .filter(state -> !StringUtils.hasText(sceneCode) || sceneCode.equals(state.sceneId))
+                .filter(LiveSessionState::hasFrames)
                 .max(Comparator.comparing(LiveSessionState::sortTime))
+                .or(() -> sessions.values().stream()
+                        .filter(state -> !StringUtils.hasText(sceneCode) || sceneCode.equals(state.sceneId))
+                        .max(Comparator.comparing(LiveSessionState::sortTime)))
                 .orElseThrow(() -> new BusinessException("当前没有可用的实时仿真状态"));
     }
 
@@ -546,6 +553,10 @@ public class LiveSimulationStateService {
 
         private Instant sortTime() {
             return updatedAt == null ? createdAt : updatedAt;
+        }
+
+        private boolean hasFrames() {
+            return !frames.isEmpty();
         }
     }
 

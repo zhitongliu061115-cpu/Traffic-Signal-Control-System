@@ -22,9 +22,9 @@ interface KpiTile {
 
 const kpiTiles: KpiTile[] = [
   {
-    label: '当前总车流量',
+    label: '当前在网车辆',
     key: 'totalFlow',
-    unit: '辆/h',
+    unit: '辆',
     icon: '🚗',
     tone: 'primary',
     fmt: (v) => v.toLocaleString(),

@@ -59,6 +59,8 @@ export interface Intersection {
   currentPhase: SignalPhase
   /** 当前相位剩余绿灯时长 (秒) */
   greenRemain: number
+  /** Whether the live simulation frame supplied an authoritative remaining time. */
+  greenRemainKnown?: boolean
   /** 当前排队车辆数 */
   queueLength: number
   /** 平均延误 (秒) */
@@ -361,14 +363,20 @@ export interface SimSignalState {
   intersectionId: string
   phaseIndex: number
   phaseCode: string
+  remainingSec?: number | null
 }
 
 /** 单帧聚合指标（后端 SimulationMetricsDto） */
 export interface SimMetrics {
   vehicleCount: number
+  activeVehicleCount?: number
+  scheduledDepartureCount?: number
   queueCount: number
+  /** Average speed from simulation backend, in m/s. Convert to km/h for dashboard display. */
   avgSpeed: number
+  /** Queue-derived wait proxy from backend; not a measured per-vehicle mean wait. */
   avgWait: number
+  /** Cumulative finished vehicle count from simulation backend. */
   throughput: number
 }
 

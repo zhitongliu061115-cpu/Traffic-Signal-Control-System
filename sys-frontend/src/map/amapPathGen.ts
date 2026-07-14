@@ -136,12 +136,12 @@ loadGeocodeCache()
  * 用高德地理编码 API 将路口名转为精确经纬度。
  * 搜索关键词 = "上海市{路口名}路口"
  */
-async function geocodeOne(address: string): Promise<[number, number] | null> {
+async function geocodeOne(address: string, city = '上海'): Promise<[number, number] | null> {
   try {
     const url =
       `https://restapi.amap.com/v3/geocode/geo` +
       `?address=${encodeURIComponent(address)}` +
-      `&city=上海` +
+      `&city=${encodeURIComponent(city)}` +
       `&key=${AMAP_WEB_KEY}`
 
     const res = await fetch(url)
@@ -165,18 +165,23 @@ async function geocodeOne(address: string): Promise<[number, number] | null> {
 export async function snapIntersectionsToAMap(
   items: Array<{ id: string; name: string; lng: number; lat: number }>,
   concurrency = 3,
+  options: { city?: string } = {},
 ): Promise<Map<string, [number, number]>> {
   const results = new Map<string, [number, number]>()
   let idx = 0
   let changed = false
+  const city = options.city ?? '上海'
 
   async function worker() {
     while (idx < items.length) {
       const i = idx++
       const it = items[i]!
-      // 拆分 "西藏中路-南京东路" → "上海市黄浦区西藏中路南京东路路口"
-      const parts = it.name.split('-')
-      const address = `上海市${parts.join('')}路口`
+      const roadNames = it.name
+        .split(/[×xX\-—–]/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .join('')
+      const address = `${city}市${roadNames || it.name}路口`
 
       // 缓存命中
       if (geocodeCache.has(address)) {
@@ -187,7 +192,7 @@ export async function snapIntersectionsToAMap(
 
       await acquireSlot()
 
-      const pt = await geocodeOne(address)
+      const pt = await geocodeOne(address, city)
       geocodeCache.set(address, pt)
       changed = true
       if (pt) {

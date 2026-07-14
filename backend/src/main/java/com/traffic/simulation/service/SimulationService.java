@@ -1,6 +1,7 @@
 package com.traffic.simulation.service;
 
 import com.traffic.cityflow.client.CityFlowClient;
+import com.traffic.agent.service.AgentEmergencyDispatchMemory;
 import com.traffic.common.exception.BusinessException;
 import com.traffic.common.util.TimeUtils;
 import com.traffic.runtime.persistence.RuntimePersistenceService;
@@ -41,6 +42,7 @@ public class SimulationService {
     private final SimulationFrameTimingLogger frameTimingLogger;
     private final RuntimePersistenceService runtimePersistenceService;
     private final LiveSimulationStateService liveSimulationStateService;
+    private final AgentEmergencyDispatchMemory emergencyDispatchMemory;
 
     public SimulationService(
             CityFlowClient cityFlowClient,
@@ -50,7 +52,8 @@ public class SimulationService {
             StrategyDispatchService strategyDispatchService,
             SimulationFrameTimingLogger frameTimingLogger,
             RuntimePersistenceService runtimePersistenceService,
-            LiveSimulationStateService liveSimulationStateService
+            LiveSimulationStateService liveSimulationStateService,
+            AgentEmergencyDispatchMemory emergencyDispatchMemory
     ) {
         this.cityFlowClient = cityFlowClient;
         this.sessionRegistry = sessionRegistry;
@@ -60,6 +63,7 @@ public class SimulationService {
         this.frameTimingLogger = frameTimingLogger;
         this.runtimePersistenceService = runtimePersistenceService;
         this.liveSimulationStateService = liveSimulationStateService;
+        this.emergencyDispatchMemory = emergencyDispatchMemory;
     }
 
     public CreateSimulationResponse createSimulation(CreateSimulationRequest request) {
@@ -147,7 +151,16 @@ public class SimulationService {
         params.put("startIntersection", request.startIntersection());
         params.put("endIntersection", request.endIntersection());
         try {
-            return cityFlowClient.dispatchEV(sid, params);
+            Map<String, Object> result = cityFlowClient.dispatchEV(sid, params);
+            emergencyDispatchMemory.remember(
+                    sid,
+                    request.startIntersection(),
+                    request.endIntersection(),
+                    request.evId(),
+                    request.evType(),
+                    request.priority()
+            );
+            return result;
         } catch (RuntimeException ex) {
             log.warn("failed to dispatch EV to CityFlow. sid={}, error={}", sid, ex.getMessage());
             throw new BusinessException("EV dispatch failed: " + ex.getMessage());

@@ -1,6 +1,7 @@
 package com.traffic.emergency.service;
 
 import com.traffic.cityflow.client.CityFlowClient;
+import com.traffic.agent.service.AgentEmergencyDispatchMemory;
 import com.traffic.common.exception.BusinessException;
 import com.traffic.emergency.dto.CoordDTO;
 import com.traffic.emergency.dto.EVDispatchRequest;
@@ -16,9 +17,11 @@ import java.util.Map;
 public class EmergencyService {
 
     private final CityFlowClient cityFlowClient;
+    private final AgentEmergencyDispatchMemory emergencyDispatchMemory;
 
-    public EmergencyService(CityFlowClient cityFlowClient) {
+    public EmergencyService(CityFlowClient cityFlowClient, AgentEmergencyDispatchMemory emergencyDispatchMemory) {
         this.cityFlowClient = cityFlowClient;
+        this.emergencyDispatchMemory = emergencyDispatchMemory;
     }
     public EVDispatchResponse dispatch(String sid, EVDispatchRequest request) {
         Map<String, Object> pythonRequest = new HashMap<>();
@@ -40,6 +43,14 @@ public class EmergencyService {
         if (pythonResponse == null) {
             throw new BusinessException("Python dispatch returned null");
         }
+        emergencyDispatchMemory.remember(
+                sid,
+                request.startIntersection(),
+                request.endIntersection(),
+                request.evId(),
+                request.evType(),
+                request.priority()
+        );
 
         List<String> route = toStringList(pythonResponse.get("route"));
         List<String> routeRoads = toStringList(pythonResponse.get("routeRoads"));

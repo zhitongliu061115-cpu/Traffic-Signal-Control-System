@@ -131,18 +131,12 @@ class SafetyGuard:
                 self._warn(sid, inter_id, sim_time, current_phase, target_phase, msg)
                 return False, msg, current_phase
 
-        # 同路口相位冲突检测
-        ok, msg = self.check_phase_conflict(current_phase, target_phase)
-        if not ok:
-            self._warn(sid, inter_id, sim_time, current_phase, target_phase, msg)
-            return False, msg, current_phase
-
-        # 相邻路口冲突检测
-        if roadnet_roads:
-            ok, msg = self.check_adjacent_conflict(inter_id, target_phase, current_phases, roadnet_roads)
-            if not ok:
-                self._warn(sid, inter_id, sim_time, current_phase, target_phase, msg)
-                return False, msg, current_phase
+        # A set_tl_phase call replaces the current phase; it does not run two
+        # phases simultaneously. Treating normal transitions such as ETWT→NTST
+        # or NLSL→ELWL as "conflicts" blocks valid controller decisions and can
+        # freeze the network at one phase. Keep transition safety to min-green
+        # protection here; simultaneous movement conflicts belong in roadnet
+        # phase definitions / controller candidate validation.
 
         # 通过
         self._record(sid, inter_id, sim_time, target_phase)

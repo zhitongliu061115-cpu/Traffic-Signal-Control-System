@@ -127,6 +127,55 @@ class AgentIntentClassifierTest {
     }
 
     @Test
+    void emergencyDraftUsesRememberedDispatchEndpointsWhenUserAsksForSuggestion() {
+        AgentLlmClient llmClient = mock(AgentLlmClient.class);
+        AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
+        when(toolExecutor.allowedTools()).thenReturn(List.of("draft_emergency_dispatch"));
+        when(llmClient.chat(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()
+        ))
+                .thenReturn(new AgentLlmClient.LlmResult("""
+                        {
+                          "intent": "emergency",
+                          "needsTools": false,
+                          "rationale": "缺少起点和终点",
+                          "toolCalls": []
+                        }
+                        """, "test", false));
+
+        AgentIntentClassifier classifier = new AgentIntentClassifier(llmClient, toolExecutor, new ObjectMapper());
+
+        AgentPlan plan = classifier.plan(new AgentIntentClassifier.AgentPlanningInput(
+                "生成调度建议",
+                "run_001",
+                """
+                        {
+                          "sid": "run_001",
+                          "emergencyDispatchMemory": {
+                            "startIntersection": "intersection_1_1",
+                            "endIntersection": "intersection_1_2",
+                            "evId": "EV-1",
+                            "evType": "ambulance",
+                            "priority": 3
+                          }
+                        }
+                        """
+        ));
+
+        assertTrue(plan.needsTools());
+        assertEquals(1, plan.toolCalls().size());
+        assertEquals("draft_emergency_dispatch", plan.toolCalls().get(0).toolName());
+        assertEquals("run_001", plan.toolCalls().get(0).arguments().get("sid"));
+        assertEquals("intersection_1_1", plan.toolCalls().get(0).arguments().get("startIntersection"));
+        assertEquals("intersection_1_2", plan.toolCalls().get(0).arguments().get("endIntersection"));
+        assertEquals("EV-1", plan.toolCalls().get(0).arguments().get("evId"));
+        assertEquals("ambulance", plan.toolCalls().get(0).arguments().get("evType"));
+        assertEquals(3, plan.toolCalls().get(0).arguments().get("priority"));
+    }
+
+    @Test
     void realtimeCongestionQuestionUsesLiveDiagnosisInsteadOfHistoricalRegionMetrics() {
         AgentLlmClient llmClient = mock(AgentLlmClient.class);
         AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
@@ -163,6 +212,46 @@ class AgentIntentClassifierTest {
         assertEquals(1, plan.toolCalls().size());
         assertEquals("diagnose_congestion", plan.toolCalls().get(0).toolName());
         assertEquals("run_001", plan.toolCalls().get(0).arguments().get("sid"));
+    }
+
+    @Test
+    void realtimeMostCongestedQuestionDoesNotRequireSpecificIntersectionId() {
+        AgentLlmClient llmClient = mock(AgentLlmClient.class);
+        AgentToolExecutor toolExecutor = mock(AgentToolExecutor.class);
+        when(toolExecutor.allowedTools()).thenReturn(List.of("get_intersection_detail", "diagnose_congestion"));
+        when(llmClient.chat(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()
+        ))
+                .thenReturn(new AgentLlmClient.LlmResult("""
+                        {
+                          "intent": "diagnosis",
+                          "needsTools": true,
+                          "rationale": "模型误以为需要用户指定目标路口",
+                          "toolCalls": [
+                            {
+                              "toolName": "get_intersection_detail",
+                              "arguments": {},
+                              "reason": "错误地要求具体路口 ID"
+                            }
+                          ]
+                        }
+                        """, "test", false));
+
+        AgentIntentClassifier classifier = new AgentIntentClassifier(llmClient, toolExecutor, new ObjectMapper());
+
+        AgentPlan plan = classifier.plan(new AgentIntentClassifier.AgentPlanningInput(
+                "哪个路口最拥堵？",
+                "run_001",
+                "{}"
+        ));
+
+        assertTrue(plan.needsTools());
+        assertEquals(1, plan.toolCalls().size());
+        assertEquals("diagnose_congestion", plan.toolCalls().get(0).toolName());
+        assertEquals("run_001", plan.toolCalls().get(0).arguments().get("sid"));
+        assertFalse(plan.toolCalls().get(0).arguments().containsKey("targetId"));
     }
 
     @Test

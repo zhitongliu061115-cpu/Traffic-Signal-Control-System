@@ -687,10 +687,12 @@ class CityFlowAdapter:
             controllable_phase_indexes = [phase_index for phase_index in phase_indexes if phase_index in BUSINESS_PHASE_INDEXES]
             cycle_phase_indexes = controllable_phase_indexes or phase_indexes
             phase_index = cycle_phase_indexes[int(sim_time // 10) % len(cycle_phase_indexes)]
+            remaining_sec = 10.0 - (sim_time % 10.0)
             signals.append({
                 "intersectionId": intersection_id,
                 "phaseIndex": phase_index,
                 "phaseCode": PHASE_CODES.get(phase_index),
+                "remainingSec": round(max(0.0, remaining_sec), 3),
             })
         return signals
 
