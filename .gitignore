@@ -33,6 +33,8 @@ __pycache__/
 *.pt
 *.pth
 *.ckpt
+*.tar.gz
+*.tgz
 vector_store/
 sumo_output/
 
@@ -46,6 +48,8 @@ sim-python/logs/
 temp-three-frontend/*.log
 
 # Generated test outputs
+tmp/
+outputs/
 cloud/traffic-r/test-results/
 backend/agent-eval/reports/
 backend/agent-eval-v2/reports/
@@ -53,6 +57,9 @@ docs/agent-finetuning/
 output/
 
 # Editors and system files
+.agents/
+.codex/
+.codebuddy/
 .vscode/
 .idea/
 .DS_Store
