@@ -14,16 +14,29 @@ import org.springframework.util.StringUtils;
 @EnableConfigurationProperties(AgentLangChain4jProperties.class)
 public class AgentLangChain4jConfig {
 
-    @Bean
+    @Bean("agentPlannerChatModel")
     @ConditionalOnProperty(prefix = "traffic.agent.langchain4j", name = "enabled", havingValue = "true")
-    public ChatModel agentChatModel(AgentLangChain4jProperties properties) {
+    public ChatModel agentPlannerChatModel(AgentLangChain4jProperties properties) {
+        return buildChatModel(properties, properties.getPlanner());
+    }
+
+    @Bean("agentAnswerChatModel")
+    @ConditionalOnProperty(prefix = "traffic.agent.langchain4j", name = "enabled", havingValue = "true")
+    public ChatModel agentAnswerChatModel(AgentLangChain4jProperties properties) {
+        return buildChatModel(properties, properties.getAnswer());
+    }
+
+    private ChatModel buildChatModel(
+            AgentLangChain4jProperties properties,
+            AgentLangChain4jProperties.ModelProperties modelProperties
+    ) {
         return OpenAiChatModel.builder()
                 .baseUrl(normalizeBaseUrl(properties.getBaseUrl()))
                 .apiKey(normalizeApiKey(properties.getApiKey()))
-                .modelName(normalizeModelName(properties.getModelName()))
-                .temperature(properties.getTemperature())
-                .maxTokens(normalizeMaxTokens(properties.getMaxTokens()))
-                .customParameters(Map.of("enable_thinking", properties.isEnableThinking()))
+                .modelName(normalizeModelName(modelProperties.getModelName()))
+                .temperature(modelProperties.getTemperature())
+                .maxTokens(normalizeMaxTokens(modelProperties.getMaxTokens()))
+                .customParameters(Map.of("enable_thinking", modelProperties.isEnableThinking()))
                 .timeout(Duration.ofSeconds(Math.max(properties.getTimeoutSeconds(), 1)))
                 .maxRetries(1)
                 .build();

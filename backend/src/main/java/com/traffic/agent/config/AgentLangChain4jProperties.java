@@ -8,11 +8,9 @@ public class AgentLangChain4jProperties {
     private boolean enabled;
     private String baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
     private String apiKey = "";
-    private String modelName = "qwen-plus";
-    private double temperature = 0.2;
-    private int maxTokens = 1200;
     private long timeoutSeconds = 60;
-    private boolean enableThinking = false;
+    private ModelProperties planner = new ModelProperties();
+    private ModelProperties answer = new ModelProperties();
 
     public boolean isEnabled() {
         return enabled;
@@ -38,30 +36,6 @@ public class AgentLangChain4jProperties {
         this.apiKey = apiKey;
     }
 
-    public String getModelName() {
-        return modelName;
-    }
-
-    public void setModelName(String modelName) {
-        this.modelName = modelName;
-    }
-
-    public double getTemperature() {
-        return temperature;
-    }
-
-    public void setTemperature(double temperature) {
-        this.temperature = temperature;
-    }
-
-    public int getMaxTokens() {
-        return maxTokens;
-    }
-
-    public void setMaxTokens(int maxTokens) {
-        this.maxTokens = maxTokens;
-    }
-
     public long getTimeoutSeconds() {
         return timeoutSeconds;
     }
@@ -70,11 +44,58 @@ public class AgentLangChain4jProperties {
         this.timeoutSeconds = timeoutSeconds;
     }
 
-    public boolean isEnableThinking() {
-        return enableThinking;
+    public ModelProperties getPlanner() {
+        return planner;
     }
 
-    public void setEnableThinking(boolean enableThinking) {
-        this.enableThinking = enableThinking;
+    public void setPlanner(ModelProperties planner) {
+        this.planner = planner;
+    }
+
+    public ModelProperties getAnswer() {
+        return answer;
+    }
+
+    public void setAnswer(ModelProperties answer) {
+        this.answer = answer;
+    }
+
+    public static class ModelProperties {
+        private String modelName = "qwen-plus";
+        private double temperature = 0.2;
+        private int maxTokens = 1200;
+        private boolean enableThinking;
+
+        public String getModelName() {
+            return modelName;
+        }
+
+        public void setModelName(String modelName) {
+            this.modelName = modelName;
+        }
+
+        public double getTemperature() {
+            return temperature;
+        }
+
+        public void setTemperature(double temperature) {
+            this.temperature = temperature;
+        }
+
+        public int getMaxTokens() {
+            return maxTokens;
+        }
+
+        public void setMaxTokens(int maxTokens) {
+            this.maxTokens = maxTokens;
+        }
+
+        public boolean isEnableThinking() {
+            return enableThinking;
+        }
+
+        public void setEnableThinking(boolean enableThinking) {
+            this.enableThinking = enableThinking;
+        }
     }
 }
