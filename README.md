@@ -84,7 +84,7 @@ npm.cmd run dev
 
 正式 `sys-frontend` 后续按团队前端进度接入同一套 Spring Boot REST / WebSocket 接口。
 
-Python CityFlow 仿真服务当前默认使用阿里云 24h 服务，本地 Spring Boot 默认连接：
+Python CityFlow 仿真服务当前默认使用阿里云的 24h 服务，本地 Spring Boot 默认连接：
 
 ```text
 http://39.105.75.87:9000
