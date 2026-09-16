@@ -8,26 +8,33 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
 public class AgentLlmClient {
 
-    private final ObjectProvider<ChatModel> chatModelProvider;
+    private final ObjectProvider<ChatModel> plannerModelProvider;
+    private final ObjectProvider<ChatModel> answerModelProvider;
     private final AgentDebugLogService debugLogService;
 
-    public AgentLlmClient(ObjectProvider<ChatModel> chatModelProvider, AgentDebugLogService debugLogService) {
-        this.chatModelProvider = chatModelProvider;
+    public AgentLlmClient(
+            @Qualifier("agentPlannerChatModel") ObjectProvider<ChatModel> plannerModelProvider,
+            @Qualifier("agentAnswerChatModel") ObjectProvider<ChatModel> answerModelProvider,
+            AgentDebugLogService debugLogService
+    ) {
+        this.plannerModelProvider = plannerModelProvider;
+        this.answerModelProvider = answerModelProvider;
         this.debugLogService = debugLogService;
     }
 
     public LlmResult chat(String systemPrompt, String userPrompt) {
-        return chat("unknown", systemPrompt, userPrompt);
+        return chat("answer", systemPrompt, userPrompt);
     }
 
     public LlmResult chat(String stage, String systemPrompt, String userPrompt) {
-        ChatModel chatModel = chatModelProvider.getIfAvailable();
+        ChatModel chatModel = modelProvider(stage).getIfAvailable();
         if (chatModel == null) {
             debugLogService.warn("agent.llm.not_configured", Map.of("stage", stage));
             throw new BusinessException(
@@ -62,6 +69,10 @@ public class AgentLlmClient {
             ), ex);
             throw new BusinessException("Agent LLM call failed: " + errorMessage(ex));
         }
+    }
+
+    private ObjectProvider<ChatModel> modelProvider(String stage) {
+        return "tool_plan".equals(stage) ? plannerModelProvider : answerModelProvider;
     }
 
     private String errorMessage(RuntimeException ex) {
